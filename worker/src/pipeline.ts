@@ -8,6 +8,8 @@ import { messages, type NotificationItem } from './telegram';
 import { errorMessage } from './http';
 import { fillGaps, floorTo, type Candle, type Trade } from '../../shared/candles';
 import { checkDataQuality, computeIndicatorsTail, evaluateSignal, mergeParams } from '../../shared/strategy';
+import { aggregateComplete, applyMtf, buildHigherSeries, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
+import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, exitReason, feeFor, positionSize, riskState, sellFillPrice } from '../../shared/paper';
 
 export interface Account {
@@ -36,11 +38,25 @@ interface PairCtx {
   symbol: string;
   ticker_id: string;
   is_maintenance: boolean;
+  is_tracked?: boolean;
+  in_universe?: boolean;
   trade_min_base_currency: number | null;
   covered_until: string | null;
   last_trade_time: string | null;
   last_trade_tid: string | null;
+  htf_backfilled_at?: string | null;
 }
+
+type CandleRow = [number, number, number, number, number, number, string];
+const toCandle = (r: CandleRow): Candle => ({
+  t: Number(r[0]), o: Number(r[1]), h: Number(r[2]), l: Number(r[3]), c: Number(r[4]), v: Number(r[5]),
+  n: Number(r[5]) > 0 ? 1 : 0, source: (r[6] as Candle['source']) ?? 'trades',
+});
+
+/** Max pairs per run that get their one-time 15m/1h OHLC history backfill (2 INDODAX calls each). */
+export const HTF_BACKFILL_PER_RUN = 2;
+/** Higher-timeframe buckets re-persisted per run (aggregated from 5m), per timeframe. */
+const HTF_PERSIST: Record<string, number> = { '15m': 4, '1h': 2 };
 
 interface BeginRun {
   ok: boolean;
@@ -49,6 +65,7 @@ interface BeginRun {
   config: unknown;
   account: Account;
   pairs: PairCtx[];
+  catalog?: Record<string, boolean>; // pair id -> is_maintenance (whole INDODAX IDR catalog)
   open_positions: Position[];
   day_start_equity: number | string | null;
   pair_catalog_age_seconds: number | null;
@@ -154,6 +171,67 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       return nowSec - t.server_time <= params.maxTickerAgeSeconds ? t : null;
     };
 
+    // 1b. Dynamic universe (from the summaries already fetched; takes effect on the next run)
+    const currentUniverse = new Set(pairs.filter((p) => p.in_universe).map((p) => p.id));
+    if (market && ctx.catalog && universeDue(nowSec, currentUniverse.size, params.universeMode)) {
+      await step('universe', async () => {
+        const catalog = ctx.catalog!;
+        const result = selectUniverse({
+          tickers: market.tickers,
+          known: new Set(Object.keys(catalog)),
+          maintenance: new Set(Object.entries(catalog).filter(([, m]) => m).map(([id]) => id)),
+          pinned: new Set(pairs.filter((p) => p.is_tracked).map((p) => p.id)),
+          current: currentUniverse,
+          nowSec,
+          params,
+        });
+        // one statement: membership changes + refreshed ranks
+        await db.rpc('set_universe', { p_members: result.members.map((m) => ({ id: m.pair_id, rank: m.rank })) });
+        if (params.notifyUniverse && (result.added.length || result.removed.length)) {
+          notes.push({
+            event_type: 'universe', dedupe_key: `universe:${nowMin}`,
+            message: messages.universe({ added: result.added, removed: result.removed, members: result.members.map((m) => m.pair_id), pinned: pairs.filter((p) => p.is_tracked).map((p) => p.id), mode: params.universeMode }),
+          });
+        }
+        return result;
+      }, (r) => ({ mode: params.universeMode, members: r.members.map((m) => m.pair_id), added: r.added, removed: r.removed, eligible: r.eligible, rejected: r.rejected }));
+    }
+
+    // 1c. One-time 15m / 1h OHLC history backfill so MTF trends are available immediately (throttled)
+    const htfBackfilled = new Set<string>();
+    const htfCandles: unknown[] = [];
+    if (params.mtfMode !== 'off') {
+      const todo = pairs.filter((p) => !p.htf_backfilled_at)
+        .sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id))
+        .slice(0, HTF_BACKFILL_PER_RUN);
+      if (todo.length) {
+        await step('backfill_htf', async () => {
+          const info: Record<string, unknown> = {};
+          await Promise.all(todo.map(async (p) => {
+            try {
+              const counts: Record<string, number> = {};
+              for (const h of HIGHER_TFS) {
+                const from = nowSec - (MTF_WINDOW + 4) * h.sec;
+                const list = await dx.getHistory(p.symbol, h.historyTf, from, nowSec);
+                const done = list.filter((c) => c.t % h.sec === 0 && c.t + h.sec <= nowSec);
+                for (const c of done) {
+                  htfCandles.push({ pair_id: p.id, timeframe: h.tf, open_time: iso(c.t), open: c.o, high: c.h, low: c.l, close: c.c,
+                    volume: c.v, trade_count: 0, is_closed: true, source: 'history' });
+                }
+                counts[h.tf] = done.length;
+              }
+              htfBackfilled.add(p.id);
+              info[p.id] = counts;
+            } catch (e) {
+              errors.push(`backfill_htf ${p.id}: ${errorMessage(e)}`);
+              info[p.id] = 'error';
+            }
+          }));
+          return info;
+        }, (r) => r);
+      }
+    }
+
     const tradeResults = await step('fetch_trades', async () => {
       const out = new Map<string, Trade[] | null>();
       await Promise.all(pairs.map(async (p) => {
@@ -206,9 +284,16 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           covered_until: built.newCoveredUntil === null ? null : iso(built.newCoveredUntil),
           last_trade_time: newest ? iso(newest.ts) : null,
           last_trade_tid: newest?.tid ?? null,
+          htf_backfilled_at: htfBackfilled.has(p.id) ? iso(nowSec) : null,
         });
         info[p.id] = { trades: trades.length, new: fresh.length, m1: built.m1.length, m5: built.m5.length, backfilled: built.backfilled, gap: plan.gap ? true : false };
       }));
+      // pairs whose trade fetch failed still record a successful HTF backfill (one sync row per pair)
+      const synced = new Set((ingestPayload.sync as { pair_id: string }[]).map((x) => x.pair_id));
+      for (const id of htfBackfilled) {
+        if (!synced.has(id)) ingestPayload.sync.push({ pair_id: id, covered_until: null, last_trade_time: null, last_trade_tid: null, htf_backfilled_at: iso(nowSec) });
+      }
+      ingestPayload.candles.push(...htfCandles);
       return info;
     }, (r) => r);
 
@@ -231,21 +316,52 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // 4+5. Indicators + signals on COMPLETED 5m candles only
     const lastIndicators = new Map<string, { atr14: number | null }>();
     const analysis = await step('analyze', async () => {
-      const map = await db.rpc<Record<string, [number, number, number, number, number, number, string][]>>('get_recent_candles', {
-        p_pairs: tracked, p_timeframe: '5m', p_limit: 250,
-      });
+      const mtfOn = params.mtfMode !== 'off';
+      const [map, htfMap] = await Promise.all([
+        db.rpc<Record<string, CandleRow[]>>('get_recent_candles', { p_pairs: tracked, p_timeframe: '5m', p_limit: 250 }),
+        mtfOn
+          ? db.rpc<Record<string, Record<string, CandleRow[]>>>('get_recent_candles_multi', { p_pairs: tracked, p_timeframes: HIGHER_TFS.map((h) => h.tf), p_limit: MTF_WINDOW })
+          : Promise.resolve({} as Record<string, Record<string, CandleRow[]>>),
+      ]);
+      const htfSave: unknown[] = [];
+      const mtfInfo: Record<string, string> = {};
+      const mtfBlocked: Record<string, string> = {};
       const expectedLast = floorTo(nowSec, 300) - 300;
       const indicatorRows: unknown[] = [];
       const signalRows: unknown[] = [];
       const quality: Record<string, string> = {};
       for (const p of pairs) {
         const raw = (map?.[p.id] ?? []).filter((r) => Number(r[0]) <= expectedLast);
-        const candles: Candle[] = raw.map((r) => ({
-          t: Number(r[0]), o: Number(r[1]), h: Number(r[2]), l: Number(r[3]), c: Number(r[4]), v: Number(r[5]),
-          n: Number(r[5]) > 0 ? 1 : 0, source: (r[6] as Candle['source']) ?? 'trades',
-        }));
+        const candles: Candle[] = raw.map(toCandle);
         if (candles.length === 0) { quality[p.id] = 'no_candles'; continue; }
         const series = fillGaps(candles, 300, expectedLast).slice(-250);
+
+        // Higher timeframes (completed candles only): stored history + exact aggregates of the 5m series
+        const states: TfState[] = [];
+        if (mtfOn) {
+          for (const h of HIGHER_TFS) {
+            const lastComplete = lastCompleteBucket(expectedLast, h.sec);
+            const aggregated = aggregateComplete(series, h.sec);
+            const stored = (htfMap?.[h.tf]?.[p.id] ?? []).map(toCandle);
+            const hs = buildHigherSeries(stored, aggregated, h.sec, lastComplete);
+            const st = trendState(h.tf, hs, lastComplete, params);
+            states.push(st);
+            for (const c of aggregated.slice(-HTF_PERSIST[h.tf])) {
+              htfSave.push({ pair_id: p.id, timeframe: h.tf, open_time: iso(c.t), open: c.o, high: c.h, low: c.l, close: c.c, volume: c.v, trade_count: c.n, source: c.source });
+            }
+            if (hs.length) {
+              const hr = computeIndicatorsTail(hs, { ...params, emaFast: params.mtfEmaFast, emaSlow: params.mtfEmaSlow }, 1).at(-1);
+              if (hr) {
+                indicatorRows.push({
+                  pair_id: p.id, timeframe: h.tf, open_time: iso(hr.t), close: hr.close, ema9: hr.ema9, ema21: hr.ema21, ema50: hr.ema50,
+                  rsi14: hr.rsi14, macd: hr.macd, macd_signal: hr.macdSignal, macd_hist: hr.macdHist, atr14: hr.atr14, vol_ma20: hr.volMa20,
+                  support: hr.support, resistance: hr.resistance,
+                });
+              }
+            }
+          }
+          mtfInfo[p.id] = states.map((st) => `${st.tf}:${st.trend}`).join(' ');
+        }
         const rows = computeIndicatorsTail(series, params, 3);
         for (const r of rows) {
           indicatorRows.push({
@@ -262,18 +378,24 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (!freshTicker(p.id)) { quality[p.id] = 'stale_ticker'; continue; }
         if (rows.length < 2) { quality[p.id] = 'insufficient_rows'; continue; }
         quality[p.id] = 'ok';
-        const decision = evaluateSignal(last, rows[rows.length - 2], series[series.length - 1].v, params);
+        const raw5m = evaluateSignal(last, rows[rows.length - 2], series[series.length - 1].v, params);
+        const mtf = applyMtf(raw5m, states, params.mtfMode);
+        if (raw5m && mtf.blocked) mtfBlocked[p.id] = `${raw5m.side} ${mtf.blocked}`;
+        const decision = mtf.decision;
         if (decision) {
           signalRows.push({
             pair_id: p.id, timeframe: '5m', candle_time: iso(last.t), side: decision.side, price: last.close,
-            strength: decision.strength, reasons: decision.reasons, strategy: 'ema_rsi_volume',
-            indicators: { ema9: last.ema9, ema21: last.ema21, ema50: last.ema50, rsi14: last.rsi14, macd_hist: last.macdHist, atr14: last.atr14, vol_ma20: last.volMa20, support: last.support, resistance: last.resistance },
+            strength: decision.strength, reasons: decision.reasons, strategy: mtfOn ? 'ema_rsi_volume_mtf' : 'ema_rsi_volume',
+            indicators: {
+              ema9: last.ema9, ema21: last.ema21, ema50: last.ema50, rsi14: last.rsi14, macd_hist: last.macdHist, atr14: last.atr14, vol_ma20: last.volMa20, support: last.support, resistance: last.resistance,
+              ...(mtfOn ? { mtf: mtf.summary, mtf_mode: params.mtfMode } : {}),
+            },
           });
         }
       }
-      const saved = await db.rpc<{ new_signals: SignalRow[] }>('save_analysis', { p_indicators: indicatorRows, p_signals: signalRows });
-      return { newSignals: saved?.new_signals ?? [], quality };
-    }, (r) => ({ new_signals: r.newSignals.length, quality: r.quality }));
+      const saved = await db.rpc<{ new_signals: SignalRow[] }>('save_analysis', { p_indicators: indicatorRows, p_signals: signalRows, p_candles: htfSave });
+      return { newSignals: saved?.new_signals ?? [], quality, mtf: mtfInfo, mtfBlocked };
+    }, (r) => ({ new_signals: r.newSignals.length, quality: r.quality, ...(Object.keys(r.mtf).length ? { mtf: r.mtf } : {}), ...(Object.keys(r.mtfBlocked).length ? { mtf_blocked: r.mtfBlocked } : {}) }));
 
     const newSignals = analysis?.newSignals ?? [];
     if (params.notifySignals) {

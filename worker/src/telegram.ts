@@ -86,6 +86,16 @@ export const messages = {
   error(errors: string[]) {
     return `⚠️ <b>System error</b> (${jakarta()})\n` + errors.slice(0, 5).map((e) => `• ${escapeHtml(e.slice(0, 300))}`).join('\n');
   },
+  universe(u: { added: string[]; removed: string[]; members: string[]; pinned: string[]; mode: string }) {
+    const list = (ids: string[]) => ids.length ? ids.map(pairLabel).join(', ') : '—';
+    return [
+      `🧭 <b>Universe pair diperbarui</b> (${u.mode})`,
+      ...(u.added.length ? [`Masuk: ${list(u.added)}`] : []),
+      ...(u.removed.length ? [`Keluar: ${list(u.removed)}`] : []),
+      `Dipantau manual: ${list(u.pinned)}`,
+      `Otomatis (${u.members.length}): ${list(u.members)}`,
+    ].join('\n');
+  },
   heartbeat(h: { status: string; durationMs: number; pairs: number; accountStatus: string; equity: number | null }) {
     return [
       `✅ <b>Worker status</b> ${jakarta()}`,

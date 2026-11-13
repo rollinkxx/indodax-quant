@@ -29,7 +29,28 @@ export interface StrategyParams {
   minCandles: number;
   maxTickerAgeSeconds: number;
   notifySignals: boolean;
+  // Multi-timeframe (MTF) confirmation on completed 15m and 1h candles
+  mtfMode: MtfMode;
+  mtfEmaFast: number;
+  mtfEmaSlow: number;
+  mtfMinCandles: number;
+  // Dynamic universe: pairs picked automatically by 24h IDR volume + spread, on top of the manually tracked pairs
+  universeMode: UniverseMode;
+  universeSize: number;
+  universeMinVolumeIdr: number;
+  universeMaxSpreadPct: number;
+  universeBuffer: number;
+  universeMaxNewPerUpdate: number;
+  universeExclude: string[];
+  notifyUniverse: boolean;
 }
+
+export type MtfMode = 'off' | 'filter' | 'score';
+export type UniverseMode = 'manual' | 'dynamic';
+export const MTF_MODES: MtfMode[] = ['off', 'filter', 'score'];
+export const UNIVERSE_MODES: UniverseMode[] = ['manual', 'dynamic'];
+/** Stablecoins move with USD/IDR, not with crypto momentum: excluded from the dynamic universe by default. */
+export const DEFAULT_UNIVERSE_EXCLUDE = ['usdtidr', 'usdcidr', 'busdidr', 'daiidr', 'tusdidr', 'fdusdidr', 'pyusdidr', 'usdeidr'];
 
 export const DEFAULT_PARAMS: StrategyParams = {
   timeframe: '5m',
@@ -58,7 +79,21 @@ export const DEFAULT_PARAMS: StrategyParams = {
   minCandles: 60,
   maxTickerAgeSeconds: 180,
   notifySignals: true,
+  mtfMode: 'filter',
+  mtfEmaFast: 9,
+  mtfEmaSlow: 21,
+  mtfMinCandles: 30,
+  universeMode: 'dynamic',
+  universeSize: 12,
+  universeMinVolumeIdr: 1_000_000_000,
+  universeMaxSpreadPct: 0.6,
+  universeBuffer: 4,
+  universeMaxNewPerUpdate: 3,
+  universeExclude: DEFAULT_UNIVERSE_EXCLUDE,
+  notifyUniverse: true,
 };
+
+const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse']);
 
 type NumKey = { [K in keyof StrategyParams]: StrategyParams[K] extends number ? K : never }[keyof StrategyParams];
 
@@ -86,6 +121,14 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   maxDrawdownPct: [1, 90],
   minCandles: [30, 250, true],
   maxTickerAgeSeconds: [30, 900, true],
+  mtfEmaFast: [2, 100, true],
+  mtfEmaSlow: [3, 200, true],
+  mtfMinCandles: [10, 250, true],
+  universeSize: [1, 25, true],
+  universeMinVolumeIdr: [0, 1e13],
+  universeMaxSpreadPct: [0.01, 10],
+  universeBuffer: [0, 20, true],
+  universeMaxNewPerUpdate: [1, 10, true],
 };
 
 /** Validate a partial params object. Returns list of errors (empty = valid). */
@@ -96,8 +139,22 @@ export function validateParams(input: Record<string, unknown>): string[] {
       if (value !== '5m') errors.push('timeframe must be "5m"');
       continue;
     }
-    if (key === 'useTrendFilter' || key === 'notifySignals') {
+    if (BOOL_KEYS.has(key)) {
       if (typeof value !== 'boolean') errors.push(`${key} must be boolean`);
+      continue;
+    }
+    if (key === 'mtfMode') {
+      if (!MTF_MODES.includes(value as MtfMode)) errors.push(`mtfMode must be one of ${MTF_MODES.join(', ')}`);
+      continue;
+    }
+    if (key === 'universeMode') {
+      if (!UNIVERSE_MODES.includes(value as UniverseMode)) errors.push(`universeMode must be one of ${UNIVERSE_MODES.join(', ')}`);
+      continue;
+    }
+    if (key === 'universeExclude') {
+      if (!Array.isArray(value) || value.length > 100 || !value.every((v) => typeof v === 'string' && /^[a-z0-9]{2,20}$/.test(v))) {
+        errors.push('universeExclude must be a list of up to 100 pair ids (e.g. usdtidr)');
+      }
       continue;
     }
     const lim = PARAM_LIMITS[key as NumKey];
@@ -118,6 +175,8 @@ export function validateParams(input: Record<string, unknown>): string[] {
   if (merged.minCandles < Math.max(merged.emaTrend, merged.emaSlow, 26 + 9) + 2) {
     errors.push('minCandles must exceed the longest indicator warm-up (emaTrend / MACD) by at least 2');
   }
+  if (merged.mtfEmaFast >= merged.mtfEmaSlow) errors.push('mtfEmaFast must be smaller than mtfEmaSlow');
+  if (merged.mtfMinCandles < merged.mtfEmaSlow + 2) errors.push('mtfMinCandles must exceed mtfEmaSlow by at least 2');
   return errors;
 }
 

@@ -4,7 +4,7 @@ import { put } from '../lib/api';
 import { Button, Card, ErrorBox, Loading, PageHeader } from '../components/ui';
 import { wib } from '../lib/format';
 
-type Field = { key: string; label: string; step?: number; bool?: boolean; hint?: string };
+type Field = { key: string; label: string; step?: number; bool?: boolean; hint?: string; options?: { value: string; label: string }[]; list?: boolean };
 const GROUPS: { title: string; fields: Field[] }[] = [
   { title: 'Indikator', fields: [
     { key: 'emaFast', label: 'EMA cepat' }, { key: 'emaSlow', label: 'EMA lambat' }, { key: 'emaTrend', label: 'EMA tren' },
@@ -26,6 +26,25 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     { key: 'maxDrawdownPct', label: 'Max drawdown → kill switch (%)', step: 0.5 }, { key: 'feePct', label: 'Fee per sisi (%)', step: 0.01 },
     { key: 'slippageBps', label: 'Slippage (bps)', step: 1 },
   ] },
+  { title: 'Multi-timeframe (MTF)', fields: [
+    { key: 'mtfMode', label: 'Mode MTF', options: [
+      { value: 'filter', label: 'Filter (BUY wajib searah 1h)' }, { value: 'score', label: 'Skor (hanya ubah kekuatan)' }, { value: 'off', label: 'Mati' },
+    ], hint: 'Konfirmasi tren di candle 15m & 1h yang sudah selesai' },
+    { key: 'mtfEmaFast', label: 'EMA cepat (15m/1h)' }, { key: 'mtfEmaSlow', label: 'EMA lambat (15m/1h)' },
+    { key: 'mtfMinCandles', label: 'Minimal candle 15m/1h' },
+  ] },
+  { title: 'Universe Pair Dinamis', fields: [
+    { key: 'universeMode', label: 'Mode universe', options: [
+      { value: 'dynamic', label: 'Dinamis (otomatis + manual)' }, { value: 'manual', label: 'Manual saja' },
+    ] },
+    { key: 'universeSize', label: 'Total pair dipantau', hint: 'termasuk pair manual; maks 25' },
+    { key: 'universeMinVolumeIdr', label: 'Volume 24j minimal (IDR)', step: 1000000 },
+    { key: 'universeMaxSpreadPct', label: 'Spread maksimal (%)', step: 0.05 },
+    { key: 'universeBuffer', label: 'Buffer peringkat (histeresis)', hint: 'anggota bertahan selama peringkat ≤ slot + buffer' },
+    { key: 'universeMaxNewPerUpdate', label: 'Pair baru maks per update', hint: 'update tiap 15 menit' },
+    { key: 'universeExclude', label: 'Pair dikecualikan', list: true, hint: 'pisahkan dengan koma, mis. usdtidr, usdcidr' },
+    { key: 'notifyUniverse', label: 'Kirim perubahan universe ke Telegram', bool: true },
+  ] },
 ];
 
 export default function Strategy({ isAdmin }: { isAdmin: boolean }) {
@@ -41,7 +60,13 @@ export default function Strategy({ isAdmin }: { isAdmin: boolean }) {
   const save = async () => {
     setErr(null); setOk(null);
     const params: Record<string, unknown> = {};
-    for (const g of GROUPS) for (const f of g.fields) params[f.key] = f.bool ? !!form[f.key] : Number(form[f.key]);
+    for (const g of GROUPS) for (const f of g.fields) {
+      const v = form[f.key];
+      params[f.key] = f.bool ? !!v
+        : f.options ? String(v)
+        : f.list ? (Array.isArray(v) ? v : String(v ?? '').split(',')).map((x: string) => x.trim().toLowerCase()).filter(Boolean)
+        : Number(v);
+    }
     try { await put('/api/strategy', { params }); setDirty(false); setOk('Konfigurasi disimpan. Berlaku pada run cron berikutnya.'); await reload(); }
     catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
   };
@@ -65,6 +90,14 @@ export default function Strategy({ isAdmin }: { isAdmin: boolean }) {
                   <span className="text-slate-400">{f.label}</span>
                   {f.bool ? (
                     <div className="mt-1"><input type="checkbox" disabled={!isAdmin} checked={!!form[f.key]} onChange={(e) => setVal(f.key, e.target.checked)} className="h-4 w-4 accent-emerald-500" /></div>
+                  ) : f.options ? (
+                    <select disabled={!isAdmin} value={form[f.key] ?? ''} onChange={(e) => setVal(f.key, e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 disabled:opacity-60">
+                      {f.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                  ) : f.list ? (
+                    <input type="text" disabled={!isAdmin} value={Array.isArray(form[f.key]) ? form[f.key].join(', ') : (form[f.key] ?? '')} onChange={(e) => setVal(f.key, e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 disabled:opacity-60" />
                   ) : (
                     <input type="number" step={f.step ?? 1} disabled={!isAdmin} value={form[f.key] ?? ''} onChange={(e) => setVal(f.key, e.target.value)}
                       className="num mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 disabled:opacity-60" />
@@ -81,6 +114,8 @@ export default function Strategy({ isAdmin }: { isAdmin: boolean }) {
           <li><b>BUY</b>: EMA cepat memotong ke atas EMA lambat, RSI dalam rentang BUY, volume ≥ pengali × Volume MA, dan (opsional) close &gt; EMA tren.</li>
           <li><b>SELL</b>: EMA cepat memotong ke bawah EMA lambat, RSI ≤ batas SELL, dengan konfirmasi volume. Menutup posisi terbuka di pair tsb.</li>
           <li>Sinyal hanya dihitung pada candle 5 menit yang sudah selesai dan lolos pemeriksaan kualitas data.</li>
+          <li><b>MTF</b>: tren 15m &amp; 1h (candle selesai) = bullish bila close &gt; EMA lambat dan EMA cepat &gt; EMA lambat, bearish sebaliknya. Mode <i>Filter</i>: BUY hanya bila 1h bullish dan tidak ada timeframe bearish (data belum siap = BUY ditahan); SELL tidak pernah diblokir karena berfungsi sebagai exit. Searah +10 kekuatan per timeframe, berlawanan −15.</li>
+          <li><b>Universe dinamis</b>: tiap 15 menit pair IDR diperingkat menurut volume 24 jam (lolos volume minimal, spread maksimal, bukan stablecoin/maintenance). Pair manual selalu ikut; pair dengan posisi terbuka tetap dianalisa sampai ditutup.</li>
           <li>Validasi parameter dilakukan juga di server; nilai tidak valid ditolak.</li>
         </ul>
       </Card>
