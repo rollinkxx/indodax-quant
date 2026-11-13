@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-13 (WIB) by n8n Instance Agent (session 3, 12:30 WIB)_
+_Last updated: 2026-11-13 12:55 WIB by n8n Instance Agent (session 4)_
 
 ## Infrastructure (existing — do NOT recreate)
 
@@ -9,7 +9,7 @@ _Last updated: 2026-11-13 (WIB) by n8n Instance Agent (session 3, 12:30 WIB)_
 | GitHub repo | `rollinkxx/indodax-quant` (public), branch `main` |
 | Supabase project | `sinyalku`, ref `znikuooxiqfcicyuhqsx`, region ap-southeast-2, org `ieksloorndnvydlfunml` |
 | Supabase migrations applied | `init`, `functions`, `fix_lock_release` (match `supabase/migrations/`) |
-| Cloudflare Worker | `indodax-quant` — **DEPLOYED** via GitHub Actions (`https://indodax-quant.rollinkxx.workers.dev`) |
+| Cloudflare Worker | `indodax-quant` — **DEPLOYED** via GitHub Actions — **URL: `https://indodax-quant.sinyalku.workers.dev`** (account subdomain is `sinyalku`, not `rollinkxx`) |
 | INDODAX relay | Supabase Edge Function `indodax-proxy` (read-only, public endpoints only), deployed by CI |
 | Cron | `* * * * *` active, verified in `execution_logs` |
 
@@ -18,9 +18,14 @@ _Last updated: 2026-11-13 (WIB) by n8n Instance Agent (session 3, 12:30 WIB)_
 - `paper_accounts`: 1 row `default`, status **STOPPED**, cash Rp10.000.000, kill_switch=false.
 - `market_pairs`: btcidr, ethidr, xrpidr, solidr, dogeidr (tracked). Full catalog syncs hourly from `/api/pairs`.
 - `app_users`: `gsdrxx@gmail.com` = admin.
-- `auth.users`: **0 users** → the admin must be created in Supabase Auth before login works.
+- `auth.users`: 1 user `gsdrxx@gmail.com` (confirmed) → login unblocked.
 - `strategy_configs`: 1 active (EMA Crossover + RSI + Volume, 5m).
 - Market data filling since 2026-11-13 05:30Z: 438 pairs, 2500 trades, 8314 candles (24h backfill), quality ok for 5 pairs.
+
+## Verification results (session 4, 2026-11-13 12:55 WIB)
+
+- Production URL `https://indodax-quant.sinyalku.workers.dev`: `/` 200, `/api/health` 200 (`liveTrading:false`).
+- Cron ids 24-44 all SUCCESS; signals 0 so far; paper STOPPED. Details in HANDOFF.md.
 
 ## Module status
 
