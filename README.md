@@ -45,9 +45,7 @@ or two runs overlap.
 
 Timeframe 5m, completed candles only.
 
-- **Multi-timeframe (MTF)**: 15m and 1h candles are aggregated from 5m. With `mtfMode: 'filter'` (default) a 5m
-  signal is kept only if EMA9/EMA21 on the completed 15m and 1h candles agree with its direction (needs ≥ 30 HTF
-  candles; `score` adds to strength instead, `off` disables it).
+- **Multi-timeframe (MTF)**: 15m and 1h candles are aggregated from 5m (complete buckets only). Trend per timeframe is bull when close > slow EMA and fast EMA (9) > slow EMA (21), bear for the opposite, otherwise neutral (unknown while warming up; needs >= 30 HTF candles). With `mtfMode: 'filter'` (default) a BUY is blocked when MTF is warming up, a timeframe is against the trend, or the 1h anchor is not bullish (`mtf_warming_up`, `mtf_against_trend`, `mtf_anchor_not_bullish`); SELL is never blocked. `score` adds to strength instead, `off` disables it.
 - **Dynamic universe**: besides the pinned (tracked) pairs, up to 12 pairs are picked every 15 min by 24h IDR volume
   (≥ Rp1.000.000.000) and spread (≤ 0.6%), with a rank buffer of 4, max 3 new pairs per update, stablecoins excluded.
   Pairs with an open paper position are always analysed. Set `universeMode: 'manual'` to analyse pinned pairs only.
@@ -205,5 +203,6 @@ Telegram messages display Asia/Jakarta (WIB). The daily P/L report is sent short
 
 - Cloudflare: integrated (build `npm run build`, deploy via `npx wrangler deploy`, production branch `main`)
 - Supabase: integrated (project "sinyalku")
+- GitHub: source of truth; a merge/push to main triggers the Cloudflare deploy and Supabase sync
 
 _Last updated after merge to main: 2026-11-13_
