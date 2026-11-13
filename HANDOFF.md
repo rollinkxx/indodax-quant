@@ -11,7 +11,7 @@ and no workaround workflow is needed. **Fix: reconnect the MCP server, then retr
 1. Call `mcp-servers` with `action: "connected"` to confirm the slugs (`git-hub`, `supabase`).
 2. Call `mcp-servers` with `action: "connect"`, `serverSlugs: ["git-hub"]` (and/or `["supabase"]`), plus a short `reason`.
 3. Retry the original tool call. Write tools (GitHub `create_or_update_file`) and `execute_sql` work again after the reconnect.
-   Verified in session 5 for both servers (commits `022afb9`, `7bd6fc0`, `31c233a` were pushed this way).
+   Verified in session 5 for both servers (commits `022afb9`, `7bd6fc0`, `31c233a` were pushed this way) and again in session 6.
 4. Updating an existing file needs its current blob SHA: read it with `get_file_contents` first.
 5. Session 2/4 fallback (only if reconnect fails): push via n8n GitHub node (`githubOAuth2Api`). Supabase through the n8n HTTP
    node is blocked (OAuth credential cannot be used in HTTP nodes), so use the Supabase MCP only.
@@ -92,6 +92,13 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
   appear after the first BUY signal.
 - Docs commits: `022afb9` HANDOFF, `7bd6fc0` TASKS, `31c233a` PROJECT_STATE, then this update.
 
+### Session 6 (n8n Instance Agent, 2026-11-13 16:30-16:40 WIB) — docs sync only; no code or DB changes
+- GitHub MCP write was denied ("Session approvals are not available") until `git-hub` was reconnected; then it worked.
+- `a80ee60` PROJECT_STATE: Telegram row now says the Settings test button works (owner confirmed 15:37 WIB), matching TASKS/HANDOFF.
+- `c2fddab` README: test count 66 → 75 (10 files, verified against `tests/`), coverage list extended (relay, PostgREST encoding,
+  chart range), documented the `indodax-proxy` relay, `supabase/functions/`, `SUPABASE_ACCESS_TOKEN` secret and the production URL.
+- Note: pushes to `main` trigger the *CI & Deploy* workflow (redeploys the same code).
+
 ## Blockers (need the human owner)
 1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
 2. ~~Login user~~ DONE: `gsdrxx@gmail.com` exists and is admin (session 4).
@@ -99,7 +106,7 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
    seen in 60/60 recent runs, but keep watching. Workers Paid is recommended (see README).
 
 ## Next steps for the next agent
-1. Keep watching `execution_logs` (expect SUCCESS each minute) and any `system_error` notifications. Relay 502 is normal now; only act if it recurs (then add retry/backoff in the edge function).
+1. Keep watching `execution_logs` (expect SUCCESS each minute) and any `system_error` notifications. The relay 502 has not recurred; only act if it does (then add retry/backoff in the edge function).
 2. Watch for the first BUY signal and the first `paper_orders` / `paper_positions` rows; verify sizing, SL/TP, fees and Telegram order notice.
 3. Owner: confirm all 9 pages show real data after login.
 4. Optional: disable public sign-ups in Supabase Auth; code-split lightweight-charts; pipeline e2e test with fake RPCs.
