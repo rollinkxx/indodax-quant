@@ -15,6 +15,8 @@ const GROUPS: { title: string; fields: Field[] }[] = [
     { key: 'rsiSellMax', label: 'RSI SELL maksimum', step: 0.1 }, { key: 'volumeMultiplier', label: 'Pengali volume', step: 0.05, hint: 'volume ≥ N × Volume MA' },
     { key: 'crossLookback', label: 'Jendela cross EMA (candle)', hint: '1 = hanya candle cross; 2 = cross boleh terjadi 1 candle sebelumnya' },
     { key: 'maxEntryExtensionPct', label: 'Jarak maks close di atas EMA lambat (%)', step: 0.1, hint: 'anti mengejar harga; 0 = nonaktif' },
+    { key: 'maxEntrySpreadPct', label: 'Spread maks saat entry (%)', step: 0.05, hint: 'BUY dilewati jika spread lebih lebar; 0 = nonaktif' },
+    { key: 'maxEntryDriftPct', label: 'Drift harga maks sejak sinyal (%)', step: 0.05, hint: 'BUY dilewati jika ask naik melebihi close sinyal; 0 = nonaktif' },
     { key: 'sellRequireConfirm', label: 'SELL wajib konfirmasi RSI + volume', bool: true, hint: 'mati = setiap cross-down langsung keluar' },
     { key: 'useTrendFilter', label: 'Filter tren (close > EMA tren)', bool: true }, { key: 'notifySignals', label: 'Kirim sinyal ke Telegram', bool: true },
     { key: 'minCandles', label: 'Minimal candle' }, { key: 'maxTickerAgeSeconds', label: 'Umur ticker maks (detik)' },
