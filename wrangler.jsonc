@@ -20,6 +20,8 @@
   //   SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
   "vars": {
     "SUPABASE_URL": "https://znikuooxiqfcicyuhqsx.supabase.co",
-    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_GTvV2X7uTGOjKZXZCy1cnA_Rv9Y3HVj"
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_GTvV2X7uTGOjKZXZCy1cnA_Rv9Y3HVj",
+    // indodax.com returns 403 to Cloudflare Workers; market data goes through this read-only relay.
+    "INDODAX_PROXY_URL": "https://znikuooxiqfcicyuhqsx.supabase.co/functions/v1/indodax-proxy"
   }
 }
