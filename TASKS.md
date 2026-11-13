@@ -2,7 +2,7 @@
 
 Legend: [x] done & verified · [~] done, unverified in production · [ ] open · [!] blocked (needs human)
 
-_Last updated: 2026-11-13 22:45 WIB (session 8, DONE except the open items below)_
+_Last updated: 2026-11-14 00:15 WIB (session 9: F4 shipped, deploy + entry gate verified in prod)_
 
 > Tooling note: if GitHub/Supabase MCP says "Session approvals are not available for this tool", reconnect the MCP server
 > (`mcp-servers` → `connect`) and retry. Details at the top of HANDOFF.md. Each write tool (`push_files`, `create_or_update_file`) needs its own reconnect.
@@ -26,11 +26,12 @@ Findings and status:
 - [x] F3 migration `20261113230000_entry_gate.sql` APPLIED automatically by the Supabase integration (verified: active config has
       maxEntrySpreadPct 0.6, maxEntryDriftPct 0.5, universeMinVolumeIdr 5e8).
 - [x] Verified: GitHub main == locally tested copy (cmp), typecheck 0 errors, 130 tests / 15 files pass, build OK. Prod `execution_logs` 10/10 SUCCESS after the push.
-- [ ] F4 Strategy page (`src/pages/Strategy.tsx`) has no fields for `maxEntrySpreadPct` / `maxEntryDriftPct` yet (they are editable only via API/DB).
-      Add two entries to the 'Aturan Sinyal' group, e.g. `{ key: 'maxEntrySpreadPct', label: 'Spread maks saat entry (%)', step: 0.05, hint: '0 = nonaktif' }`
-      and `{ key: 'maxEntryDriftPct', label: 'Drift harga maks sejak sinyal (%)', step: 0.05, hint: '0 = nonaktif' }`.
-- [ ] Confirm the GitHub Actions run for `b5e39ea` is green and the new bundle is live (not checked from this session: no Actions API access).
-- [ ] Watch for the first `skip ...: wide_spread|price_drift|stop_inside_spread` in actions and for the next BUY -> order; compare fill vs signal price.
+- [x] F4 Strategy page fields `maxEntrySpreadPct` ('Spread maks saat entry (%)') and `maxEntryDriftPct` ('Drift harga maks sejak sinyal (%)')
+      added to the 'Aturan Sinyal' group (session 9, commit `43f4f98`). Typecheck 0 errors, 130 tests / 15 files, build OK.
+- [x] Deploy verified (session 9): entry gate logged `skip pippinidr: stop_inside_spread` (exec id 667, 23:10 WIB) => `b5e39ea` is live;
+      after `43f4f98` the live bundle `index-DYmgLrX3.js` equals the local build and contains both new labels; `/api/health` 200 `liveTrading:false`.
+- [x] First entry-gate skip seen (session 9): BUY pippinidr @ 223.928 (16:10Z) skipped as `stop_inside_spread`, no order => gate works.
+- [ ] Watch for the next BUY that passes the gate -> order; compare fill vs signal price. (No new orders since session 8; 0 open positions.)
 - [ ] Known limitations (not changed, watch): 5m EMA cross-down exits can whip out of winners early; MTF `filter` blocks BUY while any TF is warming up;
       pinned pairs (xautidr, paxgidr) still emit signals although excluded from the universe; SELL signals with no position are stored but not sent;
       only 2 closed trades so far -> no statistically meaningful win rate yet (re-run `npm run backtest` and review after >= 30 trades).
@@ -50,7 +51,8 @@ Findings and status:
 - [x] Indicators + strategy + data-quality gate
 - [x] Multi-timeframe filter (15m/1h from 5m, EMA 9/21) — deployed session 7
 - [x] Dynamic pair universe (volume/spread ranking, every 15 min) — deployed session 7, populating
-- [ ] Watch CPU/duration with up to ~17 pairs on Workers Free (10 ms CPU); fall back to `universeMode: 'manual'` if runs fail
+- [ ] Watch CPU/duration with up to ~17 pairs on Workers Free (10 ms CPU); fall back to `universeMode: 'manual'` if runs fail.
+      Session 9 (3 h to 00:09 WIB): 180/180 SUCCESS, wall time avg 11.5 s / max 21.1 s (was 5.6 s / 11.3 s before the universe grew). No CPU-limit errors.
 - [x] Paper engine + risk management + kill switch (long-only; SELL = exit signal)
 - [x] REST API with Supabase JWT auth and admin role
 - [x] Telegram notifications (signals, orders, SL/TP, daily P/L, errors)
