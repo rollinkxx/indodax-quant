@@ -2,7 +2,10 @@
 
 Legend: [x] done & verified · [~] done, unverified in production · [ ] open · [!] blocked (needs human)
 
-_Last updated: 2026-11-13 15:40 WIB (session 5, read-only verification)_
+_Last updated: 2026-11-13 15:45 WIB (session 5)_
+
+> Tooling note: if GitHub/Supabase MCP says "Session approvals are not available for this tool", reconnect the MCP server
+> (`mcp-servers` → `connect`) and retry. Details at the top of HANDOFF.md.
 
 ## Database (Supabase `sinyalku`)
 - [x] Schema, indexes, constraints, RLS (`20261113000001_init.sql`)
@@ -20,7 +23,7 @@ _Last updated: 2026-11-13 15:40 WIB (session 5, read-only verification)_
 - [x] Telegram notifications (signals, orders, SL/TP, daily P/L, errors)
 - [x] Cron pipeline end-to-end in production (last 60 runs: 60/60 SUCCESS, avg 5.6 s, 2026-11-13 15:32 WIB)
 - [x] INDODAX relay via Supabase Edge Function `indodax-proxy` (Cloudflare IPs get 403 from INDODAX)
-- [ ] Watch relay 502 "Maximum number of redirects" (incident 13:47 WIB, ids 103-104 PARTIAL, self-recovered); add retry/backoff if it repeats
+- [x] Relay 502 "Maximum number of redirects" (13:47 WIB, ids 103-104 PARTIAL) self-recovered; owner confirms it has not recurred. Re-open with retry/backoff only if it repeats.
 
 ## Frontend
 - [x] Login
@@ -39,7 +42,7 @@ _Last updated: 2026-11-13 15:40 WIB (session 5, read-only verification)_
 - [x] Production URL: https://indodax-quant.sinyalku.workers.dev (health 200, `liveTrading:false`, re-verified session 5)
 - [x] First trading signals confirmed in production (2 SELL at 2026-11-13 15:20 WIB: ethidr, solidr; strategy `ema_rsi_volume`, strength 90)
 - [x] Telegram delivery confirmed: signal, worker_status and system_error notifications all `SENT`
-- [ ] Telegram test from Settings page (owner)
+- [x] Telegram test from Settings page works (owner confirmed 2026-11-13 15:37 WIB)
 - [ ] Optional: Workers Paid plan (Free = 10 ms CPU per invocation; no failures seen so far)
 - [x] Paper trading Start pressed by admin `gsdrxx@gmail.com` at 2026-11-13 13:00 WIB (status RUNNING, equity Rp10.000.000)
 - [ ] Verify first BUY signal → paper order/position (sizing, SL/TP, fees, Telegram order notice)
