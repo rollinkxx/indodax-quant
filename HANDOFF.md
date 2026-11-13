@@ -18,22 +18,32 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
 - Docs: PROJECT_STATE.md, TASKS.md, HANDOFF.md.
 - Commit: see `git log` (message starts with `feat(web,test,ci): session 2`).
 
+### Session 3 (n8n Instance Agent, 2026-11-13 12:00-12:30 WIB)
+- CI fix: Node 22 -> Node 24 (`28fd233`). Run 43370439659: deploy + secrets sync + smoke test OK.
+- Production cron ran, but INDODAX returned **HTTP 403 to Cloudflare Workers** (works from other IPs).
+- Fix (owner approved): read-only relay via Supabase Edge Function `indodax-proxy` in project `sinyalku`.
+  Commits `e144e36` (edge function, GET-only, public endpoint allow-list), `c9c5654` (`worker/src/relay.ts`),
+  `b25ae03` (3 tests), `b3af3b1` (env), `f903382` (index wraps fetch), `59350e6` (INDODAX_PROXY_URL in wrangler),
+  `dd874e1` (CI deploys edge function with `SUPABASE_ACCESS_TOKEN`, relay smoke test).
+- Tests: 8 files / 69 tests pass; build OK. CI run 43372250003 (workflow_dispatch, `dd874e1`): all steps green,
+  incl. edge function deploy.
+- Production verified: relay `GET ...functions/v1/indodax-proxy?path=/api/ticker/btcidr` = 200.
+  `execution_logs` id 24 (05:30Z) = **SUCCESS**: 438 pairs, 450 tickers, 2500 trades, 8314 candles stored,
+  24h 1m backfill per pair, data quality `ok` for all 5 pairs, paper account STOPPED, equity Rp10.000.000.
+- Telegram: earlier run (id 7) reported notifications sent=1 failed=0 -> Bot API delivery works.
+- Docs commits: `15d542b` TASKS, then PROJECT_STATE and HANDOFF (see `git log`).
+
 ## Blockers (need the human owner)
-1. **Cloudflare access**: no agent tool has Cloudflare credentials. Add GitHub repo secrets
-   `CLOUDFLARE_API_TOKEN` (template "Edit Cloudflare Workers") and `CLOUDFLARE_ACCOUNT_ID`, then run the
-   *CI & Deploy* workflow. Without them the deploy job is skipped with a warning.
-2. **Worker secrets**: add GitHub secrets `SUPABASE_SERVICE_ROLE_KEY` (Supabase → Project Settings → API Keys,
-   secret key) and `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`. The workflow syncs them into the Worker.
-3. **Login user**: create `gsdrxx@gmail.com` in Supabase Auth (Authentication → Users → Add user).
-4. **Plan**: Workers Free has a 10 ms CPU limit per invocation; the per-minute job may exceed it. Workers
+1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
+2. **Login user** (confirm it exists): create `gsdrxx@gmail.com` in Supabase Auth (Authentication → Users → Add user).
+3. **Plan**: Workers Free has a 10 ms CPU limit per invocation; the per-minute job may exceed it. Workers
    Paid is recommended (see README).
 
 ## Next steps for the next agent
-1. Check GitHub Actions run of the latest commit. If deploy succeeded, open the workers.dev URL.
-2. In Supabase run: `select status, started_at, error from execution_logs order by started_at desc limit 10;`
-   Expect one row per minute with SUCCESS/PARTIAL.
-3. Check `candles` and `indicators` fill (first run backfills 24h of 1m candles).
-4. Fix any production error found in `execution_logs.error`, add a test, commit, update these docs.
+1. Watch `execution_logs` for a few hours: expect SUCCESS every minute; check `duration_ms` and CPU limit errors.
+2. Confirm signals appear in `signals` after 5m candles close (EMA cross + RSI + volume).
+3. Confirm login works for `gsdrxx@gmail.com` and all 9 pages show real data.
+4. Send Telegram test from Settings.
 5. Paper trading must stay STOPPED until the administrator presses Start.
 
 ## Rules
@@ -46,5 +56,3 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
 - Pushed via a temporary n8n webhook workflow + GitHub node (GitHub MCP write tools were blocked: "Session approvals are not available").
 - One commit per file on `main`. First: `23d11e9` (.github/workflows/ci-deploy.yml). Last code commit: `ffeb51d` (tests/strategy.test.ts). Docs: `f5aa088` HANDOFF, `b449684` PROJECT_STATE, `acbf548` README, `72949a0` TASKS.
 - Verified locally before push: typecheck OK, vitest 7 files / 66 tests pass, vite build OK.
-- Not yet done: Cloudflare deploy (needs repo secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID). CI deploy job will fail until they exist.
-- Not yet done: Supabase Auth user for gsdrxx@gmail.com (auth.users is empty). Paper trading remains STOPPED.
