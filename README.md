@@ -72,7 +72,7 @@ worker/src/     Cloudflare Worker (index, api, pipeline, indodax, db, auth, tele
 shared/         Pure, tested logic (indicators, candles, strategy, paper maths)
 src/            React dashboard (9 pages + login)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
-tests/          Vitest suites (91 tests)
+tests/          Vitest suites (66 tests)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
 ```
 
@@ -149,7 +149,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 ## Tests
 
 ```bash
-npm test                 # 91 unit + integration tests (fake Supabase / INDODAX)
+npm test                 # 66 unit + integration tests (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
 ```
