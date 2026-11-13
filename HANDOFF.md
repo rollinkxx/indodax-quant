@@ -46,6 +46,11 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
 - CI: run 43372658507 (`817f4fb`) green. `ci-deploy.yml` now prints the deployed URL as a `::notice` annotation (commit `6c3423d`).
 - Local: vitest 8 files / 69 tests pass.
 - Commits (pushed with the n8n GitHub node; GitHub MCP writes still blocked: "Session approvals are not available"): `6c3423d` CI, `fd9839f` TASKS, `3d09651` PROJECT_STATE, then HANDOFF.
+- Bug fix (owner screenshot): Overview showed `HTTP 400 ... portfolio_snapshots ... code 22007`. Cause: `reset_at`
+  (`...+00:00`) was put unencoded in the PostgREST URL, so `+` became a space. Fix: `Db.encodeQuery` encodes `+`
+  for all `select`/`update` calls (`02148f0`), test `tests/db.test.ts` (`25b6a6b`). Also `ago()` now prints
+  `detik/menit/jam/hari` instead of the ambiguous `d/m/j/h` (`154d85b`). Tests: 9 files / 72 pass. Deployed (new bundle live).
+  CI: run 43375451747 (`154d85b`) green; run for `25b6a6b` failed by design (test pushed before the fix).
 
 ## Blockers (need the human owner)
 1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
