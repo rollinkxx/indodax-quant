@@ -4,6 +4,7 @@ import {
   type IChartApi, type Time, type UTCTimestamp,
 } from 'lightweight-charts';
 import { TZ } from '../lib/format';
+import { padRange } from '../lib/chartRange';
 
 const fmtTime = (t: Time) => {
   const d = new Date((t as number) * 1000);
@@ -26,6 +27,12 @@ function baseChart(el: HTMLElement, height: number): IChartApi {
     crosshair: { mode: 0 },
   });
 }
+
+const paddedAutoscale = (original: () => { priceRange: { minValue: number; maxValue: number } | null } | null) => {
+  const res = original();
+  if (res?.priceRange) res.priceRange = padRange(res.priceRange.minValue, res.priceRange.maxValue);
+  return res;
+};
 
 export interface CandlePoint { time: number; open: number; high: number; low: number; close: number; volume: number }
 export interface LinePoint { time: number; value: number }
@@ -75,7 +82,9 @@ export function AreaChart({ data, height = 260, color = '#10b981' }: { data: Lin
   useEffect(() => {
     if (!ref.current) return;
     const chart = baseChart(ref.current, height);
-    const s = chart.addSeries(AreaSeries, { lineColor: color, topColor: color + '55', bottomColor: color + '05', lineWidth: 2 });
+    const s = chart.addSeries(AreaSeries, { lineColor: color, topColor: color + '55', bottomColor: color + '05', lineWidth: 2,
+      autoscaleInfoProvider: paddedAutoscale,
+    });
     s.setData(data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
     chart.timeScale().fitContent();
     return () => chart.remove();
