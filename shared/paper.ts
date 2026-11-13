@@ -23,6 +23,15 @@ export function sellFillPrice(bid: number, slippageBps: number): number {
   return bid * (1 - slippageBps / 10_000);
 }
 
+/** Thin pairs fill worse than the flat assumption: scale slippage by 24h IDR volume tier. */
+export function dynamicSlippageBps(base: number, volIdr: number | null | undefined): number {
+  if (volIdr === null || volIdr === undefined || !Number.isFinite(volIdr) || volIdr <= 0) return base * 4;
+  if (volIdr < 5e8) return base * 4;
+  if (volIdr < 2e9) return base * 2.5;
+  if (volIdr < 1e10) return base * 1.5;
+  return base;
+}
+
 export function feeFor(notional: number, feePct: number): number {
   return round(notional * feePct / 100, 2);
 }
@@ -87,6 +96,32 @@ export function positionSize(i: SizingInput): SizingResult {
 
 export type ExitReason = 'STOP_LOSS' | 'TAKE_PROFIT';
 
+/** Ratchets the stop up (never down) once price is far enough above entry. Returns the new stop or null. */
+export function trailingStop(
+  pos: { entry_price: number | string; stop_loss: number | string | null },
+  bid: number,
+  atrValue: number | null,
+  p: Pick<StrategyParams, 'trailingStopEnabled' | 'trailActivationAtr' | 'trailDistanceAtr'>,
+): number | null {
+  if (!p.trailingStopEnabled || atrValue === null || !(atrValue > 0)) return null;
+  const entry = Number(pos.entry_price);
+  if (!(bid >= entry + p.trailActivationAtr * atrValue)) return null;
+  const candidate = bid - p.trailDistanceAtr * atrValue;
+  const current = pos.stop_loss === null ? 0 : Number(pos.stop_loss);
+  return candidate > current && candidate < bid ? candidate : null;
+}
+
+/** True when the position has been open longer than the configured time stop. */
+export function timeStopHit(openedAtMs: number | null, nowMs: number, p: Pick<StrategyParams, 'timeStopMinutes'>): boolean {
+  if (!p.timeStopMinutes || p.timeStopMinutes <= 0 || openedAtMs === null || !Number.isFinite(openedAtMs)) return false;
+  return nowMs - openedAtMs >= p.timeStopMinutes * 60_000;
+}
+
+/** Total open cost basis (plus a candidate) must stay under maxTotalExposurePct of equity. */
+export function exposureAllows(openCost: number, newCost: number, equity: number, p: Pick<StrategyParams, 'maxTotalExposurePct'>): boolean {
+  return equity > 0 && openCost + newCost <= equity * p.maxTotalExposurePct / 100;
+}
+
 export function exitReason(pos: { stop_loss: number | string | null; take_profit: number | string | null }, bid: number): ExitReason | null {
   const sl = pos.stop_loss === null ? null : Number(pos.stop_loss);
   const tp = pos.take_profit === null ? null : Number(pos.take_profit);
@@ -113,6 +148,7 @@ export interface RiskState {
   drawdownPct: number;
   dailyPnlPct: number;
   killSwitch: boolean;
+  dailyLossHit: boolean;
   blockEntries: boolean;
   reasons: string[];
 }
@@ -127,7 +163,7 @@ export function riskState(i: RiskInput): RiskState {
   if (killSwitch) reasons.push(`max drawdown ${drawdownPct.toFixed(2)}% >= ${i.params.maxDrawdownPct}%`);
   const dailyBlock = -dailyPnlPct >= i.params.dailyLossLimitPct;
   if (dailyBlock) reasons.push(`daily loss ${(-dailyPnlPct).toFixed(2)}% >= ${i.params.dailyLossLimitPct}%`);
-  return { drawdownPct, dailyPnlPct, killSwitch, blockEntries: killSwitch || dailyBlock, reasons };
+  return { drawdownPct, dailyPnlPct, killSwitch, dailyLossHit: dailyBlock, blockEntries: killSwitch || dailyBlock, reasons };
 }
 
 export interface ClosedTrade {
