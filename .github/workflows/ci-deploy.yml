@@ -67,6 +67,7 @@ jobs:
           npx wrangler deploy 2>&1 | tee deploy.log
           URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | head -1)
           echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Deployed URL::$URL"
       - name: Sync Worker secrets
         if: steps.check.outputs.skip != 'true'
         env:
