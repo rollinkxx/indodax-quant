@@ -2,14 +2,15 @@
 
 Legend: [x] done & verified · [~] done, unverified in production · [ ] open · [!] blocked (needs human)
 
-_Last updated: 2026-11-13 22:35 WIB (session 8, IN PROGRESS)_
+_Last updated: 2026-11-13 22:45 WIB (session 8, DONE except the open items below)_
 
 > Tooling note: if GitHub/Supabase MCP says "Session approvals are not available for this tool", reconnect the MCP server
-> (`mcp-servers` → `connect`) and retry. Details at the top of HANDOFF.md.
+> (`mcp-servers` → `connect`) and retry. Details at the top of HANDOFF.md. Each write tool (`push_files`, `create_or_update_file`) needs its own reconnect.
+> `push_files` needs the FULL file content; to verify a push, `git clone` the repo in the sandbox and `cmp` against the locally tested copy.
 
 ## SESSION 8 — forensic audit of the buy/sell/hold engine (22:20-22:45 WIB)
 Verdict: signal logic (EMA9/21 cross + RSI band + volume + EMA50 trend + 15m/1h MTF filter, long-only, SELL = exit) is sound and
-already hardened (see docs/STRATEGY_HARDENING.md). The weak point is EXECUTION QUALITY at entry.
+already hardened (see docs/STRATEGY_HARDENING.md). The weak point was EXECUTION QUALITY at entry.
 
 Evidence (prod, Supabase `sinyalku`): 21 signals (2 BUY / 19 SELL), 2 positions. `nearidr` +Rp37.551 (TAKE_PROFIT after 2 h).
 `anoaidr` BUY 15:20Z filled Rp234.330 (ask 233.397 + 40 bps dynamic slippage) on a **1.2% spread** (bid 230.633, ask 233.397);
@@ -18,21 +19,28 @@ Cause: no entry-time check of spread / price drift / stop-vs-bid. Spread filter 
 Live config also had `universeMinVolumeIdr` = 1e8 (code default 1e9), letting thin pairs (anoaidr 24h vol Rp362jt, slippage x4) in.
 
 Findings and status:
-- [~] F1 entry gate `entryGate()` (shared/paper.ts): skip BUY when spread > `maxEntrySpreadPct` (0.6), ask > signal close by `maxEntryDriftPct` (0.5),
-      or bid <= stop / spread > 50% of stop distance (`stop_inside_spread`). Wired in worker/src/pipeline.ts before sizing. Tests in tests/entryGate.test.ts.
-- [~] F2 sizing includes expected exit slippage (`exitSlippageBps` in positionSize).
-- [~] F3 migration `20261113230000_entry_gate.sql`: merges new params into the active config and raises `universeMinVolumeIdr` to >= 5e8.
-- [~] F4 Strategy page fields for the two new params.
-- [ ] (PLAN, code push pending at time of this note) If shared/paper.ts has no `entryGate`, the code commit has NOT landed yet: re-implement F1-F4 as described above and run `npm run typecheck && npm test && npm run build` (expect 130 tests in 15 files).
-- [ ] After deploy: verify `/api/health`, runs SUCCESS, and that `execution_logs.steps.paper_trading.info.actions` shows `skip <pair>: wide_spread|price_drift|stop_inside_spread` for wide quotes.
-- [ ] Known limitations (not changed, watch): 5m EMA cross-down exits can whipsaw out of winners; MTF `filter` blocks BUY on any warming-up TF;
-      pinned pairs (xautidr, paxgidr) still emit signals although excluded from the universe; SELL signals with no position are stored but not sent.
+- [x] F1 entry gate `entryGate()` (shared/paper.ts): skip BUY when spread > `maxEntrySpreadPct` (0.6), ask > signal close by `maxEntryDriftPct` (0.5),
+      or bid <= stop / spread > 50% of stop distance (`stop_inside_spread`). Wired in worker/src/pipeline.ts before sizing. Skips show in
+      `execution_logs.steps.paper_trading.info.actions` as `skip <pair>: wide_spread|price_drift|stop_inside_spread|bad_quote`. Tests: tests/entryGate.test.ts.
+- [x] F2 sizing includes expected exit slippage (`exitSlippageBps` in positionSize, passed from the pipeline).
+- [x] F3 migration `20261113230000_entry_gate.sql` APPLIED automatically by the Supabase integration (verified: active config has
+      maxEntrySpreadPct 0.6, maxEntryDriftPct 0.5, universeMinVolumeIdr 5e8).
+- [x] Verified: GitHub main == locally tested copy (cmp), typecheck 0 errors, 130 tests / 15 files pass, build OK. Prod `execution_logs` 10/10 SUCCESS after the push.
+- [ ] F4 Strategy page (`src/pages/Strategy.tsx`) has no fields for `maxEntrySpreadPct` / `maxEntryDriftPct` yet (they are editable only via API/DB).
+      Add two entries to the 'Aturan Sinyal' group, e.g. `{ key: 'maxEntrySpreadPct', label: 'Spread maks saat entry (%)', step: 0.05, hint: '0 = nonaktif' }`
+      and `{ key: 'maxEntryDriftPct', label: 'Drift harga maks sejak sinyal (%)', step: 0.05, hint: '0 = nonaktif' }`.
+- [ ] Confirm the GitHub Actions run for `b5e39ea` is green and the new bundle is live (not checked from this session: no Actions API access).
+- [ ] Watch for the first `skip ...: wide_spread|price_drift|stop_inside_spread` in actions and for the next BUY -> order; compare fill vs signal price.
+- [ ] Known limitations (not changed, watch): 5m EMA cross-down exits can whip out of winners early; MTF `filter` blocks BUY while any TF is warming up;
+      pinned pairs (xautidr, paxgidr) still emit signals although excluded from the universe; SELL signals with no position are stored but not sent;
+      only 2 closed trades so far -> no statistically meaningful win rate yet (re-run `npm run backtest` and review after >= 30 trades).
 
 ## Database (Supabase `sinyalku`)
 - [x] Schema, indexes, constraints, RLS (`20261113000001_init.sql`)
 - [x] RPCs: begin_run/finish_run, ingest_market, save_analysis, paper_open/close_position, paper_set_status, paper_reset_account, claim/complete_notifications, retention (`..._functions.sql`)
 - [x] Lock release fix (`..._fix_lock_release.sql`)
 - [x] MTF + dynamic universe migration (`20261113000004_mtf_universe.sql`, applied session 7)
+- [x] Strategy hardening migration (`20261113150000_strategy_hardening.sql`) and entry gate migration (`20261113230000_entry_gate.sql`, session 8)
 - [x] Supabase Auth user `gsdrxx@gmail.com` exists, admin (verified session 4)
 - [ ] Optional: disable public sign-ups in Supabase Auth
 
@@ -46,7 +54,7 @@ Findings and status:
 - [x] Paper engine + risk management + kill switch (long-only; SELL = exit signal)
 - [x] REST API with Supabase JWT auth and admin role
 - [x] Telegram notifications (signals, orders, SL/TP, daily P/L, errors)
-- [x] Cron pipeline end-to-end in production (last 60 runs: 60/60 SUCCESS, avg 5.6 s, 2026-11-13 15:32 WIB; 119/120 in the 2 h before session 8)
+- [x] Cron pipeline end-to-end in production (119/120 SUCCESS in the 2 h before session 8; the one non-SUCCESS is historical)
 - [x] INDODAX relay via Supabase Edge Function `indodax-proxy` (Cloudflare IPs get 403 from INDODAX)
 - [x] Relay 502 "Maximum number of redirects" (13:47 WIB, ids 103-104 PARTIAL) self-recovered; owner confirms it has not recurred. Re-open with retry/backoff only if it repeats.
 
@@ -56,7 +64,7 @@ Findings and status:
 - [ ] Optional: code-split lightweight-charts to reduce bundle size
 
 ## Quality
-- [x] Unit/integration tests (123 pass, 14 files before session 8)
+- [x] Unit/integration tests (130 pass, 15 files after session 8)
 - [x] Live INDODAX verification script
 - [x] Pipeline end-to-end test with fake Supabase RPCs (`tests/pipeline.test.ts`, session 7)
 - [x] Offline backtest `scripts/backtest.ts` (old rules vs live params)
@@ -66,7 +74,7 @@ Findings and status:
 - [x] GitHub secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SUPABASE_ACCESS_TOKEN
 - [x] Deploy run 43372250003 green; `/api/health` smoke test OK; cron runs every minute
 - [x] Production URL: https://indodax-quant.sinyalku.workers.dev (health 200, `liveTrading:false`, re-verified session 5)
-- [x] First trading signals confirmed in production (2 SELL at 2026-11-13 15:20 WIB: ethidr, solidr; strategy `ema_rsi_volume`, strength 90)
+- [x] First trading signals confirmed in production (2 SELL at 2026-11-13 15:20 WIB: ethidr, solidr)
 - [x] Telegram delivery confirmed: signal, worker_status and system_error notifications all `SENT`
 - [x] Telegram test from Settings page works (owner confirmed 2026-11-13 15:37 WIB)
 - [ ] Optional: Workers Paid plan (Free = 10 ms CPU per invocation; no failures seen so far)
