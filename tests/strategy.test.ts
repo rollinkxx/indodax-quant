@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDataQuality, DEFAULT_PARAMS, evaluateSignal, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
+import { checkDataQuality, DEFAULT_PARAMS, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
@@ -36,6 +36,51 @@ describe('evaluateSignal', () => {
   });
   it('returns null when indicators are not warmed up', () => {
     expect(evaluateSignal(row({ rsi14: null }), row({}), 50)).toBeNull();
+  });
+});
+
+describe('evaluateSignalWindow (crossLookback)', () => {
+  const below = row({ ema9: 99, ema21: 100 });
+  const above = (o: Partial<IndicatorRow> = {}) => row({ ema9: 101, ema21: 100, ...o });
+  const weakVol = 5; // < 1.2 x volMa20 (10)
+  const goodVol = 15;
+
+  it('fires on the cross candle itself (same as legacy)', () => {
+    const d = evaluateSignalWindow([below, above()], [0, goodVol]);
+    expect(d?.side).toBe('BUY');
+    expect(d!.reasons[0]).toBe('EMA9 crossed above EMA21');
+  });
+  it('fires 2 candles after the cross when filters only line up later', () => {
+    const d = evaluateSignalWindow([below, above(), above(), above()], [0, weakVol, weakVol, goodVol]);
+    expect(d?.side).toBe('BUY');
+    expect(d!.reasons[0]).toContain('2 candle(s) ago');
+    expect(d!.strength).toBe(65); // 60 - 2*5 + 15 (MACD)
+  });
+  it('does not fire when the cross is older than the window', () => {
+    const rows = [below, above(), above(), above(), above()];
+    expect(evaluateSignalWindow(rows, [0, weakVol, weakVol, weakVol, goodVol])).toBeNull();
+    expect(evaluateSignalWindow(rows, [0, weakVol, weakVol, weakVol, goodVol], { ...DEFAULT_PARAMS, crossLookback: 4 })?.side).toBe('BUY');
+  });
+  it('emits only one BUY per cross (no repeat on later candles)', () => {
+    expect(evaluateSignalWindow([below, above(), above()], [0, goodVol, goodVol])).toBeNull();
+    expect(evaluateSignalWindow([below, above({ rsi14: 75 }), above()], [0, goodVol, goodVol])?.side).toBe('BUY');
+  });
+  it('ignores a cross if EMA fast dipped back below inside the window', () => {
+    expect(evaluateSignalWindow([below, above(), below, above()], [0, weakVol, weakVol, goodVol])?.reasons[0]).toBe('EMA9 crossed above EMA21');
+    expect(evaluateSignalWindow([below, above(), row({ ema9: 99.5, ema21: 100 }), row({ ema9: 99.8, ema21: 100 })], [0, weakVol, weakVol, goodVol])).toBeNull();
+  });
+  it('crossLookback = 1 keeps the strict fresh-cross behaviour', () => {
+    expect(evaluateSignalWindow([below, above(), above()], [0, weakVol, goodVol], { ...DEFAULT_PARAMS, crossLookback: 1 })).toBeNull();
+  });
+  it('still applies RSI / trend / volume filters on the signal candle', () => {
+    expect(evaluateSignalWindow([below, above(), above({ rsi14: 75 })], [0, weakVol, goodVol])).toBeNull();
+    expect(evaluateSignalWindow([below, above(), above({ ema50: 110 })], [0, weakVol, goodVol])).toBeNull();
+    expect(evaluateSignalWindow([below, above(), above()], [0, weakVol, weakVol])).toBeNull();
+  });
+  it('validates crossLookback', () => {
+    expect(validateParams({ crossLookback: 0 })[0]).toMatch(/between/);
+    expect(validateParams({ crossLookback: 2.5 }).join()).toMatch(/integer/);
+    expect(mergeParams({}).crossLookback).toBe(3);
   });
 });
 
