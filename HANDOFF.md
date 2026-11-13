@@ -33,16 +33,30 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
 - Telegram: earlier run (id 7) reported notifications sent=1 failed=0 -> Bot API delivery works.
 - Docs commits: `15d542b` TASKS, then PROJECT_STATE and HANDOFF (see `git log`).
 
+### Session 4 (n8n Instance Agent, 2026-11-13 12:40-12:55 WIB)
+- Real Worker URL confirmed by owner: `https://indodax-quant.sinyalku.workers.dev`.
+  `GET /` = 200 (dashboard HTML), `GET /api/health` = 200 `{"ok":true,"liveTrading":false}`.
+  The old documented URL (`*.rollinkxx.workers.dev`) returns Cloudflare 1042. Do not use it.
+- `execution_logs` ids 24-44 (05:30Z-05:50Z): **21/21 SUCCESS**, avg ~5.5 s wall time, no errors.
+  Ids 20-23 were PARTIAL (relay 404 before edge function deploy), historical only.
+- 5m candles: last closed candle lags ~10 min behind now (05:40Z at 05:50Z), built after close.
+- `trading_signals` = 0 so far (no EMA cross + RSI + volume condition yet).
+- Paper account STOPPED, cash Rp10.000.000, kill_switch=false. `notification_logs` = 1.
+- Login: `gsdrxx@gmail.com` exists in Supabase Auth (confirmed) and is admin.
+- CI: run 43372658507 (`817f4fb`) green. `ci-deploy.yml` now prints the deployed URL as a `::notice` annotation (commit `6c3423d`).
+- Local: vitest 8 files / 69 tests pass.
+- Commits (pushed with the n8n GitHub node; GitHub MCP writes still blocked: "Session approvals are not available"): `6c3423d` CI, `fd9839f` TASKS, `3d09651` PROJECT_STATE, then HANDOFF.
+
 ## Blockers (need the human owner)
 1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
-2. **Login user** (confirm it exists): create `gsdrxx@gmail.com` in Supabase Auth (Authentication → Users → Add user).
+2. ~~Login user~~ DONE: `gsdrxx@gmail.com` exists and is admin (session 4).
 3. **Plan**: Workers Free has a 10 ms CPU limit per invocation; the per-minute job may exceed it. Workers
    Paid is recommended (see README).
 
 ## Next steps for the next agent
 1. Watch `execution_logs` for a few hours: expect SUCCESS every minute; check `duration_ms` and CPU limit errors.
-2. Confirm signals appear in `signals` after 5m candles close (EMA cross + RSI + volume).
-3. Confirm login works for `gsdrxx@gmail.com` and all 9 pages show real data.
+2. Confirm signals appear in `trading_signals` after 5m candles close (EMA cross + RSI + volume).
+3. Owner: log in at https://indodax-quant.sinyalku.workers.dev and check all 9 pages show real data.
 4. Send Telegram test from Settings.
 5. Paper trading must stay STOPPED until the administrator presses Start.
 
