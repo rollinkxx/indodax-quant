@@ -200,3 +200,10 @@ are kept.
 
 Cloudflare cron runs in UTC and every timestamp is stored as `timestamptz` (UTC). The dashboard and
 Telegram messages display Asia/Jakarta (WIB). The daily P/L report is sent shortly after 00:00 WIB.
+
+## Integrations
+
+- Cloudflare: integrated (build `npm run build`, deploy via `npx wrangler deploy`, production branch `main`)
+- Supabase: integrated (project "sinyalku")
+
+_Last updated after merge to main: 2026-11-13_
