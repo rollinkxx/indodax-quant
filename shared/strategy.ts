@@ -16,6 +16,10 @@ export interface StrategyParams {
   useTrendFilter: boolean;
   /** BUY may fire up to N-1 completed candles after the EMA cross (1 = only on the cross candle itself). */
   crossLookback: number;
+  /** BUY is skipped when close is more than N% above the slow EMA (anti chasing). 0 = disabled. */
+  maxEntryExtensionPct: number;
+  /** false = every fresh EMA cross-down exits/signals SELL; true = RSI and volume must confirm too. */
+  sellRequireConfirm: boolean;
   atrPeriod: number;
   atrStopMultiplier: number;
   atrTakeProfitMultiplier: number;
@@ -24,6 +28,18 @@ export interface StrategyParams {
   riskPerTradePct: number;
   maxPositionPct: number;
   maxOpenPositions: number;
+  /** Cap on total open cost basis as % of equity. */
+  maxTotalExposurePct: number;
+  /** Trailing stop: arms after price is `trailActivationAtr` x ATR above entry, then trails `trailDistanceAtr` x ATR below price. */
+  trailingStopEnabled: boolean;
+  trailActivationAtr: number;
+  trailDistanceAtr: number;
+  /** Close a position held longer than N minutes (0 = disabled). */
+  timeStopMinutes: number;
+  /** Close all open positions when the daily loss limit is hit (otherwise it only blocks new entries). */
+  closeOnDailyLoss: boolean;
+  /** Scale slippage up for thin (low 24h IDR volume) pairs. */
+  dynamicSlippage: boolean;
   feePct: number;
   slippageBps: number;
   dailyLossLimitPct: number;
@@ -52,7 +68,9 @@ export type UniverseMode = 'manual' | 'dynamic';
 export const MTF_MODES: MtfMode[] = ['off', 'filter', 'score'];
 export const UNIVERSE_MODES: UniverseMode[] = ['manual', 'dynamic'];
 /** Stablecoins move with USD/IDR, not with crypto momentum: excluded from the dynamic universe by default. */
-export const DEFAULT_UNIVERSE_EXCLUDE = ['usdtidr', 'usdcidr', 'busdidr', 'daiidr', 'tusdidr', 'fdusdidr', 'pyusdidr', 'usdeidr'];
+export const DEFAULT_UNIVERSE_EXCLUDE = ['usdtidr', 'usdcidr', 'busdidr', 'daiidr', 'tusdidr', 'fdusdidr', 'pyusdidr', 'usdeidr',
+  // gold-backed tokens track XAU/USD, not crypto momentum
+  'xautidr', 'paxgidr'];
 
 export const DEFAULT_PARAMS: StrategyParams = {
   timeframe: '5m',
@@ -61,12 +79,14 @@ export const DEFAULT_PARAMS: StrategyParams = {
   emaTrend: 50,
   rsiPeriod: 14,
   rsiBuyMin: 50,
-  rsiBuyMax: 70,
+  rsiBuyMax: 65,
   rsiSellMax: 50,
   volumeMaPeriod: 20,
   volumeMultiplier: 1.2,
   useTrendFilter: true,
-  crossLookback: 3,
+  crossLookback: 2,
+  maxEntryExtensionPct: 1.5,
+  sellRequireConfirm: false,
   atrPeriod: 14,
   atrStopMultiplier: 1.5,
   atrTakeProfitMultiplier: 3,
@@ -74,7 +94,14 @@ export const DEFAULT_PARAMS: StrategyParams = {
   fallbackTakeProfitPct: 4,
   riskPerTradePct: 1,
   maxPositionPct: 25,
-  maxOpenPositions: 3,
+  maxOpenPositions: 4,
+  maxTotalExposurePct: 60,
+  trailingStopEnabled: true,
+  trailActivationAtr: 1.5,
+  trailDistanceAtr: 1,
+  timeStopMinutes: 720,
+  closeOnDailyLoss: true,
+  dynamicSlippage: true,
   feePct: 0.3,
   slippageBps: 10,
   dailyLossLimitPct: 3,
@@ -96,7 +123,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   notifyUniverse: true,
 };
 
-const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse']);
+const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
 
 type NumKey = { [K in keyof StrategyParams]: StrategyParams[K] extends number ? K : never }[keyof StrategyParams];
 
@@ -111,6 +138,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   volumeMaPeriod: [2, 100, true],
   volumeMultiplier: [0, 10],
   crossLookback: [1, 10, true],
+  maxEntryExtensionPct: [0, 20],
   atrPeriod: [2, 50, true],
   atrStopMultiplier: [0.1, 10],
   atrTakeProfitMultiplier: [0.1, 20],
@@ -119,6 +147,10 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   riskPerTradePct: [0.05, 10],
   maxPositionPct: [1, 100],
   maxOpenPositions: [1, 10, true],
+  maxTotalExposurePct: [5, 100],
+  trailActivationAtr: [0.1, 20],
+  trailDistanceAtr: [0.1, 20],
+  timeStopMinutes: [0, 20160, true],
   feePct: [0, 2],
   slippageBps: [0, 500],
   dailyLossLimitPct: [0.1, 50],
@@ -282,7 +314,8 @@ function buyFiltersOk(r: WarmRow, volume: number, p: StrategyParams): boolean {
   const trendOk = !p.useTrendFilter || (r.ema50 !== null && r.close > r.ema50);
   const rsiOk = r.rsi14 >= p.rsiBuyMin && r.rsi14 <= p.rsiBuyMax;
   const volOk = r.volMa20 > 0 && volume >= r.volMa20 * p.volumeMultiplier;
-  return trendOk && rsiOk && volOk;
+  const extOk = p.maxEntryExtensionPct <= 0 || r.ema21 <= 0 || (r.close - r.ema21) / r.ema21 * 100 <= p.maxEntryExtensionPct;
+  return trendOk && rsiOk && volOk && extOk;
 }
 
 /**
@@ -290,9 +323,9 @@ function buyFiltersOk(r: WarmRow, volume: number, p: StrategyParams): boolean {
  * `rows` and `volumes` are aligned and ascending; the last element is the signal candle.
  *
  * BUY: EMA fast crossed above EMA slow within the last `crossLookback` candles, stayed above since,
- * and the other filters (trend, RSI, volume) pass on the last candle. To emit exactly one BUY per
+ * and the other filters (trend, RSI, volume, not stretched above EMA slow) pass on the last candle. To emit exactly one BUY per
  * cross, it only fires on the FIRST candle since the cross where all filters pass.
- * SELL: unchanged, fresh cross down on the last candle only (exits stay responsive).
+ * SELL: fresh cross down on the last candle only (exits stay responsive). RSI/volume confirmation is optional (`sellRequireConfirm`).
  */
 export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
   const n = rows.length;
@@ -344,15 +377,16 @@ export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p:
   const crossDown = prev.ema9 >= prev.ema21 && f < s;
   if (crossDown) {
     const rsiOk = r <= p.rsiSellMax;
-    if (rsiOk && volOk) {
+    // Exits must stay responsive: by default every fresh cross-down is a SELL, confirmation is optional.
+    if (!p.sellRequireConfirm || (rsiOk && volOk)) {
       const reasons = [
         `EMA${p.emaFast} crossed below EMA${p.emaSlow}`,
-        `RSI ${r.toFixed(1)} <= ${p.rsiSellMax}`,
-        `Volume ${(volume / vm).toFixed(2)}x of MA${p.volumeMaPeriod}`,
+        `RSI ${r.toFixed(1)}${rsiOk ? ` <= ${p.rsiSellMax}` : ''}`,
+        `Volume ${vm > 0 ? (volume / vm).toFixed(2) : '0'}x of MA${p.volumeMaPeriod}`,
       ];
       let strength = 60;
       if (last.macdHist !== null && last.macdHist < 0) { strength += 15; reasons.push('MACD histogram negative'); }
-      if (volume >= vm * 2) strength += 15;
+      if (vm > 0 && volume >= vm * 2) strength += 15;
       if (last.support !== null && last.close < last.support) { strength += 10; reasons.push('Breaking support'); }
       return { side: 'SELL', strength: Math.min(strength, 100), reasons };
     }
