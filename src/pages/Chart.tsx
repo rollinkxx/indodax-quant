@@ -8,14 +8,22 @@ import { idr, num, pairLabel, wib } from '../lib/format';
 export default function Chart() {
   const [sp, setSp] = useSearchParams();
   const pairs = usePoll<any>('/api/market/pairs', 120000);
-  const tracked: string[] = (pairs.data?.pairs ?? []).filter((p: any) => p.is_tracked).map((p: any) => p.id);
+  const tracked: string[] = (pairs.data?.pairs ?? []).filter((p: any) => p.is_tracked || p.in_universe).map((p: any) => p.id);
   const pair = sp.get('pair') ?? tracked[0] ?? 'btcidr';
-  const tf = sp.get('tf') === '1m' ? '1m' : '5m';
+  const tfRaw = sp.get('tf');
+  const tf = tfRaw === '1m' || tfRaw === '15m' || tfRaw === '1h' ? tfRaw : '5m';
   const set = (k: string, v: string) => { const n = new URLSearchParams(sp); n.set(k, v); setSp(n); };
 
   const cd = usePoll<any>(`/api/candles?pair=${pair}&tf=${tf}&limit=300`, 30000);
   const ind = usePoll<any>(`/api/indicators?pair=${pair}&limit=300`, 30000);
   const sig = usePoll<any>(`/api/signals?pair=${pair}&limit=100`, 60000);
+  const m15 = usePoll<any>(`/api/indicators?pair=${pair}&tf=15m&limit=1`, 60000);
+  const h1 = usePoll<any>(`/api/indicators?pair=${pair}&tf=1h&limit=1`, 60000);
+  const mtf = [{ tf: '15m', r: m15.data?.indicators?.[0] }, { tf: '1h', r: h1.data?.indicators?.[0] }].map(({ tf, r }) => {
+    if (!r || r.ema9 === null || r.ema21 === null) return { tf, trend: 'belum siap', color: 'gray', r };
+    const c = +r.close, f = +r.ema9, s = +r.ema21;
+    return c > s && f > s ? { tf, trend: 'bullish', color: 'text-emerald-300', r } : c < s && f < s ? { tf, trend: 'bearish', color: 'text-rose-300', r } : { tf, trend: 'netral', color: 'text-amber-300', r };
+  });
 
   const candles = useMemo(() => (cd.data?.candles ?? []).map((c: any) => ({
     time: toSec(c.open_time), open: +c.open, high: +c.high, low: +c.low, close: +c.close, volume: +c.volume,
@@ -43,7 +51,7 @@ export default function Chart() {
       <PageHeader title="Trading Chart" subtitle="Candlestick dibentuk dari transaksi aktual INDODAX"
         actions={<div className="flex gap-2">
           <Select value={pair} onChange={(v) => set('pair', v)} options={options} />
-          <Select value={tf} onChange={(v) => set('tf', v)} options={[{ value: '5m', label: '5 menit' }, { value: '1m', label: '1 menit' }]} />
+          <Select value={tf} onChange={(v) => set('tf', v)} options={[{ value: '5m', label: '5 menit' }, { value: '1m', label: '1 menit' }, { value: '15m', label: '15 menit' }, { value: '1h', label: '1 jam' }]} />
         </div>} />
       <ErrorBox error={cd.error ?? ind.error} />
       {last && (
@@ -56,6 +64,12 @@ export default function Chart() {
           <Stat label="Resistance" value={idr(last.resistance)} />
         </div>
       )}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {mtf.map((m) => (
+          <Stat key={m.tf} label={`Tren ${m.tf} (MTF)`} value={m.trend} valueClass={m.color.startsWith('text-') ? m.color : ''}
+            sub={m.r ? `RSI ${num(m.r.rsi14, 1)} • ${wib(m.r.open_time)}` : 'menunggu data'} />
+        ))}
+      </div>
       <Card title={`${pairLabel(pair)} • ${tf}`}>
         {cd.loading && !cd.data ? <Loading /> : candles.length ? <CandleChart candles={candles} lines={lines} markers={markers} /> : <Empty>Belum ada candle untuk pair ini.</Empty>}
       </Card>

@@ -30,6 +30,12 @@ const int = (v: string | null, def: number, min: number, max: number) => {
   return Number.isInteger(n) ? Math.min(Math.max(n, min), max) : def;
 };
 const pairOk = (p: string | null): p is string => !!p && /^[a-z0-9]{2,20}$/.test(p);
+/** Whitelisted timeframe query parameter (never interpolated unchecked). */
+export function tfParam(v: string | null, allow1m: boolean): '1m' | '5m' | '15m' | '1h' {
+  if (v === '15m' || v === '1h') return v;
+  if (v === '1m' && allow1m) return '1m';
+  return '5m';
+}
 
 async function readJson(req: Request): Promise<Record<string, unknown>> {
   try {
@@ -69,15 +75,23 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
 
     if (path === '/api/market/tickers' && method === 'GET') {
       const scope = q.get('scope') === 'all' ? 'all' : 'tracked';
-      const pairs = await db.select<{ id: string; is_tracked: boolean; description: string | null }>('market_pairs', 'select=id,is_tracked,description&is_tracked=eq.true');
-      const trackedIds = pairs.map((p) => p.id);
-      const filter = scope === 'all' ? 'order=vol_idr.desc.nullslast&limit=500' : `pair_id=in.(${trackedIds.join(',')})&order=vol_idr.desc.nullslast`;
-      const rows = trackedIds.length || scope === 'all' ? await db.select<Record<string, unknown>>('market_tickers_latest', `select=*&${filter}`) : [];
-      return json({ tracked: trackedIds, tickers: rows.map((r) => ({ ...r, is_tracked: trackedIds.includes(String(r.pair_id)) })) });
+      const pairs = await db.select<{ id: string; is_tracked: boolean; in_universe: boolean; universe_rank: number | null }>('market_pairs', 'select=id,is_tracked,in_universe,universe_rank&or=(is_tracked.eq.true,in_universe.eq.true)');
+      const monitored = pairs.map((p) => p.id);
+      const pinned = new Set(pairs.filter((p) => p.is_tracked).map((p) => p.id));
+      const universe = new Map(pairs.filter((p) => p.in_universe).map((p) => [p.id, p.universe_rank]));
+      const filter = scope === 'all' ? 'order=vol_idr.desc.nullslast&limit=500' : `pair_id=in.(${monitored.join(',')})&order=vol_idr.desc.nullslast`;
+      const rows = monitored.length || scope === 'all' ? await db.select<Record<string, unknown>>('market_tickers_latest', `select=*&${filter}`) : [];
+      return json({
+        tracked: monitored, pinned: [...pinned], universe: [...universe.keys()],
+        tickers: rows.map((r) => {
+          const id = String(r.pair_id);
+          return { ...r, is_tracked: pinned.has(id), in_universe: universe.has(id), universe_rank: universe.get(id) ?? null, monitored: pinned.has(id) || universe.has(id) };
+        }),
+      });
     }
 
     if (path === '/api/market/pairs' && method === 'GET') {
-      const rows = await db.select('market_pairs', 'select=id,symbol,description,is_tracked,is_maintenance,trade_min_base_currency,trade_fee_percent_taker,updated_at&order=is_tracked.desc,id.asc');
+      const rows = await db.select('market_pairs', 'select=id,symbol,description,is_tracked,in_universe,universe_rank,universe_since,is_maintenance,trade_min_base_currency,trade_fee_percent_taker,updated_at&order=is_tracked.desc,in_universe.desc,universe_rank.asc.nullslast,id.asc');
       return json({ pairs: rows, maxTracked: MAX_TRACKED_PAIRS });
     }
 
@@ -115,7 +129,7 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
 
     if (path === '/api/candles' && method === 'GET') {
       const pair = q.get('pair');
-      const tf = q.get('tf') === '1m' ? '1m' : '5m';
+      const tf = tfParam(q.get('tf'), true);
       if (!pairOk(pair)) return bad('invalid pair');
       const rows = await db.select<Record<string, unknown>>('candles', `select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.${tf}&is_closed=eq.true&order=open_time.desc&limit=${int(q.get('limit'), 300, 10, 1000)}`);
       return json({ pair, timeframe: tf, candles: rows.reverse() });
@@ -124,8 +138,9 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
     if (path === '/api/indicators' && method === 'GET') {
       const pair = q.get('pair');
       if (!pairOk(pair)) return bad('invalid pair');
-      const rows = await db.select<Record<string, unknown>>('indicators', `select=*&pair_id=eq.${pair}&timeframe=eq.5m&order=open_time.desc&limit=${int(q.get('limit'), 300, 1, 1000)}`);
-      return json({ pair, indicators: rows.reverse() });
+      const tf = tfParam(q.get('tf'), false);
+      const rows = await db.select<Record<string, unknown>>('indicators', `select=*&pair_id=eq.${pair}&timeframe=eq.${tf}&order=open_time.desc&limit=${int(q.get('limit'), 300, 1, 1000)}`);
+      return json({ pair, timeframe: tf, indicators: rows.reverse() });
     }
 
     if (path === '/api/signals' && method === 'GET') {

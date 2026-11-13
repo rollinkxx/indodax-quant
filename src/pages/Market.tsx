@@ -39,7 +39,7 @@ export default function Market({ isAdmin = false }: { isAdmin?: boolean }) {
               const stale = Date.now() - Date.parse(t.server_time ?? t.updated_at) > 180_000;
               return (
                 <tr key={t.pair_id}>
-                  <Td><Link to={`/chart?pair=${t.pair_id}`} className="font-medium hover:text-emerald-300">{pairLabel(t.pair_id)}</Link> {t.is_tracked && <Badge color="blue">dipantau</Badge>}</Td>
+                  <Td><Link to={`/chart?pair=${t.pair_id}`} className="font-medium hover:text-emerald-300">{pairLabel(t.pair_id)}</Link> {t.is_tracked && <Badge color="blue">manual</Badge>} {t.in_universe && <Badge color="green">otomatis #{t.universe_rank ?? '—'}</Badge>}</Td>
                   <Td>{idr(t.last)}</Td>
                   <Td className="text-emerald-300">{idr(t.bid)}</Td>
                   <Td className="text-rose-300">{idr(t.ask)}</Td>
@@ -56,7 +56,7 @@ export default function Market({ isAdmin = false }: { isAdmin?: boolean }) {
           </Table>
         ) : <Empty>{scope === 'tracked' ? 'Belum ada data untuk pair yang dipantau. Data muncul setelah cron pertama berjalan.' : 'Tidak ada data.'}</Empty>}
       </Card>
-      <p className="text-xs text-slate-500">Maksimal 10 pair dipantau (batas rate limit API publik INDODAX). Data “basi” = ticker lebih dari 3 menit tidak berubah dan tidak dipakai untuk sinyal.</p>
+      <p className="text-xs text-slate-500">“Dipantau” = pair manual (maks 10) + pair otomatis dari universe dinamis (peringkat volume 24 jam, diperbarui tiap 15 menit; atur di Strategy Configuration). Data “basi” = ticker lebih dari 3 menit tidak berubah dan tidak dipakai untuk sinyal.</p>
     </div>
   );
 }
