@@ -64,6 +64,7 @@ export interface SizingInput {
   stopLoss: number;
   params: StrategyParams;
   minNotional?: number; // INDODAX trade_min_base_currency (IDR)
+  exitSlippageBps?: number; // expected slippage when the stop fills (adds to the per-unit risk)
 }
 
 export interface SizingResult {
@@ -82,7 +83,7 @@ export function positionSize(i: SizingInput): SizingResult {
   if (!(i.entry > 0) || !(i.equity > 0) || !(i.cash > 0)) return zero('invalid_inputs');
   if (!(i.stopLoss > 0) || i.stopLoss >= i.entry) return zero('invalid_stop');
   const riskAmount = i.equity * p.riskPerTradePct / 100;
-  const perUnitRisk = (i.entry - i.stopLoss) + i.entry * (p.feePct / 100) * 2;
+  const perUnitRisk = (i.entry - i.stopLoss) + i.entry * (p.feePct / 100) * 2 + i.stopLoss * ((i.exitSlippageBps ?? 0) / 10_000);
   const qtyByRisk = riskAmount / perUnitRisk;
   const maxNotional = Math.min(i.equity * p.maxPositionPct / 100, i.cash / (1 + p.feePct / 100));
   const qty = roundDown(Math.min(qtyByRisk, maxNotional / i.entry));
@@ -92,6 +93,33 @@ export function positionSize(i: SizingInput): SizingResult {
   if (qty <= 0 || notional < min) return zero('below_min_notional');
   if (notional + fee > i.cash) return zero('insufficient_cash');
   return { qty, notional, fee, cost: notional + fee, riskAmount };
+}
+
+export interface EntryGateInput {
+  bid: number;
+  ask: number;
+  signalPrice: number; // close of the signal candle
+  stopLoss: number;
+  fill: number; // expected BUY fill (ask + slippage)
+}
+
+/**
+ * Execution-quality gate evaluated at entry time against the live quote. Returns a skip reason or null.
+ * - wide_spread: spread (% of mid) above maxEntrySpreadPct.
+ * - price_drift: ask moved more than maxEntryDriftPct above the signal candle close.
+ * - stop_inside_spread: the exit side (bid) is already at/below the stop, or the spread alone would eat
+ *   more than half of the stop distance -> the position would be stopped out by the quote, not by price action.
+ */
+export function entryGate(i: EntryGateInput, p: Pick<StrategyParams, 'maxEntrySpreadPct' | 'maxEntryDriftPct'>): string | null {
+  if (!(i.bid > 0) || !(i.ask >= i.bid)) return 'bad_quote';
+  const mid = (i.bid + i.ask) / 2;
+  const spread = (i.ask - i.bid) / mid * 100;
+  if (p.maxEntrySpreadPct > 0 && spread > p.maxEntrySpreadPct) return 'wide_spread';
+  if (p.maxEntryDriftPct > 0 && i.signalPrice > 0 && (i.ask - i.signalPrice) / i.signalPrice * 100 > p.maxEntryDriftPct) return 'price_drift';
+  if (i.bid <= i.stopLoss) return 'stop_inside_spread';
+  const stopDist = i.fill - i.stopLoss;
+  if (stopDist > 0 && (i.ask - i.bid) > stopDist * 0.5) return 'stop_inside_spread';
+  return null;
 }
 
 export type ExitReason = 'STOP_LOSS' | 'TAKE_PROFIT';
