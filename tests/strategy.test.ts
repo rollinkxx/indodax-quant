@@ -51,7 +51,7 @@ describe('evaluateSignalWindow (crossLookback)', () => {
     expect(d!.reasons[0]).toBe('EMA9 crossed above EMA21');
   });
   it('fires 2 candles after the cross when filters only line up later', () => {
-    const d = evaluateSignalWindow([below, above(), above(), above()], [0, weakVol, weakVol, goodVol]);
+    const d = evaluateSignalWindow([below, above(), above(), above()], [0, weakVol, weakVol, goodVol], { ...DEFAULT_PARAMS, crossLookback: 3 });
     expect(d?.side).toBe('BUY');
     expect(d!.reasons[0]).toContain('2 candle(s) ago');
     expect(d!.strength).toBe(65); // 60 - 2*5 + 15 (MACD)
@@ -80,7 +80,7 @@ describe('evaluateSignalWindow (crossLookback)', () => {
   it('validates crossLookback', () => {
     expect(validateParams({ crossLookback: 0 })[0]).toMatch(/between/);
     expect(validateParams({ crossLookback: 2.5 }).join()).toMatch(/integer/);
-    expect(mergeParams({}).crossLookback).toBe(3);
+    expect(mergeParams({}).crossLookback).toBe(2);
   });
 });
 
