@@ -6,7 +6,7 @@ Legend: [x] done & verified · [~] done, unverified in production · [ ] open ·
 - [x] Schema, indexes, constraints, RLS (`20261113000001_init.sql`)
 - [x] RPCs: begin_run/finish_run, ingest_market, save_analysis, paper_open/close_position, paper_set_status, paper_reset_account, claim/complete_notifications, retention (`..._functions.sql`)
 - [x] Lock release fix (`..._fix_lock_release.sql`)
-- [!] Create Supabase Auth user `gsdrxx@gmail.com` (Dashboard → Authentication → Users → Add user)
+- [x] Supabase Auth user `gsdrxx@gmail.com` exists, admin (verified session 4)
 - [ ] Optional: disable public sign-ups in Supabase Auth
 
 ## Backend (Cloudflare Worker)
@@ -33,6 +33,8 @@ Legend: [x] done & verified · [~] done, unverified in production · [ ] open ·
 - [x] GitHub Actions CI & Deploy workflow
 - [x] GitHub secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SUPABASE_ACCESS_TOKEN
 - [x] Deploy run 43372250003 green; `/api/health` smoke test OK; cron runs every minute
+- [x] Production URL: https://indodax-quant.sinyalku.workers.dev (health 200, verified session 4)
+- [ ] Confirm first trading signal in production (0 so far)
 - [~] Telegram: Bot API delivery reported sent=1 failed=0; test from Settings not yet done
 - [ ] Optional: Workers Paid plan (Free = 10 ms CPU per invocation)
 - [ ] Admin presses Start in Paper Trading (only after data warm-up)
