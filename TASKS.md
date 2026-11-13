@@ -2,7 +2,7 @@
 
 Legend: [x] done & verified · [~] done, unverified in production · [ ] open · [!] blocked (needs human)
 
-_Last updated: 2026-11-13 15:45 WIB (session 5)_
+_Last updated: 2026-11-13 16:55 WIB (session 7)_
 
 > Tooling note: if GitHub/Supabase MCP says "Session approvals are not available for this tool", reconnect the MCP server
 > (`mcp-servers` → `connect`) and retry. Details at the top of HANDOFF.md.
@@ -11,6 +11,7 @@ _Last updated: 2026-11-13 15:45 WIB (session 5)_
 - [x] Schema, indexes, constraints, RLS (`20261113000001_init.sql`)
 - [x] RPCs: begin_run/finish_run, ingest_market, save_analysis, paper_open/close_position, paper_set_status, paper_reset_account, claim/complete_notifications, retention (`..._functions.sql`)
 - [x] Lock release fix (`..._fix_lock_release.sql`)
+- [x] MTF + dynamic universe migration (`20261113000004_mtf_universe.sql`, applied session 7)
 - [x] Supabase Auth user `gsdrxx@gmail.com` exists, admin (verified session 4)
 - [ ] Optional: disable public sign-ups in Supabase Auth
 
@@ -18,6 +19,9 @@ _Last updated: 2026-11-13 15:45 WIB (session 5)_
 - [x] INDODAX public client + validation + private endpoint block
 - [x] Candles from trades, 5m aggregation, gap detection/backfill
 - [x] Indicators + strategy + data-quality gate
+- [x] Multi-timeframe filter (15m/1h from 5m, EMA 9/21) — deployed session 7
+- [x] Dynamic pair universe (volume/spread ranking, every 15 min) — deployed session 7, populating
+- [ ] Watch CPU/duration with up to ~17 pairs on Workers Free (10 ms CPU); fall back to `universeMode: 'manual'` if runs fail
 - [x] Paper engine + risk management + kill switch (long-only; SELL = exit signal)
 - [x] REST API with Supabase JWT auth and admin role
 - [x] Telegram notifications (signals, orders, SL/TP, daily P/L, errors)
@@ -31,9 +35,9 @@ _Last updated: 2026-11-13 15:45 WIB (session 5)_
 - [ ] Optional: code-split lightweight-charts to reduce bundle size
 
 ## Quality
-- [x] Unit/integration tests (75 pass, 10 files per session 4) — indicators, candles, strategy, paper, INDODAX client, API auth, notifications, db encoding, chart range
+- [x] Unit/integration tests (106 pass, 13 files per session 7; +mtf, universe, pipeline e2e) — indicators, candles, strategy, paper, INDODAX client, API auth, notifications, db encoding, chart range
 - [x] Live INDODAX verification script
-- [ ] Pipeline end-to-end test with fake Supabase RPCs (nice to have)
+- [x] Pipeline end-to-end test with fake Supabase RPCs (`tests/pipeline.test.ts`, session 7)
 
 ## Deployment
 - [x] GitHub Actions CI & Deploy workflow

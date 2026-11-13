@@ -12,6 +12,7 @@ and no workaround workflow is needed. **Fix: reconnect the MCP server, then retr
 2. Call `mcp-servers` with `action: "connect"`, `serverSlugs: ["git-hub"]` (and/or `["supabase"]`), plus a short `reason`.
 3. Retry the original tool call. Write tools (GitHub `create_or_update_file`) and `execute_sql` work again after the reconnect.
    Verified in session 5 for both servers (commits `022afb9`, `7bd6fc0`, `31c233a` were pushed this way) and again in session 6.
+   Session 7: the approval seems to be per tool — `merge_pull_request` and `push_files` each needed their own reconnect.
 4. Updating an existing file needs its current blob SHA: read it with `get_file_contents` first.
 5. Session 2/4 fallback (only if reconnect fails): push via n8n GitHub node (`githubOAuth2Api`). Supabase through the n8n HTTP
    node is blocked (OAuth credential cannot be used in HTTP nodes), so use the Supabase MCP only.
@@ -99,6 +100,16 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
   chart range), documented the `indodax-proxy` relay, `supabase/functions/`, `SUPABASE_ACCESS_TOKEN` secret and the production URL.
 - Note: pushes to `main` trigger the *CI & Deploy* workflow (redeploys the same code).
 
+### Session 7 (n8n Instance Agent, 2026-11-13 16:40-16:55 WIB) — shipped MTF + dynamic universe (branch `feat/mtf-dynamic-universe`)
+- Previous agent ran out of credits after pushing 5 commits to the branch (PR #1). Verified locally: typecheck OK, 106 tests / 13 files, build OK.
+- Reviewed migration 0004 (non-destructive; `begin_run` new body is a superset; RPC signatures unchanged except `save_analysis`
+  gaining an optional 3rd arg). Applied via Supabase MCP `apply_migration` as `mtf_universe` after reconnecting `supabase`.
+  Old worker kept running SUCCESS after the migration.
+- Merged PR #1 → `6e9c20e` (needed a second `git-hub` reconnect for `merge_pull_request`). CI & Deploy green 16:48 WIB.
+- Post-deploy: runs 16:47-16:49 WIB SUCCESS; universe = fartcoinidr, uaiidr, pepeidr (+5 pinned); 15m/1h candles populated.
+- "Workers Builds: indodax-quant" (Cloudflare Git integration) check fails intermittently (also on `c4890ed`); production
+  deploy is the GitHub Actions job, which is green.
+
 ## Blockers (need the human owner)
 1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
 2. ~~Login user~~ DONE: `gsdrxx@gmail.com` exists and is admin (session 4).
@@ -106,11 +117,12 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
    seen in 60/60 recent runs, but keep watching. Workers Paid is recommended (see README).
 
 ## Next steps for the next agent
-1. Keep watching `execution_logs` (expect SUCCESS each minute) and any `system_error` notifications. The relay 502 has not recurred; only act if it does (then add retry/backoff in the edge function).
-2. Watch for the first BUY signal and the first `paper_orders` / `paper_positions` rows; verify sizing, SL/TP, fees and Telegram order notice.
-3. Owner: confirm all 9 pages show real data after login.
-4. Optional: disable public sign-ups in Supabase Auth; code-split lightweight-charts; pipeline e2e test with fake RPCs.
-5. Do not stop or reset the paper account unless the admin asks.
+1. Watch the first hours of MTF + dynamic universe: `execution_logs` duration/errors as the universe grows to ~17 pairs (Workers Free 10 ms CPU). If runs start failing, set `universeMode: 'manual'` in Strategy (no deploy needed). Note the MTF filter suppresses 5m signals against the 15m/1h trend.
+2. Keep watching `execution_logs` (expect SUCCESS each minute) and any `system_error` notifications. The relay 502 has not recurred; only act if it does (then add retry/backoff in the edge function).
+3. Watch for the first BUY signal and the first `paper_orders` / `paper_positions` rows; verify sizing, SL/TP, fees and Telegram order notice.
+4. Owner: confirm all 9 pages show real data after login.
+5. Optional: disable public sign-ups in Supabase Auth; code-split lightweight-charts.
+6. Do not stop or reset the paper account unless the admin asks.
 
 ## Rules
 - Paper trading only. Never add INDODAX private/trade API calls or keys.

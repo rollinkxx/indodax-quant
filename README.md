@@ -45,6 +45,13 @@ or two runs overlap.
 
 Timeframe 5m, completed candles only.
 
+- **Multi-timeframe (MTF)**: 15m and 1h candles are aggregated from 5m. With `mtfMode: 'filter'` (default) a 5m
+  signal is kept only if EMA9/EMA21 on the completed 15m and 1h candles agree with its direction (needs ≥ 30 HTF
+  candles; `score` adds to strength instead, `off` disables it).
+- **Dynamic universe**: besides the pinned (tracked) pairs, up to 12 pairs are picked every 15 min by 24h IDR volume
+  (≥ Rp1.000.000.000) and spread (≤ 0.6%), with a rank buffer of 4, max 3 new pairs per update, stablecoins excluded.
+  Pairs with an open paper position are always analysed. Set `universeMode: 'manual'` to analyse pinned pairs only.
+
 - **BUY**: EMA9 crosses above EMA21, RSI14 in [50, 70], volume ≥ 1.2 × Volume MA20, close > EMA50.
 - **SELL**: EMA9 crosses below EMA21, RSI14 ≤ 50, volume confirmation. Closes any open position on that pair.
 - Strength score adds MACD histogram, volume spikes and support/resistance breaks.
@@ -75,7 +82,7 @@ shared/         Pure, tested logic (indicators, candles, strategy, paper maths)
 src/            React dashboard (9 pages + login)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
 supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
-tests/          Vitest suites (75 tests, 10 files)
+tests/          Vitest suites (106 tests, 13 files)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
 ```
 
@@ -154,7 +161,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 ## Tests
 
 ```bash
-npm test                 # 75 unit + integration tests in 10 files (fake Supabase / INDODAX)
+npm test                 # 106 unit + integration tests in 13 files (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
 ```
@@ -178,7 +185,7 @@ INDODAX 1m OHLC endpoint (BTC/IDR 43/43 and DOGE/IDR 242/242 closes matched with
 Public: `GET /api/health`, `GET /api/public-config`.
 Authenticated (Supabase JWT + listed in `app_users`): `GET /api/me`, `/api/market/tickers?scope=tracked|all`,
 `/api/market/pairs`, `/api/market/history?pair=&minutes=`, `/api/market/trades?pair=`,
-`/api/candles?pair=&tf=5m|1m`, `/api/indicators?pair=`, `/api/signals`, `/api/portfolio`, `/api/orders`,
+`/api/candles?pair=&tf=1m|5m|15m|1h`, `/api/indicators?pair=`, `/api/signals`, `/api/portfolio`, `/api/orders`,
 `/api/positions?status=open|closed`, `/api/strategy`, `/api/system`.
 Admin: `POST /api/paper/start|stop|kill|reset`, `PUT /api/strategy`, `PUT /api/market/pairs/{id}/track`,
 `POST /api/system/run`, `POST /api/telegram/test`.
