@@ -14,6 +14,8 @@ export interface StrategyParams {
   volumeMaPeriod: number;
   volumeMultiplier: number;
   useTrendFilter: boolean;
+  /** BUY may fire up to N-1 completed candles after the EMA cross (1 = only on the cross candle itself). */
+  crossLookback: number;
   atrPeriod: number;
   atrStopMultiplier: number;
   atrTakeProfitMultiplier: number;
@@ -64,6 +66,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   volumeMaPeriod: 20,
   volumeMultiplier: 1.2,
   useTrendFilter: true,
+  crossLookback: 3,
   atrPeriod: 14,
   atrStopMultiplier: 1.5,
   atrTakeProfitMultiplier: 3,
@@ -107,6 +110,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   rsiSellMax: [0, 100],
   volumeMaPeriod: [2, 100, true],
   volumeMultiplier: [0, 10],
+  crossLookback: [1, 10, true],
   atrPeriod: [2, 50, true],
   atrStopMultiplier: [0.1, 10],
   atrTakeProfitMultiplier: [0.1, 20],
@@ -269,31 +273,75 @@ export interface SignalDecision {
   reasons: string[];
 }
 
-/** Evaluate the LAST row (must be a completed candle). `prev` is the row before it. */
-export function evaluateSignal(last: IndicatorRow, prev: IndicatorRow, volume: number, p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
-  const { ema9: f, ema21: s, ema50: tr, rsi14: r, volMa20: vm } = last;
-  if (f === null || s === null || r === null || vm === null || prev.ema9 === null || prev.ema21 === null) return null;
-  const volOk = vm > 0 && volume >= vm * p.volumeMultiplier;
-  const crossUp = prev.ema9 <= prev.ema21 && f > s;
-  const crossDown = prev.ema9 >= prev.ema21 && f < s;
+type WarmRow = IndicatorRow & { ema9: number; ema21: number; rsi14: number; volMa20: number };
+const warm = (r: IndicatorRow | undefined): r is WarmRow =>
+  !!r && r.ema9 !== null && r.ema21 !== null && r.rsi14 !== null && r.volMa20 !== null;
 
-  if (crossUp) {
-    const trendOk = !p.useTrendFilter || (tr !== null && last.close > tr);
-    const rsiOk = r >= p.rsiBuyMin && r <= p.rsiBuyMax;
-    if (trendOk && rsiOk && volOk) {
-      const reasons = [
-        `EMA${p.emaFast} crossed above EMA${p.emaSlow}`,
-        `RSI ${r.toFixed(1)} in [${p.rsiBuyMin}, ${p.rsiBuyMax}]`,
-        `Volume ${(volume / vm).toFixed(2)}x of MA${p.volumeMaPeriod}`,
-      ];
-      if (p.useTrendFilter) reasons.push(`Close above EMA${p.emaTrend}`);
-      let strength = 60;
-      if (last.macdHist !== null && last.macdHist > 0) { strength += 15; reasons.push('MACD histogram positive'); }
-      if (volume >= vm * 2) strength += 15;
-      if (last.resistance !== null && last.close > last.resistance) { strength += 10; reasons.push('Breaking resistance'); }
-      return { side: 'BUY', strength: Math.min(strength, 100), reasons };
+/** BUY filters evaluated on a single candle (everything except the cross itself). */
+function buyFiltersOk(r: WarmRow, volume: number, p: StrategyParams): boolean {
+  const trendOk = !p.useTrendFilter || (r.ema50 !== null && r.close > r.ema50);
+  const rsiOk = r.rsi14 >= p.rsiBuyMin && r.rsi14 <= p.rsiBuyMax;
+  const volOk = r.volMa20 > 0 && volume >= r.volMa20 * p.volumeMultiplier;
+  return trendOk && rsiOk && volOk;
+}
+
+/**
+ * Evaluate the LAST row (must be a completed candle) using the recent rows.
+ * `rows` and `volumes` are aligned and ascending; the last element is the signal candle.
+ *
+ * BUY: EMA fast crossed above EMA slow within the last `crossLookback` candles, stayed above since,
+ * and the other filters (trend, RSI, volume) pass on the last candle. To emit exactly one BUY per
+ * cross, it only fires on the FIRST candle since the cross where all filters pass.
+ * SELL: unchanged, fresh cross down on the last candle only (exits stay responsive).
+ */
+export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
+  const n = rows.length;
+  if (n < 2 || volumes.length !== n) return null;
+  const last = rows[n - 1];
+  const prev = rows[n - 2];
+  if (!warm(last) || prev.ema9 === null || prev.ema21 === null) return null;
+  const volume = volumes[n - 1];
+  const { ema9: f, ema21: s, rsi14: r, volMa20: vm } = last;
+  const volOk = vm > 0 && volume >= vm * p.volumeMultiplier;
+
+  // BUY: locate the most recent cross up within the lookback window
+  if (f > s) {
+    const lookback = Math.max(1, Math.floor(p.crossLookback));
+    let crossIdx = -1;
+    for (let j = n - 1; j >= 1 && n - 1 - j < lookback; j--) {
+      const cur = rows[j];
+      const before = rows[j - 1];
+      if (cur.ema9 === null || cur.ema21 === null || before.ema9 === null || before.ema21 === null) break;
+      if (!(cur.ema9 > cur.ema21)) break; // fell back below: no valid cross inside the window
+      if (before.ema9 <= before.ema21) { crossIdx = j; break; }
+    }
+    if (crossIdx >= 0 && buyFiltersOk(last, volume, p)) {
+      // one BUY per cross: skip if an earlier candle since the cross already qualified
+      let alreadyQualified = false;
+      for (let j = crossIdx; j < n - 1; j++) {
+        const rj = rows[j];
+        if (warm(rj) && buyFiltersOk(rj, volumes[j], p)) { alreadyQualified = true; break; }
+      }
+      if (!alreadyQualified) {
+        const barsSince = n - 1 - crossIdx;
+        const reasons = [
+          barsSince === 0
+            ? `EMA${p.emaFast} crossed above EMA${p.emaSlow}`
+            : `EMA${p.emaFast} crossed above EMA${p.emaSlow} ${barsSince} candle(s) ago and stayed above`,
+          `RSI ${r.toFixed(1)} in [${p.rsiBuyMin}, ${p.rsiBuyMax}]`,
+          `Volume ${(volume / vm).toFixed(2)}x of MA${p.volumeMaPeriod}`,
+        ];
+        if (p.useTrendFilter) reasons.push(`Close above EMA${p.emaTrend}`);
+        let strength = 60 - 5 * barsSince; // a later entry after the cross is slightly weaker
+        if (last.macdHist !== null && last.macdHist > 0) { strength += 15; reasons.push('MACD histogram positive'); }
+        if (volume >= vm * 2) strength += 15;
+        if (last.resistance !== null && last.close > last.resistance) { strength += 10; reasons.push('Breaking resistance'); }
+        return { side: 'BUY', strength: Math.max(0, Math.min(strength, 100)), reasons };
+      }
     }
   }
+
+  const crossDown = prev.ema9 >= prev.ema21 && f < s;
   if (crossDown) {
     const rsiOk = r <= p.rsiSellMax;
     if (rsiOk && volOk) {
@@ -310,6 +358,11 @@ export function evaluateSignal(last: IndicatorRow, prev: IndicatorRow, volume: n
     }
   }
   return null;
+}
+
+/** Evaluate the LAST row against only the previous row (fresh cross only, legacy behaviour). */
+export function evaluateSignal(last: IndicatorRow, prev: IndicatorRow, volume: number, p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
+  return evaluateSignalWindow([prev, last], [0, volume], { ...p, crossLookback: 1 });
 }
 
 export interface QualityInput {
