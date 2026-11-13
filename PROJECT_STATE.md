@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-13 15:40 WIB by n8n Instance Agent (session 5, read-only verification)_
+_Last updated: 2026-11-13 16:35 WIB by n8n Instance Agent (session 6, docs sync only)_
 
 ## Infrastructure (existing — do NOT recreate)
 
@@ -35,8 +35,8 @@ _Last updated: 2026-11-13 15:40 WIB by n8n Instance Agent (session 5, read-only 
 | Paper engine (sizing, SL/TP, fee, slippage, DD kill switch, daily loss) | DONE, tested | long-only: SELL signal exits an open long, ignored when flat |
 | Cron pipeline (retry, timeout, idempotency, lock, logging) | DONE, running in prod | 60/60 recent SUCCESS |
 | REST API + auth/roles | DONE, tested | |
-| Telegram (direct Bot API, DB dedupe) | DONE, delivery confirmed | Settings test button not yet used |
-| React dashboard (9 pages + login) | DONE | |
+| Telegram (direct Bot API, DB dedupe) | DONE, delivery confirmed | Settings test button works (owner confirmed 2026-11-13 15:37 WIB) |
+| React dashboard (9 pages + login) | DONE | owner still to confirm all 9 pages show real data |
 | Automated tests | DONE | 75 tests / 10 files (session 4) |
 | CI/CD (GitHub Actions) | DONE | `.github/workflows/ci-deploy.yml` |
 | Cloudflare deploy | DONE | latest bundle live |
@@ -48,6 +48,7 @@ _Last updated: 2026-11-13 15:40 WIB by n8n Instance Agent (session 5, read-only 
 - Session 3: 69 tests; CI run 43372250003 green; relay 200; execution id 24 SUCCESS.
 - Session 4: health 200; ids 24-44 SUCCESS; fixes for PostgREST `+` encoding and equity chart axis; 75 tests; CI 43376062984 green.
 - Session 5 (read-only, no code/DB change): health 200 `liveTrading:false`; cron 60/60 SUCCESS; first 2 signals + Telegram SENT; paper RUNNING (admin Start); relay 502 incident at 13:47 WIB self-recovered.
+- Session 6 (docs only, no code/DB change): synced PROJECT_STATE (Telegram Settings test confirmed) and README (test count 75 / 10 files) with TASKS/HANDOFF.
 
 ## Safety invariants
 
