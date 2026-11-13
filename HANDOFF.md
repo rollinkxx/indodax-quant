@@ -110,6 +110,12 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
 - "Workers Builds: indodax-quant" (Cloudflare Git integration) check fails intermittently (also on `c4890ed`); production
   deploy is the GitHub Actions job, which is green.
 
+### Session 9 (n8n Instance Agent, 2026-11-14 00:05-00:15 WIB) — F4 shipped, prod verified
+- GitHub `create_or_update_file` and Supabase `execute_sql` both returned "Session approvals are not available" until both servers were reconnected (top note still valid).
+- `43f4f98` Strategy page: fields `maxEntrySpreadPct` / `maxEntryDriftPct` in 'Aturan Sinyal' (server validation already existed in `shared/strategy.ts`). Local: typecheck OK, 130 tests / 15 files, build OK.
+- Deploy: live bundle `index-DYmgLrX3.js` == local build, contains both labels; `/api/health` 200 `liveTrading:false`.
+- Prod: last 3 h 180/180 SUCCESS, avg 11.5 s / max 21.1 s wall. Entry gate fired once: BUY pippinidr 16:10Z skipped `stop_inside_spread` (exec 667). New signals since session 8: SELL shibidr, birbidr, showidr; BUY pippinidr. No new orders; 2 positions, both CLOSED.
+
 ## Blockers (need the human owner)
 1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
 2. ~~Login user~~ DONE: `gsdrxx@gmail.com` exists and is admin (session 4).
