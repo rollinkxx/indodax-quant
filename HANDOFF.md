@@ -51,6 +51,10 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
   for all `select`/`update` calls (`02148f0`), test `tests/db.test.ts` (`25b6a6b`). Also `ago()` now prints
   `detik/menit/jam/hari` instead of the ambiguous `d/m/j/h` (`154d85b`). Tests: 9 files / 72 pass. Deployed (new bundle live).
   CI: run 43375451747 (`154d85b`) green; run for `25b6a6b` failed by design (test pushed before the fix).
+- Bug fix (owner screenshot 13:01 WIB): equity curve Y-axis showed `10.000.000` on every label because a flat series
+  collapses the price scale. Fix: `padRange` (src/lib/chartRange.ts) + `autoscaleInfoProvider` on AreaChart, min span 1%.
+  Commits `45dd88d` helper, `21ff386` tests, `05d8d7a` Charts.tsx. CI run 43376062984 green; bundle `index-DxepPsrm.js` live.
+  Local: vitest 10 files / 75 tests, typecheck + build OK.
 
 ## Blockers (need the human owner)
 1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
