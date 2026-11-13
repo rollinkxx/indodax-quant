@@ -5,6 +5,7 @@ import type { Env } from './env';
 import { handleApi } from './api';
 import { runPipeline } from './pipeline';
 import { errorMessage } from './http';
+import { withIndodaxRelay } from './relay';
 
 const SECURITY_HEADERS: Record<string, string> = {
   'x-frame-options': 'DENY',
@@ -16,7 +17,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/api/')) {
-      const res = await handleApi(request, env);
+      const res = await handleApi(request, env, withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL));
       for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.headers.set(k, v);
       return res;
     }
@@ -25,7 +26,7 @@ export default {
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(
-      runPipeline(env, { scheduledTime: controller.scheduledTime, trigger: 'cron' })
+      runPipeline(env, { scheduledTime: controller.scheduledTime, trigger: 'cron', fetchImpl: withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL) })
         .then((r) => console.log(`[cron] ${r.status}${r.reason ? ` (${r.reason})` : ''} run=${r.runId ?? '-'}`))
         .catch((e) => console.error('[cron] fatal', errorMessage(e))),
     );
