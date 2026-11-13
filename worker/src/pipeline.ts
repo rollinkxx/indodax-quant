@@ -10,7 +10,7 @@ import { fillGaps, floorTo, type Candle, type Trade } from '../../shared/candles
 import { checkDataQuality, computeIndicatorsTail, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtf, buildHigherSeries, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, exitReason, feeFor, positionSize, riskState, sellFillPrice } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, exitReason, exposureAllows, feeFor, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -31,6 +31,7 @@ export interface Position {
   cost_basis: number | string;
   stop_loss: number | string | null;
   take_profit: number | string | null;
+  opened_at?: string | null;
 }
 
 interface PairCtx {
@@ -401,7 +402,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
 
     const newSignals = analysis?.newSignals ?? [];
     if (params.notifySignals) {
+      const heldPairs = new Set(ctx.open_positions.map((p) => p.pair_id));
       for (const s of newSignals) {
+        // long-only engine: a SELL with nothing to sell is noise (it is still stored in trading_signals)
+        if (s.side === 'SELL' && !heldPairs.has(s.pair_id)) continue;
         notes.push({ event_type: 'signal', dedupe_key: `signal:${s.id}`, message: messages.signal({ ...s, reasons: s.reasons ?? [] }) });
       }
     }
@@ -413,11 +417,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
 
+      const slipFor = (pairId: string) => (params.dynamicSlippage ? dynamicSlippageBps(params.slippageBps, tickers.get(pairId)?.vol_idr) : params.slippageBps);
+
       const close = async (pos: Position, reason: string, bid: number) => {
-        const fill = sellFillPrice(bid, params.slippageBps);
+        const slip = slipFor(pos.pair_id);
+        const fill = sellFillPrice(bid, slip);
         const fee = feeFor(Number(pos.qty) * fill, params.feePct);
         const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
-          p_position_id: pos.id, p_requested_price: bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: params.slippageBps, p_reason: reason,
+          p_position_id: pos.id, p_requested_price: bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
         });
         if (r?.ok) {
           open.delete(pos.pair_id);
@@ -430,11 +437,26 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         return r?.ok ?? false;
       };
 
-      // a) Exits: stop loss / take profit / SELL signal. Open positions stay protected even when STOPPED.
+      // a) Exits: stop loss / take profit / trailing stop / time stop / SELL signal. Open positions stay protected even when STOPPED.
       for (const pos of [...open.values()]) {
         const t = freshTicker(pos.pair_id);
         if (!t) { actions.push(`skip exit check ${pos.pair_id}: stale ticker`); continue; }
-        const reason = exitReason(pos, t.bid) ?? (sellSignals.has(pos.pair_id) ? 'SIGNAL' : null);
+        let reason: string | null = exitReason(pos, t.bid);
+        if (!reason) {
+          // Trailing stop: ratchet the stop up with price (takes effect from the next run).
+          const newStop = trailingStop(pos, t.bid, lastIndicators.get(pos.pair_id)?.atr14 ?? null, params);
+          if (newStop !== null) {
+            try {
+              await db.update('paper_positions', `id=eq.${pos.id}&status=eq.OPEN`, { stop_loss: newStop });
+              pos.stop_loss = newStop;
+              actions.push(`trail ${pos.pair_id} stop -> ${newStop}`);
+            } catch (e) {
+              actions.push(`trail ${pos.pair_id} failed: ${errorMessage(e)}`);
+            }
+          }
+        }
+        if (!reason && timeStopHit(pos.opened_at ? Date.parse(pos.opened_at) : null, now(), params)) reason = 'TIME_STOP';
+        if (!reason && sellSignals.has(pos.pair_id)) reason = 'SIGNAL';
         if (reason) await close(pos, reason, t.bid);
       }
 
@@ -458,6 +480,19 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         lastEquity = Number(mtm.equity);
       }
 
+      // c2) Daily loss limit: flatten instead of only blocking new entries
+      if (accountStatus === 'RUNNING' && risk.dailyLossHit && params.closeOnDailyLoss && open.size > 0) {
+        let closed = 0;
+        for (const pos of [...open.values()]) {
+          const t = freshTicker(pos.pair_id);
+          if (t && (await close(pos, 'DAILY_LOSS', t.bid))) closed++;
+        }
+        if (closed > 0) {
+          mtm = await db.rpc<MtmResult>('paper_mark_to_market', { p_account_id: account.id, p_prices: bids, p_snapshot_time: iso(nowMin) });
+          lastEquity = Number(mtm.equity);
+        }
+      }
+
       // d) Entries on new BUY signals
       let entries = 0;
       if (accountStatus === 'RUNNING' && !account.kill_switch && !risk.blockEntries) {
@@ -468,14 +503,17 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           if (open.has(s.pair_id)) { actions.push(`skip ${s.pair_id}: already open`); continue; }
           const t = freshTicker(s.pair_id);
           if (!t) { actions.push(`skip ${s.pair_id}: stale ticker`); continue; }
-          const fill = buyFillPrice(t.ask, params.slippageBps);
+          const slip = slipFor(s.pair_id);
+          const fill = buyFillPrice(t.ask, slip);
           const atrValue = s.indicators?.atr14 ?? lastIndicators.get(s.pair_id)?.atr14 ?? null;
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);
           const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, params, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
           if (size.qty <= 0) { actions.push(`skip ${s.pair_id}: ${size.reason}`); continue; }
+          const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
+          if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { actions.push(`skip ${s.pair_id}: max total exposure`); continue; }
           const r = await db.rpc<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number }>('paper_open_position', {
             p_account_id: account.id, p_pair_id: s.pair_id, p_qty: size.qty, p_requested_price: t.ask, p_fill_price: fill,
-            p_fee: size.fee, p_slippage_bps: params.slippageBps, p_stop_loss: stops.stopLoss, p_take_profit: stops.takeProfit,
+            p_fee: size.fee, p_slippage_bps: slip, p_stop_loss: stops.stopLoss, p_take_profit: stops.takeProfit,
             p_signal_id: s.id, p_idempotency_key: `open:${account.id}:${s.id}`, p_reason: 'SIGNAL',
           });
           if (r?.ok) {
