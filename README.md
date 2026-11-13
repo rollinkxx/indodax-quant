@@ -30,7 +30,7 @@ Cloudflare Cron (every minute, UTC)
        4. ingest_market RPC    tickers (latest + history), trades (dedup by tid), candles, sync state
        5. indicators (EMA 9/21/50, RSI 14, MACD, ATR 14, Volume MA 20, support/resistance)
        6. signals on COMPLETED 5m candles with data-quality gate (no stale/incomplete data)
-       7. paper trading: SL/TP/SELL exits → mark-to-market → risk checks → BUY entries
+       7. paper trading: SL/TP/trailing/time-stop/SELL exits → mark-to-market → risk checks → entry gate → BUY entries
        8. Telegram notifications (claimed in DB first → never sent twice)
        9. finish_run RPC       execution log + lock release
 
@@ -47,25 +47,37 @@ Timeframe 5m, completed candles only.
 
 - **Multi-timeframe (MTF)**: 15m and 1h candles are aggregated from 5m (complete buckets only). Trend per timeframe is bull when close > slow EMA and fast EMA (9) > slow EMA (21), bear for the opposite, otherwise neutral (unknown while warming up; needs >= 30 HTF candles). With `mtfMode: 'filter'` (default) a BUY is blocked when MTF is warming up, a timeframe is against the trend, or the 1h anchor is not bullish (`mtf_warming_up`, `mtf_against_trend`, `mtf_anchor_not_bullish`); SELL is never blocked. `score` adds to strength instead, `off` disables it.
 - **Dynamic universe**: besides the pinned (tracked) pairs, up to 12 pairs are picked every 15 min by 24h IDR volume
-  (≥ Rp1.000.000.000) and spread (≤ 0.6%), with a rank buffer of 4, max 3 new pairs per update, stablecoins excluded.
+  (code default ≥ Rp1.000.000.000; the live config uses Rp500.000.000) and spread (≤ 0.6%), with a rank buffer of 4,
+  max 3 new pairs per update. Stablecoins and gold-backed tokens (`xautidr`, `paxgidr`) are excluded.
   Pairs with an open paper position are always analysed. Set `universeMode: 'manual'` to analyse pinned pairs only.
 
-- **BUY**: EMA9 crosses above EMA21, RSI14 in [50, 70], volume ≥ 1.2 × Volume MA20, close > EMA50.
-- **SELL**: EMA9 crosses below EMA21, RSI14 ≤ 50, volume confirmation. Closes any open position on that pair.
+- **BUY**: EMA9 crosses above EMA21 on the signal candle or the one before (`crossLookback` 2), RSI14 in [50, 65],
+  volume ≥ 1.2 × Volume MA20, close > EMA50, and close not more than 1.5% above EMA21 (`maxEntryExtensionPct`, anti-chasing).
+- **SELL**: any fresh EMA9 cross below EMA21 (`sellRequireConfirm: false`; set it to `true` to also require RSI14 ≤ 50 and volume).
+  The engine is long-only: SELL closes an open position on that pair and is ignored when flat. SELL signals are always stored,
+  but sent to Telegram only when a position in that pair is open.
 - Strength score adds MACD histogram, volume spikes and support/resistance breaks.
+- **Entry gate** (checked against the live quote just before a BUY is filled): skip when the spread is above
+  `maxEntrySpreadPct` (0.6%), the ask is more than `maxEntryDriftPct` (0.5%) above the signal close, or the bid is already at/below
+  the stop or the spread is over half of the stop distance (`stop_inside_spread`). Skips are logged in `execution_logs`.
 - Data gate: ≥ 60 contiguous candles, last candle = the most recently completed bucket, full trade coverage
   for that bucket, real trades in the signal candle, ticker age ≤ 180 s, pair not in maintenance.
+
+The active `strategy_configs` row in the database is the source of truth; the values above are the code defaults
+(`shared/strategy.ts`) unless noted.
 
 ### Paper trading & risk
 
 | Item | Default |
 |---|---|
 | Initial virtual balance | Rp10.000.000 |
-| Fill model | BUY at ask + 10 bps, SELL at bid − 10 bps |
+| Fill model | BUY at ask + slippage, SELL at bid − slippage; base 10 bps, scaled ×1 / 1.5 / 2.5 / 4 by 24h IDR volume (≥ 1e10 / ≥ 2e9 / ≥ 5e8 / below) |
 | Fee | 0.3 % per side |
-| Position size | risk 1 % of equity to the stop, max 25 % of equity per position, max 3 open positions |
+| Position size | risk 1 % of equity to the stop (fees and expected exit slippage included), max 25 % of equity per position, max 4 open positions, max 60 % total exposure |
 | Stop loss / take profit | 1.5 × ATR / 3 × ATR (fallback 2 % / 4 %) |
-| Daily loss limit | 3 % → no new entries for the rest of the day (WIB) |
+| Trailing stop | arms at +1.5 × ATR above entry, then trails 1 × ATR below price |
+| Time stop | close after 720 minutes |
+| Daily loss limit | 3 % → close all positions (`DAILY_LOSS`) and no new entries for the rest of the day (WIB) |
 | Max drawdown | 15 % → automatic kill switch (close all, lock account) |
 | Emergency kill switch | button in the dashboard (admin) |
 
@@ -80,8 +92,10 @@ shared/         Pure, tested logic (indicators, candles, strategy, paper maths)
 src/            React dashboard (9 pages + login)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
 supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
-tests/          Vitest suites (106 tests, 13 files)
+tests/          Vitest suites (130 tests, 15 files)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
+scripts/backtest.ts        offline backtest on stored 5m candles (needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY; MTF not simulated)
+PROJECT_STATE.md           current production state, open tasks and notes for maintainers/agents
 ```
 
 ## Setup
@@ -159,16 +173,19 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 ## Tests
 
 ```bash
-npm test                 # 106 unit + integration tests in 13 files (fake Supabase / INDODAX)
+npm install              # required first (there is no package-lock.json)
+npm test                 # 130 unit + integration tests in 15 files (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
+npm run backtest         # old rules vs live params on stored candles
 ```
 
 Coverage includes: indicator maths (reference RSI values), candle building and gap handling,
 signal rules and data-quality gate, sizing / fees / slippage / PnL (matches the SQL functions),
 stop loss / take profit, daily loss limit, drawdown kill switch, API authentication and role checks,
 cron idempotency, stale-data refusal, notification dedupe, the private-endpoint block, the INDODAX relay,
-PostgREST query encoding and chart range padding.
+PostgREST query encoding, chart range padding, multi-timeframe trend, dynamic universe, strategy hardening
+(trailing/time stop, dynamic slippage), the entry gate and the full pipeline with fake Supabase RPCs.
 
 The Postgres functions were additionally verified directly in Supabase (inside rolled-back transactions):
 duplicate idempotency key rejected, double close rejected, orders refused while STOPPED, balance/PnL
@@ -201,8 +218,10 @@ Telegram messages display Asia/Jakarta (WIB). The daily P/L report is sent short
 
 ## Integrations
 
-- Cloudflare: integrated (build `npm run build`, deploy via `npx wrangler deploy`, production branch `main`)
-- Supabase: integrated (project "sinyalku")
-- GitHub: source of truth; a merge/push to main triggers the Cloudflare deploy and Supabase sync
+- GitHub: source of truth. A push to `main` runs the *CI & Deploy* workflow (GitHub Actions), which is the production deploy.
+- Cloudflare: Worker `indodax-quant`. The separate "Workers Builds" Git check can fail intermittently; it does not affect production.
+- Supabase: project "sinyalku"; migrations in `supabase/migrations/` are applied by the Supabase integration.
 
-_Last updated after merge to main: 2026-11-13_
+Current production state and open tasks: see `PROJECT_STATE.md`.
+
+_Last updated: 2026-11-14_

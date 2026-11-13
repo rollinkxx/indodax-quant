@@ -1,62 +1,72 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-13 16:55 WIB by n8n Instance Agent (session 7: MTF + dynamic universe shipped)_
+_Last updated: 2026-11-14 00:30 WIB (session 10: TASKS.md, HANDOFF.md and docs/STRATEGY_HARDENING.md merged into this file and README.md)_
 
-## Infrastructure (existing — do NOT recreate)
+This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
+Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
+and put session details in commit messages. Earlier session logs live in git history (`git log -- HANDOFF.md TASKS.md`).
+
+## Rules (do not break)
+
+- Paper trading only. Never add INDODAX private/trade API calls or keys.
+- Never expose the service role key to the frontend (only `SUPABASE_PUBLISHABLE_KEY` is public).
+- Non-destructive migrations only; keep existing data.
+- No n8n runtime dependency (the Worker only calls INDODAX via the relay, Supabase and Telegram).
+- Do not recreate infrastructure.
+- Do not stop or reset the paper account unless the admin (`gsdrxx@gmail.com`) asks.
+
+## Infrastructure (existing)
 
 | Item | Value |
 |---|---|
-| GitHub repo | `rollinkxx/indodax-quant` (public), branch `main` |
-| Supabase project | `sinyalku`, ref `znikuooxiqfcicyuhqsx`, region ap-southeast-2, org `ieksloorndnvydlfunml` |
-| Supabase migrations applied | `init`, `functions`, `fix_lock_release`, `mtf_universe` (0004, applied 2026-11-13 ~16:45 WIB) (match `supabase/migrations/`) |
-| Cloudflare Worker | `indodax-quant` — **DEPLOYED** via GitHub Actions — **URL: `https://indodax-quant.sinyalku.workers.dev`** (account subdomain is `sinyalku`, not `rollinkxx`) |
-| INDODAX relay | Supabase Edge Function `indodax-proxy` (read-only, public endpoints only), deployed by CI |
-| Cron | `* * * * *` active, verified in `execution_logs` |
+| GitHub repo | `rollinkxx/indodax-quant` (public), branch `main` — push to `main` runs *CI & Deploy* (GitHub Actions) |
+| Production URL | `https://indodax-quant.sinyalku.workers.dev` (old `*.rollinkxx.workers.dev` URL is dead, Cloudflare 1042) |
+| Cloudflare Worker | `indodax-quant`, Workers **Free** plan (10 ms CPU per invocation), cron `* * * * *` (UTC) |
+| Supabase | project `sinyalku`, ref `znikuooxiqfcicyuhqsx`, region ap-southeast-2 |
+| INDODAX relay | Supabase Edge Function `indodax-proxy` (GET-only, public allow-list; INDODAX returns 403 to Cloudflare IPs), deployed by CI |
+| Migrations applied | `init`, `functions`, `fix_lock_release`, `mtf_universe`, `strategy_hardening`, `entry_gate` (all files in `supabase/migrations/`) |
+| Admin user | `gsdrxx@gmail.com` (Supabase Auth + `app_users.role = admin`) |
 
-## DB state (verified 2026-11-13 15:32 WIB, read-only)
+Notes: the "Workers Builds: indodax-quant" check (Cloudflare Git integration) fails intermittently; the production deploy is the
+GitHub Actions job. New migrations in `supabase/migrations/` were applied automatically by the Supabase integration (entry_gate).
 
-- `paper_accounts`: 1 row, status **RUNNING** (started 13:00 WIB by `gsdrxx@gmail.com`), cash = equity = Rp10.000.000, kill_switch=false, no positions, no orders.
-- `trading_signals`: 2 rows (SELL ethidr @ 35.249.000, SELL solidr @ 1.454.883; 5m candle 08:15Z; `ema_rsi_volume`; strength 90; created 15:20 WIB).
-- `execution_logs`: last 60 = 60/60 SUCCESS, avg 5.6 s, max 11.3 s wall time. Ids 103-104 (13:47 WIB) PARTIAL: relay 502 redirect loop, self-recovered.
-- `notification_logs`: signal, worker_status, system_error all `SENT`.
-- `market_pairs`: btcidr, ethidr, xrpidr, solidr, dogeidr (tracked/pinned). Full catalog (438) syncs hourly from `/api/pairs`.
-- Dynamic universe (16:50 WIB): fartcoinidr #1, uaiidr #2, pepeidr #3 (`in_universe`); grows by max 3 new pairs per update (every 15 min) up to 12 + pinned.
-- Higher-timeframe candles (16:50 WIB): 15m = 260, 1h = 254 rows; `htf_backfilled_at` set for 2 pairs so far.
-- `app_users` / `auth.users`: `gsdrxx@gmail.com` = admin, confirmed.
-- `strategy_configs`: 1 active (EMA Crossover + RSI + Volume, 5m).
+## Current state (verified 2026-11-14 00:09 WIB)
 
-## Module status
+- `/api/health` 200, `liveTrading:false`. Live bundle `index-DYmgLrX3.js` = build of `43f4f98`.
+- Cron: last 3 h 180/180 SUCCESS, wall time avg 11.5 s / max 21.1 s (was 5.6 / 11.3 s before the dynamic universe grew). No CPU-limit errors.
+- Paper account: **RUNNING** since 2026-11-13 13:00 WIB (started by the admin), initial equity Rp10.000.000.
+- Trades so far: 2, both closed — `nearidr` TAKE_PROFIT +Rp37.551; `anoaidr` STOP_LOSS −Rp64.384 (bad fill on a 1.2% spread, the reason for the entry gate). 0 open positions.
+- Entry gate is live: BUY pippinidr @ 223.928 (16:10Z) skipped as `stop_inside_spread` (execution id 667), no order.
+- Active strategy config (DB `strategy_configs` row is the source of truth, see README for the parameters): `maxEntrySpreadPct` 0.6,
+  `maxEntryDriftPct` 0.5, `universeMinVolumeIdr` 5e8 (code default 1e9). Both entry fields are editable on the Strategy page.
+- Local checks at `43f4f98`: typecheck 0 errors, 130 tests / 15 files pass, build OK.
 
-| Module | Status | Notes |
-|---|---|---|
-| DB schema, RLS, RPCs | DONE, applied | atomic paper RPCs, idempotency keys, run lock |
-| INDODAX public client | DONE, tested, live-verified | private endpoints hard-blocked |
-| Candle builder (trades → 1m → 5m, gap fill, OHLC backfill) | DONE, tested, live-verified | BTC 14/14, DOGE 232/232 closes match official OHLC |
-| Indicators (EMA 9/21/50, RSI14, MACD, ATR14, VolMA20, S/R) | DONE, tested | |
-| Strategy + data-quality gate | DONE, tested, producing signals in prod | |
-| Multi-timeframe (15m/1h aggregated from 5m, EMA 9/21 trend filter) | DONE, tested, deployed 16:48 WIB | `mtfMode` off/filter/score, default `filter`; min 30 HTF candles |
-| Dynamic pair universe (24h IDR volume + spread) | DONE, tested, deployed 16:48 WIB, populating | default dynamic, size 12, minVol Rp1e9, maxSpread 0.6%, buffer 4, max 3 new/update, stablecoins excluded; open-position pairs always analysed |
-| Paper engine (sizing, SL/TP, fee, slippage, DD kill switch, daily loss) | DONE, tested | long-only: SELL signal exits an open long, ignored when flat |
-| Cron pipeline (retry, timeout, idempotency, lock, logging) | DONE, running in prod | 60/60 recent SUCCESS |
-| REST API + auth/roles | DONE, tested | |
-| Telegram (direct Bot API, DB dedupe) | DONE, delivery confirmed | Settings test button works (owner confirmed 2026-11-13 15:37 WIB) |
-| React dashboard (9 pages + login) | DONE | owner still to confirm all 9 pages show real data |
-| Automated tests | DONE | 106 tests / 13 files (session 7) |
-| CI/CD (GitHub Actions) | DONE | `.github/workflows/ci-deploy.yml` |
-| Cloudflare deploy | DONE | latest bundle live |
-| Production verification | DONE (data pipeline, signals, Telegram) | pending: first BUY → paper order |
+## Open tasks
 
-## Verification history
+- [ ] Watch the next BUY that passes the entry gate → paper order; compare fill vs signal price and check sizing, SL/TP, fee and the Telegram order notice.
+- [ ] Watch run duration/CPU as the universe grows to ~17 pairs on Workers Free. If runs start failing, set `universeMode: 'manual'` on the Strategy page (no deploy needed).
+- [ ] After ≥ 30 closed trades: run `npm run backtest` and review the known limitations below.
+- [ ] Owner: confirm all 9 dashboard pages show real data after login.
+- [ ] Optional: disable public sign-ups in Supabase Auth; code-split `lightweight-charts`; Workers Paid plan (30 s CPU).
+- [ ] Only if the relay 502 "Maximum number of redirects" (seen once, 2026-11-13 13:47 WIB, self-recovered) repeats: add retry/backoff in `indodax-proxy`.
 
-- Session 2: typecheck, 66 tests, build, live INDODAX script pass.
-- Session 3: 69 tests; CI run 43372250003 green; relay 200; execution id 24 SUCCESS.
-- Session 4: health 200; ids 24-44 SUCCESS; fixes for PostgREST `+` encoding and equity chart axis; 75 tests; CI 43376062984 green.
-- Session 5 (read-only, no code/DB change): health 200 `liveTrading:false`; cron 60/60 SUCCESS; first 2 signals + Telegram SENT; paper RUNNING (admin Start); relay 502 incident at 13:47 WIB self-recovered.
-- Session 6 (docs only, no code/DB change): synced PROJECT_STATE (Telegram Settings test confirmed) and README (test count 75 / 10 files) with TASKS/HANDOFF.
-- Session 7: migration 0004 `mtf_universe` applied (old worker stayed SUCCESS); PR #1 merged (`6e9c20e`); CI & Deploy green 16:48 WIB; runs 16:47-16:49 WIB SUCCESS (4.6-8.8 s wall); typecheck, 106 tests, build OK.
+## Known strategy limitations (watch, not changed)
 
-## Safety invariants
+- 5m EMA cross-down exits can whip out of winners early.
+- MTF `filter` blocks every BUY while any higher timeframe is still warming up.
+- Pinned pairs `xautidr` / `paxgidr` still emit signals although they are excluded from the dynamic universe.
+- SELL signals without an open position are stored but not sent to Telegram (by design).
+- Only 2 closed trades: no meaningful win rate yet.
 
-- No live trading: `IndodaxClient` allow-list = public endpoints only; `paper_orders.is_simulated` CHECK = true; `/api/health` reports `liveTrading:false`.
-- No n8n runtime dependency: Worker only calls INDODAX (via relay), Supabase and Telegram.
-- Service role key never reaches the frontend.
+## Agent notes
+
+- **"Session approvals are not available for this tool"** on GitHub/Supabase MCP calls: the connector is fine. Reconnect the server
+  (`mcp-servers` → `connect`, slug `git-hub` or `supabase`) and retry. The approval is per tool: each write tool
+  (`create_or_update_file`, `push_files`, `merge_pull_request`, `execute_sql`) may need its own reconnect.
+- `create_or_update_file` on an existing file needs its blob SHA (`get_file_contents` first). `push_files` needs the FULL file content.
+  Verify a push by `git clone` in the sandbox and `cmp` against the locally tested copy.
+- Local build/test needs `npm install` first (no `package-lock.json`).
+- Supabase via the n8n HTTP node does not work (OAuth credential not allowed there); use the Supabase MCP.
+- Column names: `execution_logs` uses `started_at` (not `created_at`); `trading_signals` / `paper_orders` / `paper_positions` use `pair_id`
+  (not `pair`); the signal direction column is `side`. When unsure, check `information_schema.columns`.
+- Entry-gate skips appear in `execution_logs.steps.paper_trading.info.actions` as `skip <pair>: wide_spread|price_drift|stop_inside_spread|bad_quote`.
