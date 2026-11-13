@@ -16,7 +16,8 @@ Legend: [x] done & verified · [~] done, unverified in production · [ ] open ·
 - [x] Paper engine + risk management + kill switch
 - [x] REST API with Supabase JWT auth and admin role
 - [x] Telegram notifications (signals, orders, SL/TP, daily P/L, errors)
-- [~] Cron pipeline end-to-end in production
+- [x] Cron pipeline end-to-end in production (execution_logs id 24 SUCCESS, 2026-11-13 05:30Z)
+- [x] INDODAX relay via Supabase Edge Function `indodax-proxy` (Cloudflare IPs get 403 from INDODAX)
 
 ## Frontend
 - [x] Login
@@ -24,13 +25,14 @@ Legend: [x] done & verified · [~] done, unverified in production · [ ] open ·
 - [ ] Optional: code-split lightweight-charts to reduce bundle size
 
 ## Quality
-- [x] Unit/integration tests (66) — indicators, candles, strategy, paper, INDODAX client, API auth, notifications
+- [x] Unit/integration tests (69) — indicators, candles, strategy, paper, INDODAX client, API auth, notifications
 - [x] Live INDODAX verification script
 - [ ] Pipeline end-to-end test with fake Supabase RPCs (nice to have)
 
 ## Deployment
 - [x] GitHub Actions CI & Deploy workflow
-- [!] Add GitHub secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-- [ ] Run workflow → confirm `/api/health`, cron runs every minute in System Monitoring
-- [ ] Verify Telegram test message from Settings
+- [x] GitHub secrets: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SUPABASE_ACCESS_TOKEN
+- [x] Deploy run 43372250003 green; `/api/health` smoke test OK; cron runs every minute
+- [~] Telegram: Bot API delivery reported sent=1 failed=0; test from Settings not yet done
+- [ ] Optional: Workers Paid plan (Free = 10 ms CPU per invocation)
 - [ ] Admin presses Start in Paper Trading (only after data warm-up)
