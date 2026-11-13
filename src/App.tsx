@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from './lib/supabase';
@@ -6,15 +6,17 @@ import { api } from './lib/api';
 import { Layout } from './components/Layout';
 import { ErrorBox, Loading, Button } from './components/ui';
 import Login from './pages/Login';
-import Overview from './pages/Overview';
-import Market from './pages/Market';
-import Chart from './pages/Chart';
-import Signals from './pages/Signals';
-import Paper from './pages/Paper';
-import History from './pages/History';
-import Strategy from './pages/Strategy';
-import System from './pages/System';
-import Settings from './pages/Settings';
+
+// Dashboard pages are code-split: lightweight-charts and page code load only after login.
+const Overview = lazy(() => import('./pages/Overview'));
+const Market = lazy(() => import('./pages/Market'));
+const Chart = lazy(() => import('./pages/Chart'));
+const Signals = lazy(() => import('./pages/Signals'));
+const Paper = lazy(() => import('./pages/Paper'));
+const History = lazy(() => import('./pages/History'));
+const Strategy = lazy(() => import('./pages/Strategy'));
+const System = lazy(() => import('./pages/System'));
+const Settings = lazy(() => import('./pages/Settings'));
 
 export interface Me { email: string; role: 'admin' | 'viewer' }
 
@@ -56,6 +58,7 @@ export default function App() {
   const isAdmin = me.role === 'admin';
   return (
     <Layout email={me.email} role={me.role} onLogout={logout}>
+      <Suspense fallback={<Loading />}>
       <Routes>
         <Route path="/" element={<Overview />} />
         <Route path="/market" element={<Market />} />
@@ -68,6 +71,7 @@ export default function App() {
         <Route path="/settings" element={<Settings isAdmin={isAdmin} me={me} />} />
         <Route path="*" element={<Overview />} />
       </Routes>
+      </Suspense>
     </Layout>
   );
 }
