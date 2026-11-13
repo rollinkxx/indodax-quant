@@ -1,0 +1,50 @@
+# PROJECT STATE — INDODAX QUANT
+
+_Last updated: 2026-11-13 (WIB) by n8n Instance Agent (session 2)_
+
+## Infrastructure (existing — do NOT recreate)
+
+| Item | Value |
+|---|---|
+| GitHub repo | `rollinkxx/indodax-quant` (private), branch `main` |
+| Supabase project | `sinyalku`, ref `znikuooxiqfcicyuhqsx`, region ap-southeast-2, org `ieksloorndnvydlfunml` |
+| Supabase migrations applied | `init`, `functions`, `fix_lock_release` (match `supabase/migrations/`) |
+| Cloudflare Worker | `indodax-quant` (wrangler.jsonc) — **NOT DEPLOYED YET** (no Cloudflare access available to agents) |
+| Cron | `* * * * *` (in wrangler.jsonc, active after first deploy) |
+
+## DB state (verified 2026-11-13)
+
+- `paper_accounts`: 1 row `default`, status **STOPPED**, cash Rp10.000.000, kill_switch=false.
+- `market_pairs`: btcidr, ethidr, xrpidr, solidr, dogeidr (tracked). Full catalog syncs hourly from `/api/pairs`.
+- `app_users`: `gsdrxx@gmail.com` = admin.
+- `auth.users`: **0 users** → the admin must be created in Supabase Auth before login works.
+- `strategy_configs`: 1 active (EMA Crossover + RSI + Volume, 5m).
+- Market/candle/indicator/signal tables are empty because the Worker has never run.
+
+## Module status
+
+| Module | Status | Notes |
+|---|---|---|
+| DB schema, RLS, RPCs | DONE, applied | atomic paper RPCs, idempotency keys, run lock |
+| INDODAX public client | DONE, tested, live-verified | private endpoints hard-blocked |
+| Candle builder (trades → 1m → 5m, gap fill, OHLC backfill) | DONE, tested, live-verified | BTC 14/14, DOGE 232/232 closes match official OHLC |
+| Indicators (EMA 9/21/50, RSI14, MACD, ATR14, VolMA20, S/R) | DONE, tested | |
+| Strategy + data-quality gate | DONE, tested | |
+| Paper engine (sizing, SL/TP, fee, slippage, DD kill switch, daily loss) | DONE, tested | |
+| Cron pipeline (retry, timeout, idempotency, lock, logging) | DONE (code) | not yet run in production |
+| REST API + auth/roles | DONE, tested | |
+| Telegram (direct Bot API, DB dedupe) | DONE, tested | needs bot token + chat id secrets |
+| React dashboard (9 pages + login) | DONE (session 2) | pages were missing from repo after session 1 |
+| Automated tests | DONE (session 2) | 66 tests, `tests/` was missing after session 1 |
+| CI/CD (GitHub Actions) | DONE (session 2) | `.github/workflows/ci-deploy.yml` |
+| Cloudflare deploy | **BLOCKED** | needs Cloudflare API token + account id as GitHub secrets |
+| Production verification | **BLOCKED** | after deploy |
+
+## Verification results (session 2)
+
+- `npm run typecheck`: pass (app + worker).
+- `npm test`: 7 files, 66 tests pass.
+- `npm run build`: pass (dist ~700 kB JS).
+- `npm run verify:indodax btcidr|dogeidr`: pass (live, read-only).
+- No live trading: `IndodaxClient` allow-list = public endpoints only; `paper_orders.is_simulated` CHECK = true.
+- No n8n runtime dependency: Worker only calls INDODAX, Supabase, Telegram.
