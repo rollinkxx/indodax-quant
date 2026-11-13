@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify:indodax": "tsx scripts/verify-indodax.ts",
+    "backtest": "tsx scripts/backtest.ts",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types"
   },

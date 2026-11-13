@@ -13,17 +13,25 @@ const GROUPS: { title: string; fields: Field[] }[] = [
   { title: 'Aturan Sinyal', fields: [
     { key: 'rsiBuyMin', label: 'RSI BUY minimum', step: 0.1 }, { key: 'rsiBuyMax', label: 'RSI BUY maksimum', step: 0.1 },
     { key: 'rsiSellMax', label: 'RSI SELL maksimum', step: 0.1 }, { key: 'volumeMultiplier', label: 'Pengali volume', step: 0.05, hint: 'volume ≥ N × Volume MA' },
-    { key: 'crossLookback', label: 'Jendela cross EMA (candle)', hint: '1 = hanya candle cross; 3 = cross boleh terjadi s/d 2 candle sebelumnya' },
+    { key: 'crossLookback', label: 'Jendela cross EMA (candle)', hint: '1 = hanya candle cross; 2 = cross boleh terjadi 1 candle sebelumnya' },
+    { key: 'maxEntryExtensionPct', label: 'Jarak maks close di atas EMA lambat (%)', step: 0.1, hint: 'anti mengejar harga; 0 = nonaktif' },
+    { key: 'sellRequireConfirm', label: 'SELL wajib konfirmasi RSI + volume', bool: true, hint: 'mati = setiap cross-down langsung keluar' },
     { key: 'useTrendFilter', label: 'Filter tren (close > EMA tren)', bool: true }, { key: 'notifySignals', label: 'Kirim sinyal ke Telegram', bool: true },
     { key: 'minCandles', label: 'Minimal candle' }, { key: 'maxTickerAgeSeconds', label: 'Umur ticker maks (detik)' },
   ] },
   { title: 'Stop Loss & Take Profit', fields: [
     { key: 'atrStopMultiplier', label: 'Stop loss (× ATR)', step: 0.1 }, { key: 'atrTakeProfitMultiplier', label: 'Take profit (× ATR)', step: 0.1 },
+    { key: 'trailingStopEnabled', label: 'Trailing stop ATR', bool: true },
+    { key: 'trailActivationAtr', label: 'Trailing aktif setelah profit (× ATR)', step: 0.1 },
+    { key: 'trailDistanceAtr', label: 'Jarak trailing (× ATR)', step: 0.1 },
+    { key: 'timeStopMinutes', label: 'Time stop (menit, 0 = mati)' },
     { key: 'fallbackStopPct', label: 'Stop loss cadangan (%)', step: 0.1 }, { key: 'fallbackTakeProfitPct', label: 'Take profit cadangan (%)', step: 0.1 },
   ] },
   { title: 'Risk Management & Biaya', fields: [
     { key: 'riskPerTradePct', label: 'Risiko per trade (% equity)', step: 0.05 }, { key: 'maxPositionPct', label: 'Ukuran posisi maks (% equity)', step: 0.5 },
-    { key: 'maxOpenPositions', label: 'Posisi terbuka maks' }, { key: 'dailyLossLimitPct', label: 'Batas rugi harian (%)', step: 0.1 },
+    { key: 'maxOpenPositions', label: 'Posisi terbuka maks' }, { key: 'maxTotalExposurePct', label: 'Eksposur total maks (% equity)', step: 1 },
+    { key: 'closeOnDailyLoss', label: 'Tutup semua posisi saat batas rugi harian tercapai', bool: true },
+    { key: 'dynamicSlippage', label: 'Slippage dinamis untuk pair tipis', bool: true }, { key: 'dailyLossLimitPct', label: 'Batas rugi harian (%)', step: 0.1 },
     { key: 'maxDrawdownPct', label: 'Max drawdown → kill switch (%)', step: 0.5 }, { key: 'feePct', label: 'Fee per sisi (%)', step: 0.01 },
     { key: 'slippageBps', label: 'Slippage (bps)', step: 1 },
   ] },
@@ -113,7 +121,7 @@ export default function Strategy({ isAdmin }: { isAdmin: boolean }) {
       <Card title="Aturan">
         <ul className="list-disc space-y-1 pl-5 text-sm text-slate-300">
           <li><b>BUY</b>: EMA cepat memotong ke atas EMA lambat, RSI dalam rentang BUY, volume ≥ pengali × Volume MA, dan (opsional) close &gt; EMA tren.</li>
-          <li><b>SELL</b>: EMA cepat memotong ke bawah EMA lambat, RSI ≤ batas SELL, dengan konfirmasi volume. Menutup posisi terbuka di pair tsb.</li>
+          <li><b>SELL</b>: EMA cepat memotong ke bawah EMA lambat (konfirmasi RSI ≤ batas SELL + volume hanya bila diaktifkan). Menutup posisi terbuka di pair tsb. Posisi juga keluar via stop loss, take profit, trailing stop ATR, time stop, atau batas rugi harian.</li>
           <li>Sinyal hanya dihitung pada candle 5 menit yang sudah selesai dan lolos pemeriksaan kualitas data.</li>
           <li><b>MTF</b>: tren 15m &amp; 1h (candle selesai) = bullish bila close &gt; EMA lambat dan EMA cepat &gt; EMA lambat, bearish sebaliknya. Mode <i>Filter</i>: BUY hanya bila 1h bullish dan tidak ada timeframe bearish (data belum siap = BUY ditahan); SELL tidak pernah diblokir karena berfungsi sebagai exit. Searah +10 kekuatan per timeframe, berlawanan −15.</li>
           <li><b>Universe dinamis</b>: tiap 15 menit pair IDR diperingkat menurut volume 24 jam (lolos volume minimal, spread maksimal, bukan stablecoin/maintenance). Pair manual selalu ikut; pair dengan posisi terbuka tetap dianalisa sampai ditutup.</li>
