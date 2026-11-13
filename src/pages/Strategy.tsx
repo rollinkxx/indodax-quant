@@ -13,6 +13,7 @@ const GROUPS: { title: string; fields: Field[] }[] = [
   { title: 'Aturan Sinyal', fields: [
     { key: 'rsiBuyMin', label: 'RSI BUY minimum', step: 0.1 }, { key: 'rsiBuyMax', label: 'RSI BUY maksimum', step: 0.1 },
     { key: 'rsiSellMax', label: 'RSI SELL maksimum', step: 0.1 }, { key: 'volumeMultiplier', label: 'Pengali volume', step: 0.05, hint: 'volume ≥ N × Volume MA' },
+    { key: 'crossLookback', label: 'Jendela cross EMA (candle)', hint: '1 = hanya candle cross; 3 = cross boleh terjadi s/d 2 candle sebelumnya' },
     { key: 'useTrendFilter', label: 'Filter tren (close > EMA tren)', bool: true }, { key: 'notifySignals', label: 'Kirim sinyal ke Telegram', bool: true },
     { key: 'minCandles', label: 'Minimal candle' }, { key: 'maxTickerAgeSeconds', label: 'Umur ticker maks (detik)' },
   ] },

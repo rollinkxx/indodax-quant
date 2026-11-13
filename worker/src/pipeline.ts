@@ -7,7 +7,7 @@ import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage } from './http';
 import { fillGaps, floorTo, type Candle, type Trade } from '../../shared/candles';
-import { checkDataQuality, computeIndicatorsTail, evaluateSignal, mergeParams } from '../../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtf, buildHigherSeries, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, exitReason, feeFor, positionSize, riskState, sellFillPrice } from '../../shared/paper';
@@ -362,8 +362,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           }
           mtfInfo[p.id] = states.map((st) => `${st.tf}:${st.trend}`).join(' ');
         }
-        const rows = computeIndicatorsTail(series, params, 3);
-        for (const r of rows) {
+        // enough rows to look back for a recent EMA cross (crossLookback) plus the candle before it
+        const rows = computeIndicatorsTail(series, params, Math.max(3, params.crossLookback + 1));
+        const rowVolumes = series.slice(-rows.length).map((c) => c.v);
+        for (const r of rows.slice(-3)) {
           indicatorRows.push({
             pair_id: p.id, timeframe: '5m', open_time: iso(r.t), close: r.close, ema9: r.ema9, ema21: r.ema21, ema50: r.ema50,
             rsi14: r.rsi14, macd: r.macd, macd_signal: r.macdSignal, macd_hist: r.macdHist, atr14: r.atr14, vol_ma20: r.volMa20,
@@ -378,7 +380,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (!freshTicker(p.id)) { quality[p.id] = 'stale_ticker'; continue; }
         if (rows.length < 2) { quality[p.id] = 'insufficient_rows'; continue; }
         quality[p.id] = 'ok';
-        const raw5m = evaluateSignal(last, rows[rows.length - 2], series[series.length - 1].v, params);
+        const raw5m = evaluateSignalWindow(rows, rowVolumes, params);
         const mtf = applyMtf(raw5m, states, params.mtfMode);
         if (raw5m && mtf.blocked) mtfBlocked[p.id] = `${raw5m.side} ${mtf.blocked}`;
         const decision = mtf.decision;
