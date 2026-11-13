@@ -38,10 +38,10 @@ export function wib(v: unknown, withSeconds = false): string {
 export function ago(v: unknown): string {
   if (!v) return '—';
   const s = Math.round((Date.now() - new Date(String(v)).getTime()) / 1000);
-  if (s < 60) return `${s}d lalu`;
-  if (s < 3600) return `${Math.floor(s / 60)}m lalu`;
-  if (s < 86400) return `${Math.floor(s / 3600)}j lalu`;
-  return `${Math.floor(s / 86400)}h lalu`;
+  if (s < 60) return `${Math.max(s, 0)} detik lalu`;
+  if (s < 3600) return `${Math.floor(s / 60)} menit lalu`;
+  if (s < 86400) return `${Math.floor(s / 3600)} jam lalu`;
+  return `${Math.floor(s / 86400)} hari lalu`;
 }
 
 export const pairLabel = (p: string) => p.toUpperCase().replace(/IDR$/, '/IDR');
