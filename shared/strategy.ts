@@ -28,6 +28,10 @@ export interface StrategyParams {
   riskPerTradePct: number;
   maxPositionPct: number;
   maxOpenPositions: number;
+  /** Skip BUY when the bid/ask spread is wider than N% of mid (round-trip cost eats the edge). 0 = disabled. */
+  maxEntrySpreadPct: number;
+  /** Skip BUY when the current ask is more than N% above the signal candle close (late / chasing entry). 0 = disabled. */
+  maxEntryDriftPct: number;
   /** Cap on total open cost basis as % of equity. */
   maxTotalExposurePct: number;
   /** Trailing stop: arms after price is `trailActivationAtr` x ATR above entry, then trails `trailDistanceAtr` x ATR below price. */
@@ -95,6 +99,8 @@ export const DEFAULT_PARAMS: StrategyParams = {
   riskPerTradePct: 1,
   maxPositionPct: 25,
   maxOpenPositions: 4,
+  maxEntrySpreadPct: 0.6,
+  maxEntryDriftPct: 0.5,
   maxTotalExposurePct: 60,
   trailingStopEnabled: true,
   trailActivationAtr: 1.5,
@@ -147,6 +153,8 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   riskPerTradePct: [0.05, 10],
   maxPositionPct: [1, 100],
   maxOpenPositions: [1, 10, true],
+  maxEntrySpreadPct: [0, 10],
+  maxEntryDriftPct: [0, 10],
   maxTotalExposurePct: [5, 100],
   trailActivationAtr: [0.1, 20],
   trailDistanceAtr: [0.1, 20],
