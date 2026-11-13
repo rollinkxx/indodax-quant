@@ -45,7 +45,7 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
 - Login: `gsdrxx@gmail.com` exists in Supabase Auth (confirmed) and is admin.
 - CI: run 43372658507 (`817f4fb`) green. `ci-deploy.yml` now prints the deployed URL as a `::notice` annotation (commit `6c3423d`).
 - Local: vitest 8 files / 69 tests pass.
-- Commits (pushed with the n8n GitHub node; GitHub MCP writes still blocked: "Session approvals are not available"): `6c3423d` CI, `fd9839f` TASKS, `3d09651` PROJECT_STATE, then HANDOFF.
+- Commits (pushed with the n8n GitHub node; GitHub MCP writes were blocked: "Session approvals are not available"): `6c3423d` CI, `fd9839f` TASKS, `3d09651` PROJECT_STATE, then HANDOFF.
 - Bug fix (owner screenshot): Overview showed `HTTP 400 ... portfolio_snapshots ... code 22007`. Cause: `reset_at`
   (`...+00:00`) was put unencoded in the PostgREST URL, so `+` became a space. Fix: `Db.encodeQuery` encodes `+`
   for all `select`/`update` calls (`02148f0`), test `tests/db.test.ts` (`25b6a6b`). Also `ago()` now prints
@@ -56,18 +56,38 @@ workflow, but **those files were never pushed** (only `src/pages/Login.tsx` exis
   Commits `45dd88d` helper, `21ff386` tests, `05d8d7a` Charts.tsx. CI run 43376062984 green; bundle `index-DxepPsrm.js` live.
   Local: vitest 10 files / 75 tests, typecheck + build OK.
 
+### Session 5 (n8n Instance Agent, 2026-11-13 15:25-15:40 WIB) — read-only verification, no code or DB changes
+- Access: Supabase MCP `execute_sql` and GitHub MCP writes were denied ("Session approvals are not available") until each MCP
+  server was reconnected (`mcp-servers connect`); afterwards they work. Supabase via n8n HTTP node is blocked
+  (OAuth credential not allowed in HTTP nodes). GitHub reads via MCP and n8n GitHub node work.
+- Worker: `GET /api/health` = 200, `liveTrading:false` (15:30 WIB).
+- Cron: last 60 `execution_logs` = 60/60 SUCCESS, avg 5.6 s, max 11.3 s wall time, latest 15:32 WIB.
+  Overall ids 7-209 (203 rows): 20 non-SUCCESS, all historical (403 / relay 404 before deploy, plus the incident below).
+- Incident 13:47 WIB (06:47Z): ids 103 and 104 = PARTIAL. `indodax-proxy` returned HTTP 502
+  `upstream_failed: Maximum number of redirects (20) reached` for summaries and some trades. Self-recovered at id 105
+  (06:49Z). A Telegram `system_error` was sent. Earlier `system_error` at 12:13 WIB was the direct 403 before the relay.
+  Watch for repeats; if frequent, add retry/backoff in the edge function or handle redirect loops.
+- First production signals (2026-11-13 15:20 WIB, candle 08:15Z, 5m, `ema_rsi_volume`, strength 90): SELL `ethidr`
+  @ Rp35.249.000 and SELL `solidr` @ Rp1.454.883. Both delivered to Telegram (status SENT).
+- Paper account: **RUNNING**, started 2026-11-13 13:00 WIB by `gsdrxx@gmail.com` (admin pressed Start; not started by an agent).
+  Cash = equity = Rp10.000.000, kill_switch=false, no positions, no orders.
+- Why no order from SELL signals: the paper engine is long-only (`shared/paper.ts` requires `stopLoss < entry`, PnL is a
+  long round trip), so SELL is an exit signal for an open long. With no position it is correctly ignored. Orders will
+  appear after the first BUY signal.
+- Docs were stale before this session (said 0 signals, STOPPED). Updated now.
+
 ## Blockers (need the human owner)
 1. ~~Cloudflare access / Worker secrets / SUPABASE_ACCESS_TOKEN~~ — DONE (session 3).
 2. ~~Login user~~ DONE: `gsdrxx@gmail.com` exists and is admin (session 4).
-3. **Plan**: Workers Free has a 10 ms CPU limit per invocation; the per-minute job may exceed it. Workers
-   Paid is recommended (see README).
+3. **Plan**: Workers Free has a 10 ms CPU limit per invocation; the per-minute job may exceed it. No CPU-limit failure
+   seen in 60/60 recent runs, but keep watching. Workers Paid is recommended (see README).
 
 ## Next steps for the next agent
-1. Watch `execution_logs` for a few hours: expect SUCCESS every minute; check `duration_ms` and CPU limit errors.
-2. Confirm signals appear in `trading_signals` after 5m candles close (EMA cross + RSI + volume).
-3. Owner: log in at https://indodax-quant.sinyalku.workers.dev and check all 9 pages show real data.
-4. Send Telegram test from Settings.
-5. Paper trading must stay STOPPED until the administrator presses Start.
+1. Keep watching `execution_logs` (expect SUCCESS each minute) and any `system_error` notifications; relay 502 redirect-loop incident of 13:47 WIB.
+2. Watch for the first BUY signal and the first `paper_orders` / `paper_positions` rows; verify sizing, SL/TP, fees and Telegram order notice.
+3. Owner: confirm all 9 pages show real data after login; send a Telegram test from Settings.
+4. Optional: disable public sign-ups in Supabase Auth; code-split lightweight-charts; pipeline e2e test with fake RPCs.
+5. Do not stop or reset the paper account unless the admin asks.
 
 ## Rules
 - Paper trading only. Never add INDODAX private/trade API calls or keys.
