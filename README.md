@@ -6,7 +6,8 @@ Cryptocurrency monitoring and **automated paper trading** platform for INDODAX m
 - **Backend**: Cloudflare Worker REST API (`/api/*`)
 - **Scheduler**: Cloudflare Cron Trigger `* * * * *` (UTC)
 - **Database / Auth**: Supabase PostgreSQL + Supabase Auth, Row Level Security
-- **Market data**: [INDODAX Official Public API](https://github.com/btcid/indodax-official-api-docs) only
+- **Market data**: [INDODAX Official Public API](https://github.com/btcid/indodax-official-api-docs) only,
+  fetched through the read-only Supabase Edge Function relay `indodax-proxy` (INDODAX returns HTTP 403 to Cloudflare Worker IPs)
 - **Notifications**: Telegram Bot API called directly from the Worker
 
 > **No live trading.** The code contains no INDODAX private/trade API client, no API keys, no order
@@ -23,7 +24,8 @@ The production system has no dependency on n8n.
 Cloudflare Cron (every minute, UTC)
   └─ Worker.scheduled → runPipeline()
        1. begin_run RPC        idempotency (one run per minute) + DB lock (no concurrent runs)
-       2. INDODAX /api/summaries, /api/trades/{pair}  (timeouts, retries, 429 back-off, validation)
+       2. INDODAX /api/summaries, /api/trades/{pair}  via relay `indodax-proxy` (GET-only, public allow-list)
+                               (timeouts, retries, 429 back-off, validation)
        3. 1m candles from trades; gaps/bootstrap from official /tradingview/history_v2; 5m aggregation
        4. ingest_market RPC    tickers (latest + history), trades (dedup by tid), candles, sync state
        5. indicators (EMA 9/21/50, RSI 14, MACD, ATR 14, Volume MA 20, support/resistance)
@@ -68,11 +70,12 @@ All parameters are editable on the *Strategy Configuration* page (validated serv
 ## Repository layout
 
 ```
-worker/src/     Cloudflare Worker (index, api, pipeline, indodax, db, auth, telegram, notify, ingest)
+worker/src/     Cloudflare Worker (index, api, pipeline, indodax, relay, db, auth, telegram, notify, ingest)
 shared/         Pure, tested logic (indicators, candles, strategy, paper maths)
 src/            React dashboard (9 pages + login)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
-tests/          Vitest suites (66 tests)
+supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
+tests/          Vitest suites (75 tests, 10 files)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
 ```
 
@@ -104,12 +107,13 @@ The migrations in `supabase/migrations/` are already applied to project `sinyalk
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token from the *Edit Cloudflare Workers* template |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account id |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role / secret key |
+| `SUPABASE_ACCESS_TOKEN` | Supabase personal access token (deploys the `indodax-proxy` Edge Function) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | Telegram chat id |
 
 Then run the *CI & Deploy* workflow (Actions tab → *Run workflow*) or push to `main`. The workflow runs
-typecheck + tests + build, deploys the Worker with static assets and the cron trigger, and syncs the
-Worker secrets.
+typecheck + tests + build, deploys the Worker with static assets and the cron trigger, deploys the
+`indodax-proxy` Edge Function, and syncs the Worker secrets.
 
 **Option B — from your machine.**
 
@@ -122,7 +126,8 @@ npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_CHAT_ID
 ```
 
-The app is then live at `https://indodax-quant.<your-subdomain>.workers.dev`.
+The app is then live at `https://indodax-quant.<your-subdomain>.workers.dev`
+(production: `https://indodax-quant.sinyalku.workers.dev`).
 
 > **Plan note:** the per-minute job is mostly I/O, but parsing 450 tickers plus indicator maths can exceed
 > the 10 ms CPU limit of the Workers *Free* plan. The *Workers Paid* plan (30 s CPU per invocation)
@@ -149,7 +154,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 ## Tests
 
 ```bash
-npm test                 # 66 unit + integration tests (fake Supabase / INDODAX)
+npm test                 # 75 unit + integration tests in 10 files (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
 ```
@@ -157,7 +162,8 @@ npm run verify:indodax btcidr   # live, read-only check against INDODAX public A
 Coverage includes: indicator maths (reference RSI values), candle building and gap handling,
 signal rules and data-quality gate, sizing / fees / slippage / PnL (matches the SQL functions),
 stop loss / take profit, daily loss limit, drawdown kill switch, API authentication and role checks,
-cron idempotency, stale-data refusal, notification dedupe, and the private-endpoint block.
+cron idempotency, stale-data refusal, notification dedupe, the private-endpoint block, the INDODAX relay,
+PostgREST query encoding and chart range padding.
 
 The Postgres functions were additionally verified directly in Supabase (inside rolled-back transactions):
 duplicate idempotency key rejected, double close rejected, orders refused while STOPPED, balance/PnL
