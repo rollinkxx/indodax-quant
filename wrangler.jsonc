@@ -1,0 +1,25 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "indodax-quant",
+  "main": "worker/src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": true,
+  // React dashboard served by Workers Static Assets; /api/* is handled by the Worker first.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  // Cloudflare Cron Trigger (UTC): run the pipeline every minute.
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": { "enabled": true },
+  // Public values only. Secrets are set with `wrangler secret put` (see README):
+  //   SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+  "vars": {
+    "SUPABASE_URL": "https://znikuooxiqfcicyuhqsx.supabase.co",
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_GTvV2X7uTGOjKZXZCy1cnA_Rv9Y3HVj"
+  }
+}

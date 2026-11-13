@@ -1,0 +1,42 @@
+{
+  "name": "indodax-quant",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "INDODAX market monitoring + automated PAPER trading on Cloudflare Workers and Supabase. No live trading.",
+  "scripts": {
+    "dev": "vite",
+    "dev:worker": "wrangler dev",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.worker.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:indodax": "tsx scripts/verify-indodax.ts",
+    "deploy": "npm run build && wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.119.0",
+    "lightweight-charts": "5.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-router-dom": "7.18.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261113.1",
+    "@tailwindcss/vite": "4.3.5",
+    "@types/node": "26.6.6",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "tailwindcss": "4.3.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "4.1.12",
+    "wrangler": "4.161.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
