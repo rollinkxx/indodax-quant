@@ -56,7 +56,6 @@ export function aggregateComplete(series5m: Candle[], tfSec: number): Candle[] {
   for (const [t, list] of buckets) {
     if (list.length !== per) continue;
     list.sort((a, b) => a.t - b.t);
-    const allSynthetic = list.every((k) => k.source === 'synthetic');
     out.push({
       t,
       o: list[0].o,
