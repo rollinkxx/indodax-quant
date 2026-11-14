@@ -53,6 +53,15 @@ describe('higher-timeframe aggregation', () => {
     expect(out.map((k) => [k.t, k.c])).toEqual([[0, 10], [3600, 11], [7200, 13]]);
   });
 
+
+  it('does not allow a synthetic aggregate to overwrite official observed HTF history', () => {
+    const official = c(7200, 120, 120, 0, 'history');
+    const synthetic = c(7200, 999, 999, 0, 'synthetic');
+    const out = buildHigherSeries([official], [synthetic], 3600, 7200);
+
+    expect(out.at(-1)).toMatchObject({ t: 7200, c: 120, source: 'history' });
+  });
+
   it('buildHigherSeries fills gaps up to the last complete bucket', () => {
     const out = buildHigherSeries([c(0, 10)], [], 3600, 3 * 3600);
     expect(out).toHaveLength(4);
