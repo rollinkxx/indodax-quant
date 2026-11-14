@@ -16,6 +16,11 @@ const history = (minute: number, close = 99, volume = 0): Candle => ({
 const completeHistory = () => Array.from({ length: 5 }, (_, i) => history(i));
 
 describe('minute coverage recovery', () => {
+  it('bootstraps from official history when no coverage frontier exists', () => {
+    const plan = planCoverage([trade('1', 4)], null, NOW);
+    expect(plan.historyRange).toEqual({ from: T0 - 24 * 3600, to: nowMin });
+  });
+
   it('detects missing minutes inside the recent trade window and requests one aligned range', () => {
     const trades = [trade('1', 0), trade('2', 2), trade('3', 4)];
     const plan = planCoverage(trades, T0, NOW);
