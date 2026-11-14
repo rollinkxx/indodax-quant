@@ -71,7 +71,7 @@ export const messages = {
       `Realized PnL: <b>${signed(o.pnl)}</b>`,
     ].join('\n');
   },
-  killSwitch(reason: string, closed: number) {
+  killSwitch(reason: string, closed: number, _outcome?: { total: number; failures: { pair: string; reason: string }[] }) {
     return `🚨 <b>KILL SWITCH AKTIF</b>\nAlasan: ${escapeHtml(reason)}\nPosisi ditutup: ${closed}\nPaper trading dihentikan sampai akun di-reset.`;
   },
   daily(d: { equity: number; pnl: number; pnlPct: number; trades: number; drawdown: number; status: string }) {
