@@ -28,6 +28,16 @@ describe('minute coverage recovery', () => {
     expect(plan.historyRange).toEqual({ from: T0, to: nowMin });
   });
 
+  it('does not rescan quiet minutes that are already behind the saved coverage frontier', () => {
+    const trades = [trade('1', 0), trade('2', 4)];
+    const plan = planCoverage(trades, nowMin, NOW);
+
+    expect(plan.historyRange).toBeNull();
+    const built = buildPairCandles(trades, plan, nowMin, []);
+    expect(built.newCoveredUntil).toBe(nowMin);
+    expect(built.historyComplete).toBe(true);
+  });
+
   it('fills quiet minutes from official OHLC and keeps trade-derived bars on collisions', () => {
     const trades = [trade('1', 0, 100), trade('2', 2, 102), trade('3', 4, 104)];
     const plan = planCoverage(trades, T0, NOW);
