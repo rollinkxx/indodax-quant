@@ -62,3 +62,54 @@ begin
 end;
 $unauthorized$;
 rollback;
+
+-- Validate all five previously missing FK leading-column indexes.
+do $fk_indexes$
+declare
+  v_expected record;
+  v_first_column text;
+  v_index_count integer;
+begin
+  for v_expected in
+    select * from (values
+      ('paper_orders'::text, 'paper_orders_pair_id_idx'::text, 'pair_id'::text),
+      ('paper_orders'::text, 'paper_orders_position_id_idx'::text, 'position_id'::text),
+      ('paper_orders'::text, 'paper_orders_signal_id_idx'::text, 'signal_id'::text),
+      ('paper_positions'::text, 'paper_positions_entry_signal_id_idx'::text, 'entry_signal_id'::text),
+      ('paper_positions'::text, 'paper_positions_pair_id_idx'::text, 'pair_id'::text)
+    ) as expected(table_name, index_name, first_column)
+  loop
+    select a.attname::text
+      into v_first_column
+    from pg_index ix
+    join pg_class idx on idx.oid = ix.indexrelid
+    join lateral unnest(ix.indkey) with ordinality key_column(attnum, ordinal) on true
+    join pg_attribute a on a.attrelid = ix.indrelid and a.attnum = key_column.attnum
+    where ix.indrelid = format('public.%I', v_expected.table_name)::regclass
+      and idx.relname = v_expected.index_name
+      and key_column.ordinal = 1
+      and ix.indisvalid
+      and ix.indisready
+      and ix.indpred is null;
+
+    if v_first_column is distinct from v_expected.first_column then
+      raise exception 'Index % on % is missing, partial, invalid, or not led by %',
+        v_expected.index_name, v_expected.table_name, v_expected.first_column;
+    end if;
+  end loop;
+
+  -- Existing account indexes are enough for those FKs; do not add redundant single-column variants.
+  select count(*) into v_index_count
+  from pg_indexes
+  where schemaname = 'public'
+    and indexname in ('paper_orders_account_id_idx', 'paper_positions_account_id_idx');
+  if v_index_count <> 0 then
+    raise exception 'Unexpected duplicate account_id index created by FK remediation';
+  end if;
+
+  if (select count(*) from public.paper_positions) <> 1
+     or (select count(*) from public.paper_orders) <> 1 then
+    raise exception 'FK index migration changed existing rows';
+  end if;
+end;
+$fk_indexes$;

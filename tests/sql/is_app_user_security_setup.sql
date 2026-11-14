@@ -52,3 +52,37 @@ grant select on public.private_data to authenticated, service_role;
 create policy app_users_read on public.private_data
   for select to authenticated
   using (public.is_app_user());
+
+-- Minimal paper-trading relations for foreign-key index validation.
+create table public.market_pairs (id text primary key);
+create table public.paper_accounts (id bigint primary key);
+create table public.trading_signals (id bigint primary key);
+
+create table public.paper_positions (
+  id bigint primary key,
+  account_id bigint not null references public.paper_accounts(id),
+  pair_id text not null references public.market_pairs(id),
+  entry_signal_id bigint references public.trading_signals(id),
+  status text not null default 'OPEN',
+  opened_at timestamptz not null default now()
+);
+create index paper_positions_account_idx on public.paper_positions (account_id, opened_at desc);
+create unique index paper_positions_one_open_idx
+  on public.paper_positions (account_id, pair_id) where status = 'OPEN';
+
+create table public.paper_orders (
+  id bigint primary key,
+  account_id bigint not null references public.paper_accounts(id),
+  position_id bigint references public.paper_positions(id),
+  pair_id text not null references public.market_pairs(id),
+  signal_id bigint references public.trading_signals(id),
+  created_at timestamptz not null default now()
+);
+create index paper_orders_account_idx on public.paper_orders (account_id, created_at desc);
+
+insert into public.market_pairs(id) values ('btcidr');
+insert into public.paper_accounts(id) values (1);
+insert into public.trading_signals(id) values (10);
+insert into public.paper_positions(id, account_id, pair_id, entry_signal_id) values (100, 1, 'btcidr', 10);
+insert into public.paper_orders(id, account_id, position_id, pair_id, signal_id)
+values (1000, 1, 100, 'btcidr', 10);
