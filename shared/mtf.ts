@@ -65,7 +65,7 @@ export function aggregateComplete(series5m: Candle[], tfSec: number): Candle[] {
       c: list[list.length - 1].c,
       v: list.reduce((s, k) => s + k.v, 0),
       n: list.reduce((s, k) => s + k.n, 0),
-      source: allSynthetic ? 'synthetic' : list.some((k) => k.source === 'history') ? 'history' : 'trades',
+      source: list.some((k) => k.source === 'synthetic') ? 'synthetic' : list.some((k) => k.source === 'history') ? 'history' : 'trades',
     });
   }
   return out.sort((a, b) => a.t - b.t);
@@ -90,11 +90,28 @@ export function trendState(tf: HigherTf, series: Candle[], lastComplete: number,
   if (series.length < p.mtfMinCandles) return { ...base, reason: `warming_up (${series.length}/${p.mtfMinCandles})` };
   const last = series[series.length - 1];
   if (last.t !== lastComplete) return { ...base, reason: 'stale_last_candle' };
-  const closes = series.map((c) => c.c);
+  if (last.source === 'synthetic') return { ...base, candles: 0, reason: 'synthetic_last_candle' };
+
+  // A gap-filled candle carries no observed price action. Compute indicators only from the
+  // latest uninterrupted suffix of actual history/trade candles, never across a synthetic gap.
+  let start = series.length - 1;
+  while (start > 0) {
+    const previous = series[start - 1];
+    const current = series[start];
+    if (previous.source === 'synthetic' || current.t - previous.t !== TF_SECONDS[tf]) break;
+    start--;
+  }
+  const valid = series.slice(start);
+  const validBase = { ...base, candles: valid.length };
+  if (valid.length < p.mtfMinCandles) {
+    return { ...validBase, reason: `insufficient_contiguous_candles (${valid.length}/${p.mtfMinCandles})` };
+  }
+
+  const closes = valid.map((c) => c.c);
   const f = ema(closes, p.mtfEmaFast).at(-1) ?? null;
   const s = ema(closes, p.mtfEmaSlow).at(-1) ?? null;
   const r = rsi(closes, p.rsiPeriod).at(-1) ?? null;
-  const out: TfState = { ...base, close: last.c, emaFast: f, emaSlow: s, rsi: r };
+  const out: TfState = { ...validBase, close: last.c, emaFast: f, emaSlow: s, rsi: r };
   if (f === null || s === null) return { ...out, trend: 'unknown', reason: 'indicators_not_ready' };
   if (last.c > s && f > s) return { ...out, trend: 'bull' };
   if (last.c < s && f < s) return { ...out, trend: 'bear' };
