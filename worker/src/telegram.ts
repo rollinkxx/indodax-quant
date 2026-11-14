@@ -86,7 +86,7 @@ export const messages = {
       if (failures.length > 10) lines.push(`• ...dan ${failures.length - 10} posisi lainnya.`);
     }
     lines.push('Paper trading dihentikan sampai akun di-reset.');
-    return lines.join('\\n');
+    return lines.join('\n');
   },
   daily(d: { equity: number; pnl: number; pnlPct: number; trades: number; drawdown: number; status: string }) {
     return [
