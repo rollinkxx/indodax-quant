@@ -71,8 +71,22 @@ export const messages = {
       `Realized PnL: <b>${signed(o.pnl)}</b>`,
     ].join('\n');
   },
-  killSwitch(reason: string, closed: number, _outcome?: { total: number; failures: { pair: string; reason: string }[] }) {
-    return `🚨 <b>KILL SWITCH AKTIF</b>\nAlasan: ${escapeHtml(reason)}\nPosisi ditutup: ${closed}\nPaper trading dihentikan sampai akun di-reset.`;
+  killSwitch(reason: string, closed: number, outcome?: { total: number; failures: { pair: string; reason: string }[] }) {
+    const lines = [
+      '🚨 <b>KILL SWITCH AKTIF</b>',
+      `Alasan: ${escapeHtml(reason)}`,
+      `Posisi ditutup: ${outcome ? `${closed}/${outcome.total}` : closed}`,
+    ];
+    const failures = outcome?.failures ?? [];
+    if (failures.length) {
+      lines.push('Gagal ditutup:');
+      for (const failure of failures.slice(0, 10)) {
+        lines.push(`• ${escapeHtml(failure.pair)}: ${escapeHtml(failure.reason.slice(0, 180))}`);
+      }
+      if (failures.length > 10) lines.push(`• ...dan ${failures.length - 10} posisi lainnya.`);
+    }
+    lines.push('Paper trading dihentikan sampai akun di-reset.');
+    return lines.join('\\n');
   },
   daily(d: { equity: number; pnl: number; pnlPct: number; trades: number; drawdown: number; status: string }) {
     return [
