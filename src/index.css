@@ -32,6 +32,20 @@
   --app-skeleton: rgb(51 65 85 / 0.45);
   --app-skeleton-shine: rgb(71 85 105 / 0.55);
   --app-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px -12px rgb(0 0 0 / 0.5);
+  /* Chart colours (read by src/components/Charts.tsx when a chart is created). Hex #rrggbb so alpha can be appended. */
+  --chart-text: #94a3b8;
+  --chart-grid: #1e293b;
+  --chart-border: #334155;
+  --chart-up: #10b981;
+  --chart-down: #f43f5e;
+  --chart-volume: #334155;
+  --chart-ema-fast: #facc15;
+  --chart-ema-slow: #38bdf8;
+  --chart-ema-trend: #a78bfa;
+  --chart-rsi: #f97316;
+  --chart-macd: #38bdf8;
+  --chart-macd-signal: #f43f5e;
+  --chart-area: #10b981;
 }
 
 @theme inline {
@@ -101,6 +115,19 @@ body {
     border-radius: 0.5rem;
     background-color: var(--app-skeleton);
   }
+  /* Price flash: a tinted overlay that fades out once (opacity only). Re-mount the element to replay it. */
+  .flash-up, .flash-down { position: relative; }
+  .flash-up::after, .flash-down::after {
+    content: "";
+    position: absolute;
+    inset: -2px -4px;
+    border-radius: 0.375rem;
+    pointer-events: none;
+    opacity: 0;
+    animation: flash 300ms ease-out;
+  }
+  .flash-up::after { background-color: var(--app-up); }
+  .flash-down::after { background-color: var(--app-down); }
   .skeleton::after {
     content: "";
     position: absolute;
@@ -109,6 +136,11 @@ body {
     transform: translateX(-100%);
     animation: var(--animate-shimmer);
   }
+}
+
+@keyframes flash {
+  from { opacity: 0.3; }
+  to { opacity: 0; }
 }
 
 ::selection { background: rgb(16 185 129 / 0.35); }
@@ -125,5 +157,5 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  .skeleton::after { display: none; }
+  .skeleton::after, .flash-up::after, .flash-down::after { display: none; }
 }

@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 10:45 WIB (session 13: UI redesign step 3 — Overview + Paper Trading — done)_
+_Last updated: 2026-11-14 11:00 WIB (session 13: UI redesign step 4 — Market + Chart + Signals — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -78,10 +78,8 @@ Display rules (mandatory, set by the owner):
 
 Steps (done: 1 foundation — tokens in `src/index.css`, components in `src/components/ui.tsx` + `Icon.tsx`; 2 shell — `src/components/Layout.tsx`,
 `AuthScreen` in `src/pages/Login.tsx`; the page scroll container is `<main>`, not `window`; 3 Overview + Paper — `src/components/Portfolio.tsx`
-(EquityHero + SVG Sparkline, PositionCard, PaperControls), `ConfirmDialog` in `ui.tsx` locks `<main>` scroll):
-- [ ] 4. Market + Chart + Signals: market table with search, sort and a mobile card view, short price flash only on changed cells;
-  chart toolbar with segmented pair/timeframe controls and chart colours from the tokens (`src/components/Charts.tsx`);
-  signals as cards/timeline with BUY/SELL colour and expandable reasons.
+(EquityHero + SVG Sparkline, PositionCard, PaperControls), `ConfirmDialog` in `ui.tsx` locks `<main>` scroll; 4 Market + Chart + Signals —
+`Segmented` + `SearchInput` in `ui.tsx`, chart colours are `--chart-*` tokens read by `chartColors()` in `Charts.tsx`, `.flash-up/down` in `index.css`):
 - [ ] 5. History + Strategy + System + Settings: history filters and a summary row; strategy form grouped into sections with helper
   text, unsaved-changes indicator and sticky save bar; system runs as a timeline with status colours and duration bars; tidy settings.
 - [ ] 6. Owner-approved extra — light/dark theme: colour tokens as CSS variables for both themes, a toggle in the top bar, choice saved in

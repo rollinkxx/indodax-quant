@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 
@@ -234,5 +234,56 @@ export function ConfirmDialog({ open, title, children, confirmLabel = 'OK', canc
       </div>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * Segmented control (radio group). Arrow keys move the selection; only the active option is in the Tab order.
+ * Every option uses the same font weight so the control never changes width. `scroll` lets a long list scroll sideways.
+ */
+export function Segmented({ value, onChange, options, label, scroll = false, className = '' }: {
+  value: string; onChange: (v: string) => void; options: { value: string; label: ReactNode }[]; label: string; scroll?: boolean; className?: string;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const onKey = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const dir = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+    if (!dir || !options.length) return;
+    e.preventDefault();
+    const i = Math.max(0, options.findIndex((o) => o.value === value));
+    const next = options[(i + dir + options.length) % options.length];
+    onChange(next.value);
+    requestAnimationFrame(() => {
+      const btn = ref.current?.querySelector<HTMLButtonElement>(`[data-value="${CSS.escape(next.value)}"]`);
+      btn?.focus();
+      btn?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  };
+  return (
+    <div ref={ref} role="radiogroup" aria-label={label} onKeyDown={onKey}
+      className={`inline-flex h-9 max-w-full items-center gap-0.5 rounded-control border border-line-strong bg-surface-2 p-0.5 ${scroll ? 'overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden' : ''} ${className}`}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button key={o.value} type="button" role="radio" aria-checked={active} tabIndex={active ? 0 : -1} data-value={o.value}
+            onClick={() => onChange(o.value)}
+            className={`h-full shrink-0 whitespace-nowrap rounded-[0.5rem] px-3 text-sm font-medium transition-colors duration-150 ${focusRing} ${active ? 'bg-elevated text-fg shadow-card' : 'text-muted hover:text-fg'}`}>
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** Search field with an icon. */
+export function SearchInput({ value, onChange, placeholder = 'Cari…', label, className = '' }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; label?: string; className?: string;
+}) {
+  return (
+    <div className={`relative inline-flex min-w-0 ${className}`}>
+      <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-subtle" />
+      <input type="search" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} aria-label={label ?? placeholder}
+        className={`h-9 w-full min-w-0 rounded-control border border-line-strong bg-surface-2 pl-9 pr-3 text-sm text-fg placeholder:text-subtle transition-colors hover:border-slate-600 ${focusRing}`} />
+    </div>
   );
 }
