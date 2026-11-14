@@ -14,10 +14,10 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: any[] } = {}) {
+function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: any[]; oldGap5mAt?: number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
-  // only the higher-timeframe history calls (tf=1 is the pre-existing 1m gap backfill)
+  // record every INDODAX request, including the 1m OHLC coverage backfill
   const f = fakeFetch([
     (u, init) => {
       if (!u.href.startsWith(SB + '/rest/v1/rpc/')) return;
@@ -35,8 +35,11 @@ function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: a
             catalog: { btcidr: false, pepeidr: false, usdtidr: false, dogeidr: false },
             open_positions: [], day_start_equity: 1e7, pair_catalog_age_seconds: 60,
           });
-        case 'get_recent_candles':
-          return json({ btcidr: candleRows(250, expectedLast, 300, (i) => 1000 + i) });
+        case 'get_recent_candles': {
+          const rows = candleRows(250, expectedLast, 300, (i) => 1000 + i);
+          if (opts.oldGap5mAt !== undefined) rows.splice(opts.oldGap5mAt, 1);
+          return json({ btcidr: rows });
+        }
         case 'get_recent_candles_multi':
           return json({ '15m': { btcidr: candleRows(100, Math.floor((expectedLast + 300) / 900) * 900 - 900, 900, (i) => 900 + i) }, '1h': { btcidr: [] } });
         case 'save_analysis': return json({ new_signals: opts.newSignals ?? [] });
@@ -56,6 +59,12 @@ function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: a
       if (u.pathname === '/tradingview/history_v2') {
         const tf = Number(u.searchParams.get('tf')) * 60;
         const end = Math.floor(NOW / tf) * tf; // includes the still-forming bucket, which must be dropped
+        if (tf === 60) {
+          const from = Number(u.searchParams.get('from'));
+          const to = Number(u.searchParams.get('to'));
+          const count = Math.floor((to - from) / tf) + 1;
+          return json(Array.from({ length: count }, (_, i) => ({ Time: from + i * tf, Open: 1000, High: 1001, Low: 999, Close: 1000, Volume: 1 })));
+        }
         return json(Array.from({ length: 5 }, (_, i) => ({ Time: end - (4 - i) * tf, Open: 1000, High: 1001, Low: 999, Close: 1000, Volume: 1 })));
       }
       return undefined;
@@ -78,7 +87,12 @@ describe('pipeline: MTF + dynamic universe', () => {
     const note = rpcs.find((x) => x.fn === 'claim_notifications')?.body.p_items.find((i: any) => i.event_type === 'universe');
     expect(note?.message).toContain('PEPE/IDR');
 
-    // one-time HTF history backfill: 15m and 1h, forming bucket dropped, marker set in sync state
+    // 1m history fills the uncovered tail through the latest completed minute.
+    const oneMinute = indodax.filter((p) => p.startsWith('/tradingview/history_v2') && new URLSearchParams(p.split('?')[1]).get('tf') === '1');
+    expect(oneMinute).toHaveLength(1);
+    expect(Number(new URLSearchParams(oneMinute[0].split('?')[1]).get('to'))).toBe(Math.floor(NOW / 60) * 60 - 1);
+
+    // One-time HTF history backfill: 15m and 1h, forming bucket dropped, marker set in sync state.
     expect(indodax.filter((p) => p.startsWith('/tradingview/history_v2')).map((p) => new URLSearchParams(p.split('?')[1]).get('tf')).filter((tf) => tf !== '1')).toEqual(['15', '60']);
     const ingest = rpcs.find((x) => x.fn === 'ingest_market')!.body;
     const htf = ingest.p_candles.filter((c: any) => c.timeframe === '15m' || c.timeframe === '1h');
@@ -109,6 +123,24 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
     const actions = (r.steps as any)?.paper_trading?.info?.actions as string[];
     expect(actions).toContain('skip btcidr: net_reward_risk_below_minimum');
+  });
+
+
+  it('repairs legacy 5m holes although the old covered_until cursor is already current', async () => {
+    const gapIndex = 220;
+    const { f, indodax, rpcs } = setup({ oldGap5mAt: gapIndex });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+
+    expect(r.errors).toEqual([]);
+    expect(r.status).toBe('SUCCESS');
+    const oneMinute = indodax.filter((p) => p.startsWith('/tradingview/history_v2') && new URLSearchParams(p.split('?')[1]).get('tf') === '1');
+    expect(oneMinute).toHaveLength(1);
+    const expectedGap = expectedLast - (249 - gapIndex) * 300;
+    expect(Number(new URLSearchParams(oneMinute[0].split('?')[1]).get('from'))).toBe(expectedGap);
+    const info = (r.steps as any).build_candles.info.btcidr;
+    expect(info.recovery_from).toBe(expectedGap);
+    expect(info.history_complete).toBe(true);
+    expect(rpcs.some((x) => x.fn === 'save_analysis')).toBe(true);
   });
 
   it('skips the backfill once done and skips higher timeframes when MTF is off', async () => {

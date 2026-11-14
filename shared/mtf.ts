@@ -77,7 +77,14 @@ export function aggregateComplete(series5m: Candle[], tfSec: number): Candle[] {
 export function buildHigherSeries(stored: Candle[], aggregated: Candle[], tfSec: number, lastComplete: number, limit = MTF_WINDOW): Candle[] {
   const byTime = new Map<number, Candle>();
   for (const c of stored) if (c.t <= lastComplete && c.t % tfSec === 0) byTime.set(c.t, c);
-  for (const c of aggregated) if (c.t <= lastComplete) byTime.set(c.t, c);
+  for (const c of aggregated) {
+    if (c.t > lastComplete) continue;
+    const existing = byTime.get(c.t);
+    // A synthetic lower-timeframe bucket has no observed price action and must
+    // not erase an official stored 15m/1h candle at the same timestamp.
+    if (c.source === 'synthetic' && existing && existing.source !== 'synthetic') continue;
+    byTime.set(c.t, c);
+  }
   const sorted = [...byTime.values()].sort((a, b) => a.t - b.t);
   if (sorted.length === 0) return [];
   return fillGaps(sorted.slice(-limit), tfSec, lastComplete).slice(-limit);
