@@ -25,25 +25,18 @@ export function planCoverage(trades: Trade[], coveredUntil: number | null, nowSe
 
   const floor = nowMin - BOOTSTRAP_SECONDS;
   const tradeMinutes = new Set(tradesToCandles(trades, 60, coverageStart, nowMin).map((c) => c.t));
+  // Scan the whole bootstrap window on first sync, any saved gap, or the live
+  // trade suffix. Only request OHLC when at least one minute is actually missing.
+  const scanStart = coveredUntil === null
+    ? floor
+    : coveredUntil < coverageStart
+      ? Math.max(coveredUntil, floor)
+      : Math.max(coverageStart, floor);
   let firstMissing: number | null = null;
-
-  // On first sync, or after the saved frontier falls behind the fetched trade range,
-  // backfill from the older frontier. This covers both the old gap and the recent tail.
-  if (coveredUntil === null) {
-    firstMissing = floor;
-  } else if (coveredUntil < coverageStart) {
-    firstMissing = Math.max(coveredUntil, floor);
-  }
-
-  // The legacy planner stopped at the oldest trade. Detect quiet/missing minutes all
-  // the way to the latest completed minute, including the zero-trade case.
-  if (firstMissing === null) {
-    const scanStart = Math.max(coverageStart, floor);
-    for (let t = scanStart; t < nowMin; t += 60) {
-      if (!tradeMinutes.has(t)) {
-        firstMissing = t;
-        break;
-      }
+  for (let t = scanStart; t < nowMin; t += 60) {
+    if (!tradeMinutes.has(t)) {
+      firstMissing = t;
+      break;
     }
   }
 
