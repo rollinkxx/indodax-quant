@@ -148,4 +148,25 @@ describe('API auth & authorization', () => {
     const r = await worker.fetch(new Request('https://app.test/market'), env());
     expect(await r.text()).toBe('asset');
   });
+
+  it('manual kill switch does not close positions using a crossed ticker', async () => {
+    const state = {
+      rpcs: [] as { fn: string; body: any }[],
+      strategyParams: { dynamicSlippage: true, slippageBps: 10, feePct: 0.3 },
+      openPositions: [{ id: 12, pair_id: 'thinidr', qty: '2' }],
+    };
+    const tickerHandler = (u: URL) => u.href === 'https://indodax.com/api/ticker/thinidr'
+      ? json({ ticker: { last: '1000', buy: '1002', sell: '1001', vol_idr: '100000000', server_time: String(Math.floor(Date.now() / 1000)) } })
+      : undefined;
+    const f = fakeFetch([authHandler, appUsersHandler, dbHandler(state), tickerHandler]);
+    const r = await handleApi(req('/api/paper/kill', 'admin', { method: 'POST' }), env(), f);
+    const body = await r.json() as any;
+
+    expect(r.status).toBe(200);
+    expect(body).toMatchObject({ status: 'KILLED', closed: 0, total: 1 });
+    expect(body.results[0]).toMatchObject({ pair: 'thinidr', ok: false });
+    expect(body.results[0].error).toContain('stale_or_crossed_ticker');
+    expect(state.rpcs.some((x) => x.fn === 'paper_close_position')).toBe(false);
+  });
+
 });
