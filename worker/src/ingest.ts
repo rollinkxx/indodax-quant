@@ -27,11 +27,7 @@ export function planCoverage(trades: Trade[], coveredUntil: number | null, nowSe
   const tradeMinutes = new Set(tradesToCandles(trades, 60, coverageStart, nowMin).map((c) => c.t));
   // Scan the whole bootstrap window on first sync, any saved gap, or the live
   // trade suffix. Only request OHLC when at least one minute is actually missing.
-  const scanStart = coveredUntil === null
-    ? floor
-    : coveredUntil < coverageStart
-      ? Math.max(coveredUntil, floor)
-      : Math.max(coverageStart, floor);
+  const scanStart = coveredUntil === null ? floor : Math.max(coveredUntil, floor);
   let firstMissing: number | null = null;
   for (let t = scanStart; t < nowMin; t += 60) {
     if (!tradeMinutes.has(t)) {
@@ -79,7 +75,7 @@ export function buildPairCandles(trades: Trade[], plan: CoveragePlan, coveredUnt
     }
   }
   const historyComplete = !plan.historyRange || (history !== null && missingMinutes === 0);
-  const newCoveredUntil = historyComplete ? plan.nowMin : coveredUntil;
+  const newCoveredUntil = historyComplete ? Math.max(coveredUntil ?? plan.nowMin, plan.nowMin) : coveredUntil;
   const aggregateStart = plan.historyRange && historyComplete
     ? plan.historyRange.from
     : ceilTo(plan.coverageStart, 300);
