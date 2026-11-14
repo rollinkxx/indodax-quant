@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 00:45 WIB (session 25: manual kill-switch quote freshness — in progress)_
+_Last updated: 2026-11-15 00:48 WIB (session 25: manual kill-switch quote freshness — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,8 +48,6 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
-- Assistant: make manual kill-switch closes reject stale or crossed quotes, matching the automatic exit path's ticker freshness
-  and bid/ask sanity checks. Add an API regression test proving no close RPC is sent when the quote is unsafe; do not mutate production.
 - Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
   This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
 - Owner: inspect the authenticated dashboard in a real browser (desktop + 375 px, light/dark, browser console).
