@@ -2,7 +2,7 @@
 import type { Env, FetchLike } from './env';
 import { Db } from './db';
 import { IndodaxClient, type PairInfo, type ParsedTicker } from './indodax';
-import { buildPairCandles, newestTrade, newTradesSince, planCoverage } from './ingest';
+import { buildPairCandles, findCoverageRecoveryStart, newestTrade, newTradesSince, planCoverage } from './ingest';
 import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage } from './http';
@@ -233,6 +233,13 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       }
     }
 
+    // Inspect persisted 5m candles before ingest. Older workers could advance
+    // covered_until while leaving holes behind, so the cursor alone is not proof
+    // that the last 60 bars are contiguous.
+    const recoveryCandles = await step('load_coverage_state', async () =>
+      db.rpc<Record<string, CandleRow[]>>('get_recent_candles', { p_pairs: tracked, p_timeframe: '5m', p_limit: 250 }),
+    (r) => Object.fromEntries(Object.entries(r ?? {}).map(([id, rows]) => [id, rows.length])));
+
     const tradeResults = await step('fetch_trades', async () => {
       const out = new Map<string, Trade[] | null>();
       await Promise.all(pairs.map(async (p) => {
@@ -255,7 +262,12 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const trades = tradeResults?.get(p.id);
         const prevCovered = toSec(p.covered_until);
         if (!trades) { coverage.set(p.id, prevCovered); info[p.id] = 'no_trades_fetch'; return; }
-        const plan = planCoverage(trades, prevCovered, nowSec);
+        const stored5m = (recoveryCandles?.[p.id] ?? []).map(toCandle);
+        const recoveryFrom = findCoverageRecoveryStart(stored5m, nowSec, params.minCandles);
+        const planningCursor = recoveryFrom !== null && prevCovered !== null
+          ? Math.min(prevCovered, recoveryFrom)
+          : prevCovered;
+        const plan = planCoverage(trades, planningCursor, nowSec);
         let history: Candle[] | null = [];
         if (plan.historyRange) {
           try {
@@ -292,8 +304,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         });
         info[p.id] = {
           trades: trades.length, new: fresh.length, m1: built.m1.length, m5: built.m5.length,
-          backfilled: built.backfilled, history_range: plan.historyRange, history_complete: built.historyComplete,
-          history_missing_minutes: built.missingMinutes,
+          backfilled: built.backfilled, recovery_from: recoveryFrom, history_range: plan.historyRange,
+          history_complete: built.historyComplete, history_missing_minutes: built.missingMinutes,
         };
       }));
       // pairs whose trade fetch failed still record a successful HTF backfill (one sync row per pair)
