@@ -10,7 +10,7 @@ describe('manual kill-switch outcome', () => {
       results: [{ pair: 'btcidr', ok: true }, { pair: 'ethidr', ok: true }],
     })).toEqual({
       msg: 'Kill switch aktif: 2/2 posisi berhasil ditutup.',
-      err: null,
+      err: undefined,
     });
   });
 

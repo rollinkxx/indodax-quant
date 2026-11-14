@@ -12,7 +12,7 @@ export interface KillSwitchResult {
 
 export interface KillSwitchOutcome {
   msg: string;
-  err: string | null;
+  err?: string;
 }
 
 /** Summarize account kill status separately from whether every open position closed. */
@@ -20,7 +20,7 @@ export function killSwitchOutcome(result: KillSwitchResult): KillSwitchOutcome {
   const closed = Number.isFinite(result.closed) ? Math.max(0, Number(result.closed)) : 0;
   const total = Number.isFinite(result.total) ? Math.max(0, Number(result.total)) : 0;
   const msg = `Kill switch aktif: ${closed}/${total} posisi berhasil ditutup.`;
-  if (closed >= total) return { msg, err: null };
+  if (closed >= total) return { msg };
 
   const failed = (result.results ?? [])
     .filter((position) => position.ok !== true)
