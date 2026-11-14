@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 11:00 WIB (session 13: UI redesign step 4 — Market + Chart + Signals — done)_
+_Last updated: 2026-11-14 11:10 WIB (session 13: UI redesign step 5 — History + Strategy + System + Settings — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -79,9 +79,8 @@ Display rules (mandatory, set by the owner):
 Steps (done: 1 foundation — tokens in `src/index.css`, components in `src/components/ui.tsx` + `Icon.tsx`; 2 shell — `src/components/Layout.tsx`,
 `AuthScreen` in `src/pages/Login.tsx`; the page scroll container is `<main>`, not `window`; 3 Overview + Paper — `src/components/Portfolio.tsx`
 (EquityHero + SVG Sparkline, PositionCard, PaperControls), `ConfirmDialog` in `ui.tsx` locks `<main>` scroll; 4 Market + Chart + Signals —
-`Segmented` + `SearchInput` in `ui.tsx`, chart colours are `--chart-*` tokens read by `chartColors()` in `Charts.tsx`, `.flash-up/down` in `index.css`):
-- [ ] 5. History + Strategy + System + Settings: history filters and a summary row; strategy form grouped into sections with helper
-  text, unsaved-changes indicator and sticky save bar; system runs as a timeline with status colours and duration bars; tidy settings.
+`Segmented` + `SearchInput` in `ui.tsx`, chart colours are `--chart-*` tokens read by `chartColors()` in `Charts.tsx`, `.flash-up/down` in `index.css`; 5 History + Strategy + System + Settings — Strategy compares the form with `effective` for the
+unsaved count, its save bar is `sticky bottom-0` inside `<main>`; CSS is now ~50 kB vs 24.12 kB before the redesign — owner to confirm whether "CSS growth ≤ 15 kB" is per step or in total):
 - [ ] 6. Owner-approved extra — light/dark theme: colour tokens as CSS variables for both themes, a toggle in the top bar, choice saved in
   `localStorage` and defaulting to the system setting, no flash of the wrong theme on load (small inline script in `index.html`),
   chart colours follow the theme; the `dark` class on `<html>` and the `theme-color` meta follow the theme too.
