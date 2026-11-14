@@ -3,6 +3,7 @@ do $assert$
 declare
   v_security_definer boolean;
   v_config text;
+  v_policy text;
 begin
   select p.prosecdef, coalesce(array_to_string(p.proconfig, ','), '')
     into v_security_definer, v_config
@@ -23,6 +24,20 @@ begin
   end if;
   if not has_function_privilege('service_role', 'public.is_app_user()', 'EXECUTE') then
     raise exception 'service_role must retain execute';
+  end if;
+
+  select pg_get_expr(pol.polqual, pol.polrelid)
+    into v_policy
+  from pg_policy pol
+  join pg_class rel on rel.oid = pol.polrelid
+  join pg_namespace nsp on nsp.oid = rel.relnamespace
+  where nsp.nspname = 'public'
+    and rel.relname = 'app_users'
+    and pol.polname = 'app_users_self';
+
+  if v_policy is null or position('SELECT' in upper(v_policy)) = 0
+     or position('auth.jwt()' in v_policy) = 0 then
+    raise exception 'app_users_self must wrap auth.jwt() in a scalar subquery: %', v_policy;
   end if;
 end;
 $assert$;
