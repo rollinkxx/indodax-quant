@@ -74,7 +74,7 @@ export class IndodaxClient {
     return parseTrades(raw);
   }
 
-  async getTicker(pairId: string): Promise<{ last: number; bid: number; ask: number; server_time: number }> {
+  async getTicker(pairId: string): Promise<{ last: number; bid: number; ask: number; server_time: number; vol_idr: number | null }> {
     if (!/^[a-z0-9]+$/.test(pairId)) throw new Error(`invalid pair id ${pairId}`);
     const raw = await this.getJson<{ ticker?: Record<string, unknown> }>(`/api/ticker/${pairId}`);
     const t = raw?.ticker;
@@ -82,7 +82,7 @@ export class IndodaxClient {
     if (!t || last === null || bid === null || ask === null || st === null || bid <= 0 || ask <= 0) {
       throw new Error(`Invalid ticker for ${pairId}`);
     }
-    return { last, bid, ask, server_time: st };
+    return { last, bid, ask, server_time: st, vol_idr: num(t.vol_idr) };
   }
 
   async getPairs(): Promise<PairInfo[]> {
