@@ -18,7 +18,7 @@ const completeHistory = () => Array.from({ length: 5 }, (_, i) => history(i));
 describe('minute coverage recovery', () => {
   it('bootstraps from official history when no coverage frontier exists', () => {
     const plan = planCoverage([trade('1', 4)], null, NOW);
-    expect(plan.historyRange).toEqual({ from: T0 - 24 * 3600, to: nowMin });
+    expect(plan.historyRange).toEqual({ from: nowMin - 24 * 3600, to: nowMin });
   });
 
   it('detects missing minutes inside the recent trade window and requests one aligned range', () => {
