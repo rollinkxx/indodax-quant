@@ -111,7 +111,7 @@ src/            React dashboard (9 pages + login)
 public/         PWA manifest, icons and service worker (copied to dist/ by Vite)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
 supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
-tests/          Vitest suites (169 tests, 20 files)
+tests/          Vitest suites (171 tests, 20 files)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
 scripts/backtest.ts        offline backtest on stored 5m candles (needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY; MTF not simulated)
 PROJECT_STATE.md           current production state, open tasks and notes for maintainers/agents
@@ -193,7 +193,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 
 ```bash
 npm install              # required first (there is no package-lock.json)
-npm test                 # 169 unit + integration tests in 20 files (fake Supabase / INDODAX)
+npm test                 # 171 unit + integration tests in 20 files (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
 npm run backtest         # older vs current rules on stored 5m candles; see Backtest scope and interpretation
