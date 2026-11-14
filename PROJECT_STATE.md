@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 07:55 WIB (session 12: UI redesign planned, owner rules + extras added)_
+_Last updated: 2026-11-14 08:05 WIB (session 12: UI redesign planned, owner rules + extras added, plan checked against the code)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -62,7 +62,7 @@ Rules for every step:
 - No new runtime dependencies (no animation/UI/icon libraries). Use Tailwind v4 (CSS-first, `@theme` in `src/index.css`),
   CSS transitions/keyframes and inline SVG icons.
 - Animations: only `transform`/`opacity`, 150–300 ms, no infinite animations except the small live-status dot and skeletons.
-  Respect `prefers-reduced-motion`. Do not re-animate on every 20 s poll.
+  Respect `prefers-reduced-motion`. Do not re-animate on any poll (`usePoll` intervals are 15–120 s per page).
 - Keep the existing texts in Indonesian, the WIB time display, the "PAPER TRADING / simulasi" notice and the code-split routes.
 - Before each commit: `npm install`, `npm run typecheck`, `npm test`, `npm run build`. Put bundle sizes (index, CSS, Charts) in the commit message.
   Budget: initial `index-*.js` ≤ 520 kB, CSS growth ≤ 15 kB.
@@ -80,8 +80,10 @@ Steps:
 - [ ] 1. Foundation: design tokens in `src/index.css` as CSS variables, so step 6 can add a light theme (colours, radius, shadows, keyframes `fade-in`, `slide-up`, `shimmer`, reduced-motion
   rule); restyle `src/components/ui.tsx` (Card, Stat, Badge, Button with focus ring and loading state, Table with sticky header and
   row hover, PageHeader, Select) and add `Skeleton` and an inline-SVG `Icon` set; replace the text "Memuat data…" with skeletons.
+  `index.html` hard-codes `class="dark"`, `bg-slate-950 text-slate-100` on `<body>` and `theme-color` `#020617`: move the body colours to the tokens.
 - [ ] 2. Shell: `src/components/Layout.tsx` — fixed app shell (see display rules), sidebar with icons and groups (Pasar / Trading / Sistem), mobile drawer with overlay and
-  slide animation, top bar with page title, live status dot (last cron run) and user menu, slimmer paper-trading notice,
+  slide animation, top bar with page title, live status dot (last cron run, from the existing `/api/system?limit=1` at ~60 s — no new endpoint)
+  and user menu, slimmer paper-trading notice,
   page fade-in on route change. Redesign `src/pages/Login.tsx` and the not-authorised screen in `src/App.tsx`.
 - [ ] 3. Overview + Paper Trading: hero equity card (return, drawdown, mini curve), KPI cards, open positions as cards with an SL→TP
   progress bar, clear Start / Stop / Kill / Reset buttons with a confirm dialog (admin only, same API calls).
@@ -92,12 +94,15 @@ Steps:
   text, unsaved-changes indicator and sticky save bar; system runs as a timeline with status colours and duration bars; tidy settings.
 - [ ] 6. Owner-approved extra — light/dark theme: colour tokens as CSS variables for both themes, a toggle in the top bar, choice saved in
   `localStorage` and defaulting to the system setting, no flash of the wrong theme on load (small inline script in `index.html`),
-  chart colours follow the theme.
+  chart colours follow the theme; the `dark` class on `<html>` and the `theme-color` meta follow the theme too.
 - [ ] 7. Owner-approved extra — PWA: hand-written `public/manifest.webmanifest`, icons and a small service worker that caches only the
   static assets (never `/api/*`), so the dashboard can be installed on a phone. No new dependencies (no vite-plugin-pwa).
+  Navigations / `index.html` go network-first (offline fallback only), hashed `/assets/*` cache-first, so a deploy is never stuck on an
+  old bundle; never cache cross-origin requests (Supabase auth). Bump the cache name on change and delete old caches on activate.
 - [ ] 8. Owner-approved extra — daily PnL calendar on Overview: small month grid, green/red by realised PnL per WIB day, with a tooltip
-  (PnL, number of trades). Compute it in the frontend from existing API data (`/api/positions?status=closed`); if the API cannot
-  provide enough data, stop and ask the owner before changing the Worker.
+  (PnL, number of trades). Compute it in the frontend from existing API data (`/api/positions?status=closed&limit=1000`). That endpoint
+  returns closed positions of every account, including before the last reset, max 1000 rows: filter by the active account id and
+  `closed_at >= reset_at` (both from `/api/portfolio`). If the API cannot provide enough data, stop and ask the owner before changing the Worker.
 - [ ] 9. Final pass: consistency, keyboard focus and contrast check (both themes), mobile check at 375 px width, confirm the bundle budget,
   confirm the new bundle is live in production, update README only if behaviour changed.
 
