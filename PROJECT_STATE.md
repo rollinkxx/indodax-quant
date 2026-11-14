@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 01:15 WIB (session 27: Telegram partial kill-switch reporting — done)_
+_Last updated: 2026-11-15 01:10 WIB (PR #4 merged, production deploy and DB verification complete)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -24,34 +24,30 @@ and put session details in commit messages. Earlier session logs live in git his
 | Cloudflare Worker | `indodax-quant`, Workers **Free** plan (10 ms CPU per invocation), cron `* * * * *` (UTC) |
 | Supabase | project `sinyalku`, ref `znikuooxiqfcicyuhqsx`, region ap-southeast-2 |
 | INDODAX relay | Supabase Edge Function `indodax-proxy` (GET-only, public allow-list; INDODAX returns 403 to Cloudflare IPs), deployed by CI |
-| Migrations applied | `init`, `functions`, `fix_lock_release`, `mtf_universe`, `strategy_hardening`, `entry_gate` (all files in `supabase/migrations/`) |
+| Migrations applied | `init`, `functions`, `fix_lock_release`, `mtf_universe`, `strategy_hardening`, `entry_gate`, `is_app_user_security_invoker`, `improve_paper_trade_fk_indexes`, `optimize_app_users_self_rls_initplan` |
 | Admin user | `gsdrxx@gmail.com` (Supabase Auth + `app_users.role = admin`) |
 
 Notes: the "Workers Builds: indodax-quant" check (Cloudflare Git integration) fails intermittently; the production deploy is the
 GitHub Actions job. New migrations in `supabase/migrations/` were applied automatically by the Supabase integration (entry_gate).
 
-## Current state (verified 2026-11-14 15:25 WIB)
+## Current state (verified 2026-11-15 01:09 WIB, after PR #4 production deploy)
 
-- `/api/health` 200, `liveTrading:false`. Step 8 bundle `index-BqP42N3g.js` was live; the step 9 bundle is live when the served CSS
-  contains `--app-accent-hover` (checked after the CI deploy, see the step 9 commit).
-- Cron since 2026-11-13 18:00Z: 865/865 SUCCESS; last 3 h avg 8.8 s / max 18.4 s. No CPU-limit or relay errors.
-  Universe: 5 pinned + 8 dynamic = 13 pairs.
-- Paper account: **RUNNING** since 2026-11-13 13:00 WIB (started by the admin), equity Rp9.939.100 (−0.61 %), max drawdown 0.98 %.
-- Trades: 3, all closed — `nearidr` TAKE_PROFIT +Rp37.551; `anoaidr` STOP_LOSS −Rp64.384; `hypeidr` STOP_LOSS −Rp34.067. 0 open positions.
-- Entry gate: 2 BUYs skipped (`stop_inside_spread`: pippinidr, fartcoinidr); 1 passed (hypeidr, signal 154, 19:05Z) and behaved
-  as designed: spread 0.17 %, fill = ask + 15 bps, SL/TP = 1.5 / 3 × ATR, size capped at 25 % of equity, fees 0.3 %, Telegram
-  signal + paper BUY + stop-loss notices sent. Exit filled 0.35 % below the stop (bid gapped 1.328.854 → 1.325.000 within 1 min).
-- Active strategy config (DB `strategy_configs` row is the source of truth; changed by the admin 2026-11-13 17:52Z):
-  `maxEntrySpreadPct` 0.6, `maxEntryDriftPct` 0.5, `universeMinVolumeIdr` 1e9, `universeSize` 25, `maxOpenPositions` 10.
-- Local checks after step 9: typecheck 0 errors (TypeScript 5.9, see agent notes), 138 tests / 17 files pass, build OK
-  (index 510.4 kB, CSS 54.3 kB, Charts 184.4 kB).
+- Production `GET /api/health`: HTTP 200, `liveTrading:false`; production homepage smoke passed.
+- Cloudflare Worker `indodax-quant` deployed from main commit `6e1b3dfc9b5fe622cd260461910d09eec14324c8` at 2026-11-14 18:08:14Z. Worker version `ba6b5f07-1901-4748-b611-4f0ba9b04084`. GitHub Actions CI & Deploy run #162 succeeded, including relay deployment, Worker/static assets/cron deployment, Worker secret sync and smoke test.
+- Cron: latest 8 executions (18:02Z–18:09Z) all SUCCESS, no logged errors.
+- Paper account 1: **RUNNING**, kill switch false; initial balance / cash / equity / peak equity Rp10.000.000; max drawdown 0%; 0 open positions, 3 closed positions and 6 paper orders. Current `reset_at` is 2026-11-14 10:16:15Z; the previous Rp9.939.100 snapshot is superseded. This session did not stop or reset the account.
+- Supabase production now has all 9 migrations, including `is_app_user_security_invoker`, `improve_paper_trade_fk_indexes`, and `optimize_app_users_self_rls_initplan`. The three new migrations were applied automatically after merge.
+- Database verification: `is_app_user()` is SECURITY INVOKER with `search_path=pg_catalog, public`; anon cannot execute it, authenticated and service_role can. All five new FK indexes exist. `app_users_self` uses the scalar-subquery form.
+- Supabase Security Advisor no longer reports the SECURITY DEFINER helper finding. Remaining findings: INFO for `system_locks` having no client policy (backend-only table) and WARN for leaked-password protection (disabled). The project organization is on Free.
+- Supabase Performance Advisor still reports `auth_rls_initplan`, but an EXPLAIN under the authenticated role shows `InitPlan 1` and a one-time filter for the JWT claim; the actual query plan is using the intended init-plan. The five new FK indexes are currently reported as unused (INFO), expected until those FK lookup/delete paths occur.
+- CI on the merged commit: TypeScript typecheck passed, 171 tests / 20 files passed, PostgreSQL 17 migration assertions passed, production build passed. Initial JS 510.40 kB (budget 520 kB), CSS 54.88 kB, Charts 184.42 kB.
+- Live public login Playwright smoke passed 4/4: desktop 1440 px / mobile 375 px, dark and light. Authenticated dashboard pages still need an owner browser session for a final visual/console review.
 
 ## Open tasks
 
-- Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
-  This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
-- Owner: inspect the authenticated dashboard in a real browser (desktop + 375 px, light/dark, browser console).
-  The public login page is already smoke-tested with Playwright in all four viewport/theme combinations; no admin credentials were used.
+- Owner: decide whether to upgrade Supabase from Free to Pro or above to enable leaked-password protection. This is an Auth project setting, not a database migration; no paid upgrade was made.
+- Owner: inspect the authenticated dashboard in a real browser using the owner's own session (desktop 1440 px and mobile 375 px, light/dark, browser console). Public login is already smoke-tested without admin credentials.
+
 
 New features, libraries or pages: propose them to the owner first, do not build them.
 
@@ -80,8 +76,8 @@ New features, libraries or pages: propose them to the owner first, do not build 
 
 ## Agent notes
 
-- Read-only public login browser check: `scripts/browser-smoke/live-public-ui.mjs`, manually runnable from the
-  `Live public UI smoke` workflow. It checks 1440 px / 375 px in light/dark, login controls, theme-color, overflow and browser errors.
+- Read-only public login browser check: `scripts/browser-smoke/live-public-ui.mjs`, runs on PRs and can also be manually dispatched via
+  `Live public UI smoke`. It checks 1440 px / 375 px in light/dark, login controls, theme-color, overflow and browser errors.
 
 - **"Session approvals are not available for this tool"** on GitHub/Supabase MCP calls: the connector is fine. Reconnect the server
   (`mcp-servers` → `connect`, slug `git-hub` or `supabase`) and retry. The approval is per tool: each write tool
