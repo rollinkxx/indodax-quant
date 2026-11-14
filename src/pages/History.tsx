@@ -3,6 +3,7 @@ import { usePoll } from '../lib/usePoll';
 import { Badge, Button, Card, ErrorBox, Loading, PageHeader, Segmented, Select, Stat, Table, Td, statusColor, Empty } from '../components/ui';
 import { Icon } from '../components/Icon';
 import { idr, num, pairLabel, pct, pnlClass, wib } from '../lib/format';
+import { historyScopeNote } from '../lib/historyScope';
 
 type View = 'positions' | 'orders';
 type Period = '1' | '7' | '30' | 'all';
@@ -78,10 +79,11 @@ export default function History() {
           </Button>
           <span className="num ml-auto text-xs text-subtle">{rows.length} dari {all.length} baris</span>
         </div>
+        <p className="mt-3 text-xs leading-5 text-muted">{historyScopeNote(period)}</p>
       </Card>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Total PnL" value={idr(summary.pnl, { sign: true })} valueClass={pnlClass(summary.pnl)} sub={`${summary.closed} transaksi ber-PnL`} />
+        <Stat label="PnL riwayat" value={idr(summary.pnl, { sign: true })} valueClass={pnlClass(summary.pnl)} sub={`${summary.closed} transaksi ber-PnL`} />
         <Stat label="Win rate" value={summary.closed ? pct((summary.wins / summary.closed) * 100, 1, false) : '—'} sub={`${summary.wins} menang • ${summary.closed - summary.wins} kalah`} />
         <Stat label="Total fee" value={idr(summary.fee)} sub="Simulasi, kedua sisi" />
         <Stat label={view === 'positions' ? 'Modal diputar' : 'Nilai order'} value={idr(summary.volume, { compact: true })} sub={`${rows.length} ${view === 'positions' ? 'posisi' : 'order'}`} />
