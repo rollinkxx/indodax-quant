@@ -42,6 +42,54 @@ export function planCoverage(trades: Trade[], coveredUntil: number | null, nowSe
   return { nowMin, coverageStart, historyRange };
 }
 
+
+/**
+ * Detect whether the persisted 5m series has enough uninterrupted, observed
+ * bars for strategy warm-up. This also repairs legacy holes even when the old
+ * covered_until cursor was incorrectly advanced past them.
+ *
+ * Returns the first 5m bucket that needs OHLC re-backfill, or null if the
+ * latest completed candle is current and at least minCandles are contiguous.
+ */
+export function findCoverageRecoveryStart(candles: Candle[], nowSec: number, minCandles = 60): number | null {
+  const expectedLast = floorTo(nowSec, 300) - 300;
+  const rows = candles
+    .filter((c) => c.t <= expectedLast)
+    .slice()
+    .sort((a, b) => a.t - b.t);
+  if (rows.length === 0) {
+    return floorTo(Math.max(nowSec - BOOTSTRAP_SECONDS, expectedLast - (minCandles + 12) * 300), 300);
+  }
+
+  const last = rows[rows.length - 1];
+  let suffixStart = rows.length - 1;
+  if (last.source === 'synthetic') {
+    suffixStart = rows.length; // the latest bar is not an observed market candle
+  } else {
+    while (suffixStart > 0) {
+      const current = rows[suffixStart];
+      const previous = rows[suffixStart - 1];
+      if (current.t - previous.t !== 300 || previous.source === 'synthetic') break;
+      suffixStart--;
+    }
+  }
+
+  const contiguous = rows.length - suffixStart;
+  if (contiguous < minCandles) {
+    if (suffixStart > 0) {
+      const boundary = rows[suffixStart - 1];
+      return floorTo(boundary.source === 'synthetic' ? boundary.t : boundary.t + 300, 300);
+    }
+    const missingBars = Math.max(1, minCandles - contiguous + 2);
+    return floorTo(Math.max(nowSec - BOOTSTRAP_SECONDS, expectedLast - missingBars * 300), 300);
+  }
+
+  // A healthy historical suffix is still unusable if its tail stopped before the
+  // latest completed 5m bucket (for example, an all-quiet pair).
+  if (last.t < expectedLast) return floorTo(last.t + 300, 300);
+  return null;
+}
+
 export interface PairBuild {
   m1: Candle[];
   m5: Candle[];
