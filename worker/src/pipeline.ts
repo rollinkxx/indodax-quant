@@ -263,7 +263,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const prevCovered = toSec(p.covered_until);
         if (!trades) { coverage.set(p.id, prevCovered); info[p.id] = 'no_trades_fetch'; return; }
         const stored5m = (recoveryCandles?.[p.id] ?? []).map(toCandle);
-        const recoveryFrom = findCoverageRecoveryStart(stored5m, nowSec, params.minCandles);
+        const recoveryFrom = recoveryCandles
+          ? findCoverageRecoveryStart(stored5m, nowSec, params.minCandles)
+          : null;
         const planningCursor = recoveryFrom !== null && prevCovered !== null
           ? Math.min(prevCovered, recoveryFrom)
           : prevCovered;
