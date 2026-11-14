@@ -1,5 +1,4 @@
-// Pure ingestion planning: decides which minutes are fully covered by trade data,
-// which gaps need backfilling from the official OHLC history endpoint, and which candles to write.
+// Pure ingestion planning: detects every uncovered minute and validates official OHLC backfill.
 import { aggregateCandles, ceilTo, compareTid, floorTo, tradesToCandles, type Candle, type Trade } from '../../shared/candles';
 
 /** If INDODAX returns at least this many trades we assume the list is truncated (the oldest minute may be partial). */
@@ -9,7 +8,7 @@ export const BOOTSTRAP_SECONDS = 24 * 3600;
 export interface CoveragePlan {
   nowMin: number;
   coverageStart: number; // first minute fully represented by the fetched trades
-  gap: { from: number; to: number } | null; // minutes needing history backfill
+  historyRange: { from: number; to: number } | null; // one bounded range of 1m OHLC history to retrieve
 }
 
 export function planCoverage(trades: Trade[], coveredUntil: number | null, nowSec: number): CoveragePlan {
@@ -23,15 +22,35 @@ export function planCoverage(trades: Trade[], coveredUntil: number | null, nowSe
     coverageStart = truncated ? floorTo(oldest, 60) + 60 : floorTo(oldest, 60);
   }
   coverageStart = Math.min(coverageStart, nowMin);
+
   const floor = nowMin - BOOTSTRAP_SECONDS;
-  let gap: CoveragePlan['gap'] = null;
+  const tradeMinutes = new Set(tradesToCandles(trades, 60, coverageStart, nowMin).map((c) => c.t));
+  let firstMissing: number | null = null;
+
+  // On first sync, or after the saved frontier falls behind the fetched trade range,
+  // backfill from the older frontier. This covers both the old gap and the recent tail.
   if (coveredUntil === null) {
-    gap = { from: floor, to: coverageStart };
+    firstMissing = floor;
   } else if (coveredUntil < coverageStart) {
-    gap = { from: Math.max(coveredUntil, floor), to: coverageStart };
+    firstMissing = Math.max(coveredUntil, floor);
   }
-  if (gap && gap.from >= gap.to) gap = null;
-  return { nowMin, coverageStart, gap };
+
+  // The legacy planner stopped at the oldest trade. Detect quiet/missing minutes all
+  // the way to the latest completed minute, including the zero-trade case.
+  if (firstMissing === null) {
+    const scanStart = Math.max(coverageStart, floor);
+    for (let t = scanStart; t < nowMin; t += 60) {
+      if (!tradeMinutes.has(t)) {
+        firstMissing = t;
+        break;
+      }
+    }
+  }
+
+  // Start on a 5m boundary so the first recovered 5m candle can be complete.
+  const from = firstMissing === null ? null : floorTo(Math.max(firstMissing, floor), 300);
+  const historyRange = from !== null && from < nowMin ? { from, to: nowMin } : null;
+  return { nowMin, coverageStart, historyRange };
 }
 
 export interface PairBuild {
@@ -39,21 +58,45 @@ export interface PairBuild {
   m5: Candle[];
   newCoveredUntil: number | null;
   backfilled: number;
+  historyComplete: boolean;
+  missingMinutes: number;
 }
 
 /**
- * history === null means the backfill was needed but failed: coverage does not advance,
- * so no 5m candle across the gap is treated as complete (and no signal can be produced from it).
+ * history === null means a requested backfill failed. The minute-indexed union
+ * accepts a minute only when a direct trade candle or a valid official OHLC row
+ * exists; missing rows never become fabricated flat/synthetic candles here.
  */
 export function buildPairCandles(trades: Trade[], plan: CoveragePlan, coveredUntil: number | null, history: Candle[] | null): PairBuild {
   const m1Trades = tradesToCandles(trades, 60, plan.coverageStart, plan.nowMin);
-  const backfillOk = plan.gap === null || history !== null;
-  const historyM1 = plan.gap && history ? history.filter((c) => c.t >= plan.gap!.from && c.t < plan.gap!.to) : [];
-  const newCoveredUntil = backfillOk ? plan.nowMin : coveredUntil;
-  const memStart = plan.gap && backfillOk ? plan.gap.from : plan.coverageStart;
-  const m1 = [...historyM1, ...m1Trades].sort((a, b) => a.t - b.t);
-  const m5 = newCoveredUntil === null ? [] : aggregateCandles(m1, 300, ceilTo(memStart, 300), floorTo(newCoveredUntil, 300));
-  return { m1, m5, newCoveredUntil, backfilled: historyM1.length };
+  const historyM1 = plan.historyRange && history
+    ? history.filter((c) => c.t >= plan.historyRange!.from && c.t < plan.historyRange!.to && c.t % 60 === 0)
+    : [];
+
+  const byMinute = new Map<number, Candle>();
+  for (const c of historyM1) byMinute.set(c.t, c);
+  // Actual trade-derived OHLCV is authoritative when the history endpoint overlaps.
+  for (const c of m1Trades) byMinute.set(c.t, c);
+  const m1 = [...byMinute.values()].sort((a, b) => a.t - b.t);
+
+  let missingMinutes = 0;
+  if (plan.historyRange) {
+    for (let t = plan.historyRange.from; t < plan.historyRange.to; t += 60) {
+      if (!byMinute.has(t)) missingMinutes++;
+    }
+  }
+  const historyComplete = !plan.historyRange || (history !== null && missingMinutes === 0);
+  const newCoveredUntil = historyComplete ? plan.nowMin : coveredUntil;
+  const aggregateStart = plan.historyRange && historyComplete
+    ? plan.historyRange.from
+    : ceilTo(plan.coverageStart, 300);
+  const m5 = newCoveredUntil === null
+    ? []
+    : aggregateCandles(m1, 300, aggregateStart, floorTo(newCoveredUntil, 300));
+
+  const tradeMinutes = new Set(m1Trades.map((c) => c.t));
+  const backfilled = historyM1.filter((c) => !tradeMinutes.has(c.t)).length;
+  return { m1, m5, newCoveredUntil, backfilled, historyComplete, missingMinutes };
 }
 
 /** Trades strictly newer than the last stored tid (dedupe before sending to the DB). */
