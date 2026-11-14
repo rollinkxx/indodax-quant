@@ -131,6 +131,14 @@ describe('checkDataQuality', () => {
     expect(checkDataQuality({ ...base, candles: series(60), coveredUntilSec: null }).reason).toBe('incomplete_trade_coverage');
     expect(checkDataQuality({ ...base, candles: series(60, { source: 'synthetic', n: 0 }) }).reason).toBe('no_trades_in_signal_candle');
   });
+
+  it('rejects a zero-volume official history candle as the signal candle', () => {
+    expect(checkDataQuality({
+      ...base,
+      candles: series(60, { source: 'history', n: 0, v: 0 }),
+    })).toEqual({ ok: false, reason: 'no_trades_in_signal_candle' });
+  });
+
   it('rejects non-contiguous series', () => {
     const s = series(61);
     s.splice(10, 1);
