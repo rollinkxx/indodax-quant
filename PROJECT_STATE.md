@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 01:05 WIB (session 11: dashboard pages code-split)_
+_Last updated: 2026-11-14 07:40 WIB (session 12: first gated BUY reviewed)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -30,24 +30,23 @@ and put session details in commit messages. Earlier session logs live in git his
 Notes: the "Workers Builds: indodax-quant" check (Cloudflare Git integration) fails intermittently; the production deploy is the
 GitHub Actions job. New migrations in `supabase/migrations/` were applied automatically by the Supabase integration (entry_gate).
 
-## Current state (verified 2026-11-14 01:01 WIB)
+## Current state (verified 2026-11-14 07:35 WIB)
 
-- `/api/health` 200, `liveTrading:false` (checked 00:09 WIB). Live bundle was `index-DYmgLrX3.js` (`43f4f98`); `1fc0d2a` (code-split)
-  builds `index-Df6dlSPj.js` (489 kB) + `Charts-*.js` (184 kB, lightweight-charts) + page chunks — confirm it is live after CI.
-- Cron: last 3 h 180/180 SUCCESS, wall time avg 11.2 s / max 23.6 s (was 5.6 / 11.3 s before the dynamic universe grew). No CPU-limit errors.
-  No relay redirect/502 errors since 2026-11-13 13:47 WIB.
-- Paper account: **RUNNING** since 2026-11-13 13:00 WIB (started by the admin), initial equity Rp10.000.000.
-- Trades so far: 2, both closed — `nearidr` TAKE_PROFIT +Rp37.551; `anoaidr` STOP_LOSS −Rp64.384 (bad fill on a 1.2% spread, the reason for the entry gate). 0 open positions.
-- Entry gate is live: 2 BUYs skipped as `stop_inside_spread`, no order — pippinidr (16:10Z, execution 667), fartcoinidr (17:45Z, execution 762).
-  No BUY has passed the gate yet.
-- Active strategy config (DB `strategy_configs` row is the source of truth, see README for the parameters): `maxEntrySpreadPct` 0.6,
-  `maxEntryDriftPct` 0.5, `universeMinVolumeIdr` 5e8 (code default 1e9). Both entry fields are editable on the Strategy page.
+- `/api/health` 200, `liveTrading:false`. Live bundle `index-Df6dlSPj.js` (code-split `1fc0d2a`) confirmed.
+- Cron since 2026-11-13 18:00Z: 393/393 SUCCESS; last 3 h avg 9.0 s / max 15.3 s. No CPU-limit or relay errors.
+  Universe: 5 pinned + 8 dynamic = 13 pairs.
+- Paper account: **RUNNING** since 2026-11-13 13:00 WIB (started by the admin), equity Rp9.939.100 (−0.61 %), max drawdown 0.98 %.
+- Trades: 3, all closed — `nearidr` TAKE_PROFIT +Rp37.551; `anoaidr` STOP_LOSS −Rp64.384; `hypeidr` STOP_LOSS −Rp34.067. 0 open positions.
+- Entry gate: 2 BUYs skipped (`stop_inside_spread`: pippinidr, fartcoinidr); 1 passed (hypeidr, signal 154, 19:05Z) and behaved
+  as designed: spread 0.17 %, fill = ask + 15 bps, SL/TP = 1.5 / 3 × ATR, size capped at 25 % of equity, fees 0.3 %, Telegram
+  signal + paper BUY + stop-loss notices sent. Exit filled 0.35 % below the stop (bid gapped 1.328.854 → 1.325.000 within 1 min).
+- Active strategy config (DB `strategy_configs` row is the source of truth; changed by the admin 2026-11-13 17:52Z):
+  `maxEntrySpreadPct` 0.6, `maxEntryDriftPct` 0.5, `universeMinVolumeIdr` 1e9, `universeSize` 25, `maxOpenPositions` 10.
 - Local checks at `1fc0d2a`: typecheck 0 errors, 130 tests / 15 files pass, build OK.
 
 ## Open tasks
 
-- [ ] Watch the next BUY that passes the entry gate → paper order; compare fill vs signal price and check sizing, SL/TP, fee and the Telegram order notice.
-- [ ] Watch run duration/CPU as the universe grows to ~17 pairs on Workers Free. If runs start failing, set `universeMode: 'manual'` on the Strategy page (no deploy needed).
+- [ ] Watch run duration/CPU as the universe grows (13 pairs now, `universeSize` 25) on Workers Free. If runs start failing, set `universeMode: 'manual'` on the Strategy page (no deploy needed).
 - [ ] After ≥ 30 closed trades: run `npm run backtest` and review the known limitations below.
 - [ ] Owner: confirm all 9 dashboard pages show real data after login.
 - [ ] Optional: disable public sign-ups in Supabase Auth; Workers Paid plan (30 s CPU).
@@ -59,7 +58,9 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 - MTF `filter` blocks every BUY while any higher timeframe is still warming up.
 - Pinned pairs `xautidr` / `paxgidr` still emit signals although they are excluded from the dynamic universe.
 - SELL signals without an open position are stored but not sent to Telegram (by design).
-- Only 2 closed trades: no meaningful win rate yet.
+- Low-ATR entries have a very tight stop: hypeidr stop was 0.43 % and TP 0.86 % below/above entry, while the round trip costs
+  ~0.9 % (fees 0.6 % + slippage 2 × 0.15 %) — TP barely breaks even, SL loses ~1.3 %. Checks run once per minute, so a fast bid drop fills below the stop.
+- Only 3 closed trades: no meaningful win rate yet.
 
 ## Agent notes
 
