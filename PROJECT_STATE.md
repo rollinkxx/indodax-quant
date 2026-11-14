@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 01:05 WIB (session 26: partial kill-switch close visibility — done)_
+_Last updated: 2026-11-15 01:08 WIB (session 27: Telegram partial kill-switch reporting — in progress)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,6 +48,8 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
+- Assistant: include total positions and failed pair/reason details in the manual kill-switch Telegram notification so it matches
+  the API and dashboard partial-close summary. Preserve the existing automatic kill-switch message signature and test HTML escaping.
 - Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
   This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
 - Owner: inspect the authenticated dashboard in a real browser (desktop + 375 px, light/dark, browser console).

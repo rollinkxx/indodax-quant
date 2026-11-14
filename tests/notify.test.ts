@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dispatchNotifications } from '../worker/src/notify';
-import { sendTelegram } from '../worker/src/telegram';
+import { messages, sendTelegram } from '../worker/src/telegram';
 import { redact } from '../worker/src/http';
 import { Db } from '../worker/src/db';
 import { env, fakeFetch, json, SB } from './fakes';
@@ -43,6 +43,22 @@ describe('Telegram notifications', () => {
     const r = await dispatchNotifications(env({ TELEGRAM_BOT_TOKEN: undefined }), db, [{ event_type: 'x', dedupe_key: 'a', message: 'A' }] as any, f);
     expect(r.skipped).toBe(1);
     expect(f.calls.some((c) => c.url.includes('telegram'))).toBe(false);
+  });
+
+  it('manual kill-switch Telegram message reports total and failed positions safely', () => {
+    const message = messages.killSwitch('manual by admin', 1, {
+      total: 2,
+      failures: [{ pair: 'thin<idr', reason: 'stale&crossed_ticker' }],
+    });
+    expect(message).toContain('Posisi ditutup: 1/2');
+    expect(message).toContain('Gagal ditutup:');
+    expect(message).toContain('thin&lt;idr: stale&amp;crossed_ticker');
+  });
+
+  it('automatic kill-switch message remains compatible without manual close details', () => {
+    const message = messages.killSwitch('max drawdown', 2);
+    expect(message).toContain('Posisi ditutup: 2');
+    expect(message).not.toContain('Gagal ditutup:');
   });
 
   it('sendTelegram returns error instead of throwing', async () => {
