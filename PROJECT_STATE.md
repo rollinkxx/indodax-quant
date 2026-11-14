@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 00:28 WIB (session 22: history vs session PnL clarity — done)_
+_Last updated: 2026-11-15 00:30 WIB (session 23: base timeframe synthetic-candle isolation — in progress)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,6 +48,9 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
+- Assistant: prevent synthetic 5m candles inserted by gap-filling from influencing EMA/RSI/MACD/ATR or BUY/SELL signals.
+  Compute indicators only within the latest contiguous non-synthetic segment and keep the strategy in warm-up until that segment
+  reaches `minCandles`. Add regression tests for both indicator reset and data-quality gating; do not change production settings.
 - Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
   This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
 - Owner: inspect the authenticated dashboard in a real browser (desktop + 375 px, light/dark, browser console).
