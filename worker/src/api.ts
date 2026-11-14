@@ -276,6 +276,10 @@ export async function killSwitch(env: Env, db: Db, actor: string, fetchImpl: Fet
   for (const pos of open) {
     try {
       const t = await dx.getTicker(pos.pair_id);
+      const tickerAgeSeconds = Math.floor(Date.now() / 1000) - t.server_time;
+      if (t.ask < t.bid || tickerAgeSeconds > params.maxTickerAgeSeconds) {
+        throw new Error(`stale_or_crossed_ticker (age=${tickerAgeSeconds}s)`);
+      }
       const slip = params.dynamicSlippage ? dynamicSlippageBps(params.slippageBps, t.vol_idr) : params.slippageBps;
       const fill = sellFillPrice(t.bid, slip);
       const fee = feeFor(Number(pos.qty) * fill, params.feePct);
