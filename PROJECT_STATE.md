@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 07:50 WIB (session 12: UI redesign planned)_
+_Last updated: 2026-11-14 07:55 WIB (session 12: UI redesign planned, owner rules + extras added)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -49,10 +49,16 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 ### UI redesign (requested by the owner 2026-11-14)
 
 Goal: redesign the whole dashboard so it is nicer to look at and easier to use, with light animations that keep the app fast.
-Work through the steps in order. Use **one commit per step**. After each step, remove that step from this list (do not tick it).
+Work through the steps in order. After each step, remove that step from this list (do not tick it).
+
+Commit rule (mandatory, set by the owner):
+- **Commit and push to `main` after every step**, as soon as its checks pass, before starting the next step. Never batch several steps
+  into one commit. The same commit removes the finished step from this file; put the session details in the commit message.
+- If the session runs out in the middle of a step, do not push half-finished UI. Leave a short note under that step instead
+  (what is done, what is left) in a separate docs-only commit.
 
 Rules for every step:
-- Frontend only (`src/`, `index.html`, `src/index.css`). No changes to the Worker, API, migrations or strategy.
+- Frontend only (`src/`, `public/`, `index.html`). No changes to the Worker, API, migrations or strategy.
 - No new runtime dependencies (no animation/UI/icon libraries). Use Tailwind v4 (CSS-first, `@theme` in `src/index.css`),
   CSS transitions/keyframes and inline SVG icons.
 - Animations: only `transform`/`opacity`, 150–300 ms, no infinite animations except the small live-status dot and skeletons.
@@ -62,11 +68,19 @@ Rules for every step:
   Budget: initial `index-*.js` ≤ 520 kB, CSS growth ≤ 15 kB.
 - Other ideas (new features, new libraries, new pages): propose them to the owner first, do not build them.
 
+Display rules (mandatory, set by the owner):
+- **Fixed app shell**: the sidebar (desktop) and top bar stay in place; only the page content scrolls (e.g. `h-dvh` shell with an
+  `overflow-y-auto` main area). The mobile drawer and dialogs lock the background scroll.
+- **No layout shift**: skeletons have the same size as the content they replace; cards, charts and tables keep a fixed/min height while
+  loading and on every poll; numbers use tabular figures; badges and buttons do not change width when their text changes.
+- **Every step leaves a finished, working UI**: all 9 pages + login render without errors or broken layout on desktop and at 375 px
+  width (check with `npm run build` + `npx vite preview`, and the browser console). No placeholder or half-styled pages in a commit.
+
 Steps:
-- [ ] 1. Foundation: design tokens in `src/index.css` (colours, radius, shadows, keyframes `fade-in`, `slide-up`, `shimmer`, reduced-motion
+- [ ] 1. Foundation: design tokens in `src/index.css` as CSS variables, so step 6 can add a light theme (colours, radius, shadows, keyframes `fade-in`, `slide-up`, `shimmer`, reduced-motion
   rule); restyle `src/components/ui.tsx` (Card, Stat, Badge, Button with focus ring and loading state, Table with sticky header and
   row hover, PageHeader, Select) and add `Skeleton` and an inline-SVG `Icon` set; replace the text "Memuat data…" with skeletons.
-- [ ] 2. Shell: `src/components/Layout.tsx` — sidebar with icons and groups (Pasar / Trading / Sistem), mobile drawer with overlay and
+- [ ] 2. Shell: `src/components/Layout.tsx` — fixed app shell (see display rules), sidebar with icons and groups (Pasar / Trading / Sistem), mobile drawer with overlay and
   slide animation, top bar with page title, live status dot (last cron run) and user menu, slimmer paper-trading notice,
   page fade-in on route change. Redesign `src/pages/Login.tsx` and the not-authorised screen in `src/App.tsx`.
 - [ ] 3. Overview + Paper Trading: hero equity card (return, drawdown, mini curve), KPI cards, open positions as cards with an SL→TP
@@ -76,7 +90,15 @@ Steps:
   signals as cards/timeline with BUY/SELL colour and expandable reasons.
 - [ ] 5. History + Strategy + System + Settings: history filters and a summary row; strategy form grouped into sections with helper
   text, unsaved-changes indicator and sticky save bar; system runs as a timeline with status colours and duration bars; tidy settings.
-- [ ] 6. Final pass: consistency, keyboard focus and contrast check, mobile check at 375 px width, confirm the bundle budget,
+- [ ] 6. Owner-approved extra — light/dark theme: colour tokens as CSS variables for both themes, a toggle in the top bar, choice saved in
+  `localStorage` and defaulting to the system setting, no flash of the wrong theme on load (small inline script in `index.html`),
+  chart colours follow the theme.
+- [ ] 7. Owner-approved extra — PWA: hand-written `public/manifest.webmanifest`, icons and a small service worker that caches only the
+  static assets (never `/api/*`), so the dashboard can be installed on a phone. No new dependencies (no vite-plugin-pwa).
+- [ ] 8. Owner-approved extra — daily PnL calendar on Overview: small month grid, green/red by realised PnL per WIB day, with a tooltip
+  (PnL, number of trades). Compute it in the frontend from existing API data (`/api/positions?status=closed`); if the API cannot
+  provide enough data, stop and ask the owner before changing the Worker.
+- [ ] 9. Final pass: consistency, keyboard focus and contrast check (both themes), mobile check at 375 px width, confirm the bundle budget,
   confirm the new bundle is live in production, update README only if behaviour changed.
 
 ## Known strategy limitations (watch, not changed)
