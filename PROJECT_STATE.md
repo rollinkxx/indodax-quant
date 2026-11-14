@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 07:40 WIB (session 12: open tasks cleared by the owner)_
+_Last updated: 2026-11-14 07:50 WIB (session 12: UI redesign planned)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -46,7 +46,38 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
-None.
+### UI redesign (requested by the owner 2026-11-14)
+
+Goal: redesign the whole dashboard so it is nicer to look at and easier to use, with light animations that keep the app fast.
+Work through the steps in order. Use **one commit per step**. After each step, remove that step from this list (do not tick it).
+
+Rules for every step:
+- Frontend only (`src/`, `index.html`, `src/index.css`). No changes to the Worker, API, migrations or strategy.
+- No new runtime dependencies (no animation/UI/icon libraries). Use Tailwind v4 (CSS-first, `@theme` in `src/index.css`),
+  CSS transitions/keyframes and inline SVG icons.
+- Animations: only `transform`/`opacity`, 150–300 ms, no infinite animations except the small live-status dot and skeletons.
+  Respect `prefers-reduced-motion`. Do not re-animate on every 20 s poll.
+- Keep the existing texts in Indonesian, the WIB time display, the "PAPER TRADING / simulasi" notice and the code-split routes.
+- Before each commit: `npm install`, `npm run typecheck`, `npm test`, `npm run build`. Put bundle sizes (index, CSS, Charts) in the commit message.
+  Budget: initial `index-*.js` ≤ 520 kB, CSS growth ≤ 15 kB.
+- Other ideas (new features, new libraries, new pages): propose them to the owner first, do not build them.
+
+Steps:
+- [ ] 1. Foundation: design tokens in `src/index.css` (colours, radius, shadows, keyframes `fade-in`, `slide-up`, `shimmer`, reduced-motion
+  rule); restyle `src/components/ui.tsx` (Card, Stat, Badge, Button with focus ring and loading state, Table with sticky header and
+  row hover, PageHeader, Select) and add `Skeleton` and an inline-SVG `Icon` set; replace the text "Memuat data…" with skeletons.
+- [ ] 2. Shell: `src/components/Layout.tsx` — sidebar with icons and groups (Pasar / Trading / Sistem), mobile drawer with overlay and
+  slide animation, top bar with page title, live status dot (last cron run) and user menu, slimmer paper-trading notice,
+  page fade-in on route change. Redesign `src/pages/Login.tsx` and the not-authorised screen in `src/App.tsx`.
+- [ ] 3. Overview + Paper Trading: hero equity card (return, drawdown, mini curve), KPI cards, open positions as cards with an SL→TP
+  progress bar, clear Start / Stop / Kill / Reset buttons with a confirm dialog (admin only, same API calls).
+- [ ] 4. Market + Chart + Signals: market table with search, sort and a mobile card view, short price flash only on changed cells;
+  chart toolbar with segmented pair/timeframe controls and chart colours from the tokens (`src/components/Charts.tsx`);
+  signals as cards/timeline with BUY/SELL colour and expandable reasons.
+- [ ] 5. History + Strategy + System + Settings: history filters and a summary row; strategy form grouped into sections with helper
+  text, unsaved-changes indicator and sticky save bar; system runs as a timeline with status colours and duration bars; tidy settings.
+- [ ] 6. Final pass: consistency, keyboard focus and contrast check, mobile check at 375 px width, confirm the bundle budget,
+  confirm the new bundle is live in production, update README only if behaviour changed.
 
 ## Known strategy limitations (watch, not changed)
 
