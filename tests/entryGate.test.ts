@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buyFillPrice, computeStops, entryGate, positionSize } from '../shared/paper';
+import { buyFillPrice, computeStops, entryGate, netRewardRiskGate, positionSize } from '../shared/paper';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../shared/strategy';
 
 const P = DEFAULT_PARAMS;
@@ -26,6 +26,38 @@ describe('entryGate', () => {
   it('rejects crossed or empty quotes and can be disabled', () => {
     expect(entryGate({ bid: 0, ask: 100, signalPrice: 100, stopLoss: 97, fill: 100 }, P)).toBe('bad_quote');
     expect(entryGate({ bid: 99, ask: 101, signalPrice: 100, stopLoss: 90, fill: 101 }, { ...P, maxEntrySpreadPct: 0, maxEntryDriftPct: 0 })).toBeNull();
+  });
+});
+
+describe('net reward/risk gate', () => {
+  it('blocks a low-ATR setup whose take-profit barely covers costs but stop risk is much larger', () => {
+    expect(netRewardRiskGate({
+      entry: 100,
+      stopLoss: 99.57,
+      takeProfit: 100.86,
+      feePct: 0.3,
+      exitSlippageBps: 15,
+    })).toBe('net_reward_risk_below_minimum');
+  });
+
+  it('passes a setup with at least 1:1 net reward/risk after both fees and exit slippage', () => {
+    expect(netRewardRiskGate({
+      entry: 100,
+      stopLoss: 97,
+      takeProfit: 106,
+      feePct: 0.3,
+      exitSlippageBps: 10,
+    })).toBeNull();
+  });
+
+  it('blocks a take-profit that cannot cover round-trip fees and slippage', () => {
+    expect(netRewardRiskGate({
+      entry: 100,
+      stopLoss: 99,
+      takeProfit: 100.2,
+      feePct: 0.3,
+      exitSlippageBps: 15,
+    })).toBe('net_reward_non_positive');
   });
 });
 
