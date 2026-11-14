@@ -257,15 +257,18 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (!trades) { coverage.set(p.id, prevCovered); info[p.id] = 'no_trades_fetch'; return; }
         const plan = planCoverage(trades, prevCovered, nowSec);
         let history: Candle[] | null = [];
-        if (plan.gap) {
+        if (plan.historyRange) {
           try {
-            history = await dx.getHistory(p.symbol, '1', plan.gap.from, plan.gap.to - 1);
+            history = await dx.getHistory(p.symbol, '1', plan.historyRange.from, plan.historyRange.to - 1);
           } catch (e) {
             history = null;
             errors.push(`backfill ${p.id}: ${errorMessage(e)}`);
           }
         }
         const built = buildPairCandles(trades, plan, prevCovered, history);
+        if (plan.historyRange && !built.historyComplete && history !== null) {
+          errors.push(`backfill ${p.id}: incomplete_coverage (${built.missingMinutes} missing minute(s))`);
+        }
         coverage.set(p.id, built.newCoveredUntil);
         const fresh = newTradesSince(trades, p.last_trade_tid);
         const newest = newestTrade(trades);
@@ -287,7 +290,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           last_trade_tid: newest?.tid ?? null,
           htf_backfilled_at: htfBackfilled.has(p.id) ? iso(nowSec) : null,
         });
-        info[p.id] = { trades: trades.length, new: fresh.length, m1: built.m1.length, m5: built.m5.length, backfilled: built.backfilled, gap: plan.gap ? true : false };
+        info[p.id] = {
+          trades: trades.length, new: fresh.length, m1: built.m1.length, m5: built.m5.length,
+          backfilled: built.backfilled, history_range: plan.historyRange, history_complete: built.historyComplete,
+          history_missing_minutes: built.missingMinutes,
+        };
       }));
       // pairs whose trade fetch failed still record a successful HTF backfill (one sync row per pair)
       const synced = new Set((ingestPayload.sync as { pair_id: string }[]).map((x) => x.pair_id));
