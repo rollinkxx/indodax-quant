@@ -1,9 +1,10 @@
-// Offline backtest of the live strategy on stored 5m candles (read-only; paper maths only, no trading).
+// Offline 5m candle-only approximation (read-only; paper maths only, no trading; not production-parity).
 // Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npx tsx scripts/backtest.ts [pairId ...]
-// Costs use the same fee / slippage model as the worker. MTF is not simulated (5m rules only).
+// Scope warnings are printed at runtime; historical bid/ask, MTF and shared portfolio controls are not simulated.
 import { computeIndicators, DEFAULT_PARAMS, evaluateSignalWindow, mergeParams, type StrategyParams } from '../shared/strategy';
-import { buyFillPrice, computeStats, computeStops, dynamicSlippageBps, feeFor, positionSize, sellFillPrice, trailingStop } from '../shared/paper';
+import { buyFillPrice, computeStats, computeStops, dynamicSlippageBps, feeFor, netRewardRiskGate, positionSize, sellFillPrice, trailingStop } from '../shared/paper';
 import type { Candle } from '../shared/candles';
+import { backtestScopeWarnings } from '../shared/backtestScope';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -64,7 +65,14 @@ export function simulate(pair: string, candles: Candle[], p: StrategyParams, equ
     const next = candles[i + 1]; // fill on the next candle open (no look-ahead)
     const fill = buyFillPrice(next.o, slip);
     const stops = computeStops(fill, rows[i].atr14, p);
-    const size = positionSize({ equity, cash: equity, entry: fill, stopLoss: stops.stopLoss, params: p });
+    const economicsGate = netRewardRiskGate({
+      entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
+      feePct: p.feePct, exitSlippageBps: slip,
+    });
+    if (economicsGate) continue;
+    const size = positionSize({
+      equity, cash: equity, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params: p,
+    });
     if (size.qty <= 0) continue;
     pos = { qty: size.qty, entry: fill, cost: size.cost, sl: stops.stopLoss, tp: stops.takeProfit, openedIdx: i + 1 };
     i += 1;
@@ -83,11 +91,12 @@ function report(label: string, t: SimTrade[]) {
 async function main() {
   const cfg = await get<{ params: unknown }[]>('strategy_configs?select=params&is_active=eq.true&limit=1');
   const live = mergeParams(cfg[0]?.params);
+  for (const warning of backtestScopeWarnings(live)) console.warn(`[BACKTEST SCOPE] ${warning}`);
   const pairs = process.argv.slice(2).length
     ? process.argv.slice(2)
     : (await get<{ pair_id: string }[]>('market_tickers_latest?select=pair_id&order=vol_idr.desc&limit=25')).map((r) => r.pair_id);
   const vols = Object.fromEntries((await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr')).map((r) => [r.pair_id, +r.vol_idr]));
-  // Baseline = pre-hardening behaviour; Hardened = current live params.
+  // Compare older 5m rules with current settings; both remain candle-only per-pair approximations.
   const baseline: StrategyParams = { ...DEFAULT_PARAMS, ...live, crossLookback: 3, rsiBuyMax: 70, maxEntryExtensionPct: 0, sellRequireConfirm: true, trailingStopEnabled: false, timeStopMinutes: 0, dynamicSlippage: false };
   const all = { baseline: [] as SimTrade[], hardened: [] as SimTrade[] };
   for (const pair of pairs) {
@@ -96,8 +105,8 @@ async function main() {
     all.baseline.push(...simulate(pair, candles, baseline, 10_000_000, vols[pair] ?? null));
     all.hardened.push(...simulate(pair, candles, live, 10_000_000, vols[pair] ?? null));
   }
-  report('baseline (old rules)', all.baseline);
-  report('hardened (live)    ', all.hardened);
+  report('baseline (older 5m rules)', all.baseline);
+  report('hardened (5m approximation)', all.hardened);
   const reasons: Record<string, number> = {};
   for (const t of all.hardened) reasons[t.reason] = (reasons[t.reason] ?? 0) + 1;
   console.log('hardened exits by reason:', reasons);

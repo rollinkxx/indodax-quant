@@ -13,12 +13,34 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: indodax_quant_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d indodax_quant_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: npm install --no-audit --no-fund
+      - name: Verify Supabase security and index migrations on PostgreSQL 17
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/is_app_user_security_setup.sql
+          psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f supabase/migrations/20261114170008_is_app_user_security_invoker.sql
+          psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f supabase/migrations/20261114170619_improve_paper_trade_fk_indexes.sql
+          psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f supabase/migrations/20261114171017_optimize_app_users_self_rls_initplan.sql
+          psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/is_app_user_security_assert.sql
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

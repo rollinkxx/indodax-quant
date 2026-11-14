@@ -9,7 +9,7 @@ const req = (path: string, token?: string, init: RequestInit = {}) =>
 
 const account = { id: 1, name: 'default', status: 'STOPPED', reset_at: '2026-11-13T00:00:00Z', equity: '10000000', initial_balance: '10000000' };
 
-function dbHandler(state: { rpcs: { fn: string; body: any }[]; strategyParams?: any }) {
+function dbHandler(state: { rpcs: { fn: string; body: any }[]; strategyParams?: any; openPositions?: { id: number; pair_id: string; qty: string }[] }) {
   return (u: URL, init: RequestInit) => {
     if (!u.href.startsWith(SB + '/rest/v1/')) return;
     const table = u.pathname.replace('/rest/v1/', '');
@@ -19,6 +19,7 @@ function dbHandler(state: { rpcs: { fn: string; body: any }[]; strategyParams?: 
       return json({ ok: true, status: 'RUNNING' });
     }
     if (table === 'paper_accounts') return json([account]);
+    if (table === 'paper_positions') return json(state.openPositions ?? []);
     if (table === 'strategy_configs') {
       if (init.method === 'PATCH') { state.strategyParams = JSON.parse(String(init.body)).params; return json([{ id: 1, params: state.strategyParams }]); }
       return json([{ id: 1, name: 'ema_rsi_volume', params: state.strategyParams ?? {} }]);
@@ -70,6 +71,63 @@ describe('API auth & authorization', () => {
     expect(state.rpcs[0]).toMatchObject({ fn: 'paper_set_status', body: { p_account_id: 1, p_status: 'RUNNING' } });
   });
 
+  it('manual kill switch applies dynamic slippage from the ticker volume tier', async () => {
+    const state = {
+      rpcs: [] as { fn: string; body: any }[],
+      strategyParams: { dynamicSlippage: true, slippageBps: 10, feePct: 0.3 },
+      openPositions: [{ id: 12, pair_id: 'thinidr', qty: '2' }],
+    };
+    const tickerHandler = (u: URL) => u.href === 'https://indodax.com/api/ticker/thinidr'
+      ? json({ ticker: { last: '1000', buy: '999', sell: '1001', vol_idr: '100000000', server_time: String(Math.floor(Date.now() / 1000)) } })
+      : undefined;
+    const f = fakeFetch([authHandler, appUsersHandler, dbHandler(state), tickerHandler]);
+    const r = await handleApi(req('/api/paper/kill', 'admin', { method: 'POST' }), env(), f);
+
+    expect(r.status).toBe(200);
+    const close = state.rpcs.find((x) => x.fn === 'paper_close_position');
+    expect(close?.body.p_slippage_bps).toBe(40);
+    expect(close?.body.p_fill_price).toBeCloseTo(999 * (1 - 40 / 10_000));
+  });
+
+  it('manual kill switch does not close positions using a stale ticker', async () => {
+    const state = {
+      rpcs: [] as { fn: string; body: any }[],
+      strategyParams: { dynamicSlippage: true, slippageBps: 10, feePct: 0.3 },
+      openPositions: [{ id: 12, pair_id: 'thinidr', qty: '2' }],
+    };
+    const tickerHandler = (u: URL) => u.href === 'https://indodax.com/api/ticker/thinidr'
+      ? json({ ticker: { last: '1000', buy: '999', sell: '1001', vol_idr: '100000000', server_time: '1' } })
+      : undefined;
+    const f = fakeFetch([authHandler, appUsersHandler, dbHandler(state), tickerHandler]);
+    const r = await handleApi(req('/api/paper/kill', 'admin', { method: 'POST' }), env(), f);
+    const body = await r.json() as any;
+
+    expect(r.status).toBe(200);
+    expect(body).toMatchObject({ status: 'KILLED', closed: 0, total: 1 });
+    expect(body.results[0]).toMatchObject({ pair: 'thinidr', ok: false });
+    expect(state.rpcs.some((x) => x.fn === 'paper_close_position')).toBe(false);
+  });
+
+  it('manual kill switch does not close positions using a crossed bid/ask quote', async () => {
+    const state = {
+      rpcs: [] as { fn: string; body: any }[],
+      strategyParams: { dynamicSlippage: true, slippageBps: 10, feePct: 0.3 },
+      openPositions: [{ id: 12, pair_id: 'thinidr', qty: '2' }],
+    };
+    const nowSec = Math.floor(Date.now() / 1000);
+    const tickerHandler = (u: URL) => u.href === 'https://indodax.com/api/ticker/thinidr'
+      ? json({ ticker: { last: '1000', buy: '1002', sell: '1001', vol_idr: '100000000', server_time: String(nowSec) } })
+      : undefined;
+    const f = fakeFetch([authHandler, appUsersHandler, dbHandler(state), tickerHandler]);
+    const r = await handleApi(req('/api/paper/kill', 'admin', { method: 'POST' }), env(), f);
+    const body = await r.json() as any;
+
+    expect(r.status).toBe(200);
+    expect(body).toMatchObject({ status: 'KILLED', closed: 0, total: 1 });
+    expect(body.results[0]).toMatchObject({ pair: 'thinidr', ok: false });
+    expect(state.rpcs.some((x) => x.fn === 'paper_close_position')).toBe(false);
+  });
+
   it('strategy update is validated server-side', async () => {
     const state = { rpcs: [] as any[], strategyParams: {} };
     const f = fakeFetch([authHandler, appUsersHandler, dbHandler(state)]);
@@ -90,4 +148,25 @@ describe('API auth & authorization', () => {
     const r = await worker.fetch(new Request('https://app.test/market'), env());
     expect(await r.text()).toBe('asset');
   });
+
+  it('manual kill switch does not close positions using a crossed ticker', async () => {
+    const state = {
+      rpcs: [] as { fn: string; body: any }[],
+      strategyParams: { dynamicSlippage: true, slippageBps: 10, feePct: 0.3 },
+      openPositions: [{ id: 12, pair_id: 'thinidr', qty: '2' }],
+    };
+    const tickerHandler = (u: URL) => u.href === 'https://indodax.com/api/ticker/thinidr'
+      ? json({ ticker: { last: '1000', buy: '1002', sell: '1001', vol_idr: '100000000', server_time: String(Math.floor(Date.now() / 1000)) } })
+      : undefined;
+    const f = fakeFetch([authHandler, appUsersHandler, dbHandler(state), tickerHandler]);
+    const r = await handleApi(req('/api/paper/kill', 'admin', { method: 'POST' }), env(), f);
+    const body = await r.json() as any;
+
+    expect(r.status).toBe(200);
+    expect(body).toMatchObject({ status: 'KILLED', closed: 0, total: 1 });
+    expect(body.results[0]).toMatchObject({ pair: 'thinidr', ok: false });
+    expect(body.results[0].error).toContain('stale_or_crossed_ticker');
+    expect(state.rpcs.some((x) => x.fn === 'paper_close_position')).toBe(false);
+  });
+
 });

@@ -7,7 +7,7 @@ import { IndodaxClient } from './indodax';
 import { errorMessage } from './http';
 import { runPipeline } from './pipeline';
 import { sendTelegram, telegramConfigured, messages, jakarta } from './telegram';
-import { sellFillPrice, feeFor, computeStats } from '../../shared/paper';
+import { dynamicSlippageBps, sellFillPrice, feeFor, computeStats } from '../../shared/paper';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../../shared/strategy';
 
 const MAX_TRACKED_PAIRS = 10;
@@ -276,10 +276,15 @@ export async function killSwitch(env: Env, db: Db, actor: string, fetchImpl: Fet
   for (const pos of open) {
     try {
       const t = await dx.getTicker(pos.pair_id);
-      const fill = sellFillPrice(t.bid, params.slippageBps);
+      const tickerAgeSeconds = Math.floor(Date.now() / 1000) - t.server_time;
+      if (t.ask < t.bid || tickerAgeSeconds > params.maxTickerAgeSeconds) {
+        throw new Error(`stale_or_crossed_ticker (age=${tickerAgeSeconds}s)`);
+      }
+      const slip = params.dynamicSlippage ? dynamicSlippageBps(params.slippageBps, t.vol_idr) : params.slippageBps;
+      const fill = sellFillPrice(t.bid, slip);
       const fee = feeFor(Number(pos.qty) * fill, params.feePct);
       const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
-        p_position_id: pos.id, p_requested_price: t.bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: params.slippageBps, p_reason: 'KILL_SWITCH',
+        p_position_id: pos.id, p_requested_price: t.bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: 'KILL_SWITCH',
       });
       if (r.ok) closed++;
       results.push({ pair: pos.pair_id, ...r });
@@ -287,6 +292,14 @@ export async function killSwitch(env: Env, db: Db, actor: string, fetchImpl: Fet
       results.push({ pair: pos.pair_id, ok: false, error: errorMessage(e) });
     }
   }
-  await sendTelegram(env, messages.killSwitch(`manual by ${actor}`, closed), fetchImpl).catch(() => undefined);
+  const failures = results.flatMap((value) => {
+    const result = value as { pair?: string; ok?: boolean; error?: string; reason?: string };
+    if (result.ok === true) return [];
+    return [{
+      pair: result.pair ?? 'unknown',
+      reason: result.error ?? result.reason ?? 'failed_to_close',
+    }];
+  });
+  await sendTelegram(env, messages.killSwitch(`manual by ${actor}`, closed, { total: open.length, failures }), fetchImpl).catch(() => undefined);
   return { ok: true, status: 'KILLED', closed, total: open.length, results };
 }

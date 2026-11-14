@@ -47,7 +47,7 @@ describe('INDODAX public client', () => {
   it('retries on 5xx and returns data', async () => {
     let n = 0;
     const c = new IndodaxClient(async () => (++n < 2 ? new Response('busy', { status: 503 }) : okJson({ ticker: { last: '1', buy: '1', sell: '2', server_time: '5' } })), { timeoutMs: 1000, retries: 2 });
-    expect(await c.getTicker('btcidr')).toEqual({ last: 1, bid: 1, ask: 2, server_time: 5 });
+    expect(await c.getTicker('btcidr')).toEqual({ last: 1, bid: 1, ask: 2, server_time: 5, vol_idr: null });
     expect(n).toBe(2);
   });
   it('does not retry on 404 and rejects invalid payloads', async () => {

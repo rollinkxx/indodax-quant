@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDataQuality, DEFAULT_PARAMS, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
@@ -84,6 +84,36 @@ describe('evaluateSignalWindow (crossLookback)', () => {
   });
 });
 
+describe('synthetic candle indicator isolation', () => {
+  const candle = (t: number, close: number, source: Candle['source'] = 'trades'): Candle => ({
+    t, o: close, h: close + 1, l: close - 1, c: close, v: source === 'synthetic' ? 0 : 10,
+    n: source === 'synthetic' ? 0 : 1, source,
+  });
+
+  it('restarts the latest indicator window after an internal synthetic gap', () => {
+    const beforeGap = Array.from({ length: 80 }, (_, i) => candle(i * 300, 100 + i));
+    const afterGap = Array.from({ length: 80 }, (_, i) => candle((81 + i) * 300, 500 - i * 0.7));
+    const withGap = [...beforeGap, candle(80 * 300, 179, 'synthetic'), ...afterGap];
+
+    const actual = computeIndicatorsTail(withGap, DEFAULT_PARAMS, 3);
+    const expected = computeIndicatorsTail(afterGap, DEFAULT_PARAMS, 3);
+    const comparable = (rows: typeof actual) => rows.map(({ t: _t, ...row }) => row);
+
+    expect(comparable(actual)).toEqual(comparable(expected));
+  });
+
+  it('returns unready indicators for a synthetic latest candle', () => {
+    const real = Array.from({ length: 80 }, (_, i) => candle(i * 300, 100 + i));
+    const synthetic = candle(80 * 300, 179, 'synthetic');
+    const rows = computeIndicatorsTail([...real, synthetic], DEFAULT_PARAMS, 3);
+    expect(rows.at(-1)).toMatchObject({
+      t: synthetic.t, close: synthetic.c,
+      ema9: null, ema21: null, ema50: null, rsi14: null, macd: null, macdSignal: null,
+      macdHist: null, atr14: null, volMa20: null, support: null, resistance: null,
+    });
+  });
+});
+
 describe('checkDataQuality', () => {
   const now = 1_763_000_000 - (1_763_000_000 % 300) + 30; // 30 s into a bucket
   const expectedLast = now - 30 - 300;
@@ -105,6 +135,20 @@ describe('checkDataQuality', () => {
     const s = series(61);
     s.splice(10, 1);
     expect(checkDataQuality({ ...base, candles: s }).reason).toBe('non_contiguous_series');
+  });
+
+  it('rejects a recent synthetic gap until minCandles real candles have accumulated after it', () => {
+    const s = series(60);
+    s[20] = { ...s[20], v: 0, n: 0, source: 'synthetic' };
+    expect(checkDataQuality({ ...base, candles: s })).toMatchObject({
+      ok: false, reason: 'insufficient_contiguous_candles (39/60)',
+    });
+  });
+
+  it('accepts an older synthetic gap once the latest real-candle suffix is fully warmed up', () => {
+    const s = series(120);
+    s[10] = { ...s[10], v: 0, n: 0, source: 'synthetic' };
+    expect(checkDataQuality({ ...base, candles: s })).toEqual({ ok: true });
   });
 });
 

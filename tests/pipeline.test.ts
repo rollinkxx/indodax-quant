@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; mtfMode?: string } = {}) {
+function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: any[] } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // only the higher-timeframe history calls (tf=1 is the pre-existing 1m gap backfill)
@@ -39,7 +39,7 @@ function setup(opts: { htfBackfilled?: boolean; mtfMode?: string } = {}) {
           return json({ btcidr: candleRows(250, expectedLast, 300, (i) => 1000 + i) });
         case 'get_recent_candles_multi':
           return json({ '15m': { btcidr: candleRows(100, Math.floor((expectedLast + 300) / 900) * 900 - 900, 900, (i) => 900 + i) }, '1h': { btcidr: [] } });
-        case 'save_analysis': return json({ new_signals: [] });
+        case 'save_analysis': return json({ new_signals: opts.newSignals ?? [] });
         case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
         case 'claim_notifications': return json(body.p_items.map((x: any) => x.dedupe_key));
         default: return json({ ok: true });
@@ -95,6 +95,20 @@ describe('pipeline: MTF + dynamic universe', () => {
     const steps = r.steps as any;
     expect(steps.analyze.info.mtf.btcidr).toMatch(/15m:\w+ 1h:\w+/);
     expect(steps.universe.info.members).toEqual(['pepeidr', 'dogeidr']);
+  });
+
+  it('skips a BUY when net take-profit reward does not cover net stop risk', async () => {
+    const signal = {
+      id: 99, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 2.866 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const { f, rpcs } = setup({ mtfMode: 'off', newSignals: [signal] });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('SUCCESS');
+    expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    const actions = (r.steps as any)?.paper_trading?.info?.actions as string[];
+    expect(actions).toContain('skip btcidr: net_reward_risk_below_minimum');
   });
 
   it('skips the backfill once done and skips higher timeframes when MTF is off', async () => {

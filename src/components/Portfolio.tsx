@@ -2,6 +2,7 @@ import { useId, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Badge, Button, ConfirmDialog, statusColor } from './ui';
 import { Icon, type IconName } from './Icon';
+import { killSwitchOutcome } from '../lib/killSwitchOutcome';
 import { post } from '../lib/api';
 import { idr, num, pairLabel, pct, pnlClass, wib } from '../lib/format';
 
@@ -225,7 +226,11 @@ export function PaperControls({ status, onResult }: { status: string; onResult: 
     try {
       const r = await post(ACTIONS[a].path, ACTIONS[a].payload);
       setPending(null);
-      await onResult({ msg: r?.status ? `OK: ${r.status}${r.closed !== undefined ? `, ${r.closed} posisi ditutup` : ''}` : 'OK' });
+      if (a === 'kill') {
+        await onResult(killSwitchOutcome(r));
+      } else {
+        await onResult({ msg: r?.status ? `OK: ${r.status}` : 'OK' });
+      }
     } catch (e) {
       setPending(null);
       await onResult({ err: e instanceof Error ? e.message : String(e) });

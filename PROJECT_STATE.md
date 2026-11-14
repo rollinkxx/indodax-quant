@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 15:30 WIB (session 15: UI redesign step 9 final pass — done; the redesign is complete)_
+_Last updated: 2026-11-15 01:15 WIB (session 27: Telegram partial kill-switch reporting — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,9 +48,10 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
-- Owner: quick look at the live site in a real browser (desktop + 375 px, light and dark, browser console). Step 9 was checked
-  statically only (contrast maths on the tokens, focus styles in code, no fixed widths over 375 px) because the agent sandbox cannot run
-  a browser. Report anything broken as a new task.
+- Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
+  This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
+- Owner: inspect the authenticated dashboard in a real browser (desktop + 375 px, light/dark, browser console).
+  The public login page is already smoke-tested with Playwright in all four viewport/theme combinations; no admin credentials were used.
 
 New features, libraries or pages: propose them to the owner first, do not build them.
 
@@ -73,11 +74,14 @@ New features, libraries or pages: propose them to the owner first, do not build 
 - MTF `filter` blocks every BUY while any higher timeframe is still warming up.
 - Pinned pairs `xautidr` / `paxgidr` still emit signals although they are excluded from the dynamic universe.
 - SELL signals without an open position are stored but not sent to Telegram (by design).
-- Low-ATR entries have a very tight stop: hypeidr stop was 0.43 % and TP 0.86 % below/above entry, while the round trip costs
-  ~0.9 % (fees 0.6 % + slippage 2 × 0.15 %) — TP barely breaks even, SL loses ~1.3 %. Checks run once per minute, so a fast bid drop fills below the stop.
+- Stop-loss execution is still exposed to gaps between one-minute checks: the HYPE incident filled 0.35 % below the stop
+  when the bid dropped quickly. The net reward/risk gate prices the configured exit slippage, but cannot guarantee a stop fill during a gap.
 - Only 3 closed trades: no meaningful win rate yet.
 
 ## Agent notes
+
+- Read-only public login browser check: `scripts/browser-smoke/live-public-ui.mjs`, manually runnable from the
+  `Live public UI smoke` workflow. It checks 1440 px / 375 px in light/dark, login controls, theme-color, overflow and browser errors.
 
 - **"Session approvals are not available for this tool"** on GitHub/Supabase MCP calls: the connector is fine. Reconnect the server
   (`mcp-servers` → `connect`, slug `git-hub` or `supabase`) and retry. The approval is per tool: each write tool

@@ -41,6 +41,11 @@ describe('higher-timeframe aggregation', () => {
     expect(m15.map((k) => k.source)).toEqual(['synthetic', 'history']);
   });
 
+  it('marks a bucket synthetic when any 5m input is synthetic', () => {
+    const s = [c(0, 1, 1, 1, 'history'), c(300, 1, 1, 0, 'synthetic'), c(600, 1, 1, 1, 'history')];
+    expect(aggregateComplete(s, 900)[0].source).toBe('synthetic');
+  });
+
   it('buildHigherSeries merges stored history with aggregates (aggregates win) and drops forming candles', () => {
     const stored = [c(0, 10), c(3600, 11), c(7200, 12), c(10800, 99)];
     const agg = [c(7200, 13)];
@@ -69,6 +74,23 @@ describe('trendState', () => {
 
   it('refuses a stale last candle', () => {
     expect(trendState('15m', up, last + 900, P)).toMatchObject({ trend: 'unknown', reason: 'stale_last_candle' });
+  });
+
+  it('refuses a synthetic latest candle', () => {
+    const syntheticLast = [...up.slice(0, -1), c(last, 138, 138, 0, 'synthetic')];
+    expect(trendState('15m', syntheticLast, last, P)).toMatchObject({ trend: 'unknown', reason: 'synthetic_last_candle' });
+  });
+
+  it('requires enough contiguous non-synthetic candles after a data gap', () => {
+    const withGap = up.map((row, i) => i === 10 ? { ...row, v: 0, n: 0, source: 'synthetic' as const } : row);
+    expect(trendState('15m', withGap, last, P)).toMatchObject({
+      trend: 'unknown', candles: 9, reason: 'insufficient_contiguous_candles (9/10)',
+    });
+  });
+
+  it('uses the contiguous real-candle suffix after an older synthetic gap', () => {
+    const withOldGap = up.map((row, i) => i === 2 ? { ...row, v: 0, n: 0, source: 'synthetic' as const } : row);
+    expect(trendState('15m', withOldGap, last, P)).toMatchObject({ trend: 'bull', candles: 17 });
   });
 
   it('neutral when price and EMAs disagree', () => {
