@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { usePoll } from '../lib/usePoll';
 import { Badge, Card, ErrorBox, Loading, PageHeader, PageSkeleton, Stat, Table, Td, statusColor, Empty } from '../components/ui';
 import { EquityHero, PositionGrid } from '../components/Portfolio';
+import { PnlCalendar } from '../components/PnlCalendar';
 import { ago, idr, num, pairLabel, pct, pnlClass, wib } from '../lib/format';
 
 const more = 'rounded text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
@@ -21,6 +22,7 @@ export default function Overview() {
   const tk = usePoll<any>('/api/market/tickers?scope=tracked', 20000);
   const sg = usePoll<any>('/api/signals?limit=8', 30000);
   const sys = usePoll<any>('/api/system?limit=5', 30000);
+  const closed = usePoll<any>('/api/positions?status=closed&limit=1000', 60000);
 
   if (pf.loading && !pf.data) return <PageSkeleton />;
   const acc = pf.data?.account;
@@ -32,7 +34,7 @@ export default function Overview() {
     <div className="space-y-5">
       <PageHeader title="Overview" subtitle="Ringkasan portfolio simulasi, pasar, dan kesehatan sistem"
         actions={acc && <Badge color={statusColor(acc.status)}>Paper trading: {acc.status}</Badge>} />
-      <ErrorBox error={pf.error ?? tk.error ?? sys.error} />
+      <ErrorBox error={pf.error ?? tk.error ?? sys.error ?? closed.error} />
 
       <div className="grid gap-4 lg:grid-cols-3">
         {acc ? <EquityHero account={acc} curve={curve} className="lg:col-span-2" />
@@ -60,9 +62,12 @@ export default function Overview() {
         </div>
       )}
 
-      <Card title={`Posisi Terbuka (${open.length})`} actions={<Link to="/paper" className={more}>Paper Trading →</Link>}>
-        {open.length ? <PositionGrid positions={open} /> : <Empty>Tidak ada posisi terbuka.</Empty>}
-      </Card>
+      <div className="grid items-start gap-4 lg:grid-cols-3">
+        <Card title={`Posisi Terbuka (${open.length})`} className="lg:col-span-2" actions={<Link to="/paper" className={more}>Paper Trading →</Link>}>
+          {open.length ? <PositionGrid positions={open} narrow /> : <Empty>Tidak ada posisi terbuka.</Empty>}
+        </Card>
+        <PnlCalendar positions={closed.data?.positions ?? null} account={acc ?? null} loading={closed.loading} />
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card title="Pasar yang Dipantau" actions={<Link to="/market" className={more}>Semua →</Link>}>

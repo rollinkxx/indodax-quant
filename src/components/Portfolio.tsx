@@ -163,9 +163,9 @@ export function PositionCard({ p }: { p: any }) {
   );
 }
 
-export function PositionGrid({ positions }: { positions: any[] }) {
+export function PositionGrid({ positions, narrow = false }: { positions: any[]; /** Max two columns (grid sits in a 2/3-width card). */ narrow?: boolean }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    <div className={`grid gap-3 sm:grid-cols-2 ${narrow ? '' : 'xl:grid-cols-3'}`}>
       {positions.map((p) => <PositionCard key={p.id} p={p} />)}
     </div>
   );

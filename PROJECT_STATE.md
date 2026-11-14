@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 11:45 WIB (session 14: UI redesign step 7 — PWA — done)_
+_Last updated: 2026-11-14 12:30 WIB (session 14: UI redesign steps 7 PWA and 8 PnL calendar — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -42,7 +42,7 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
   signal + paper BUY + stop-loss notices sent. Exit filled 0.35 % below the stop (bid gapped 1.328.854 → 1.325.000 within 1 min).
 - Active strategy config (DB `strategy_configs` row is the source of truth; changed by the admin 2026-11-13 17:52Z):
   `maxEntrySpreadPct` 0.6, `maxEntryDriftPct` 0.5, `universeMinVolumeIdr` 1e9, `universeSize` 25, `maxOpenPositions` 10.
-- Local checks after step 7 (PWA): typecheck 0 errors, 134 tests / 16 files pass, build OK.
+- Local checks after step 8 (PnL calendar): typecheck 0 errors, 138 tests / 17 files pass, build OK.
 
 ## Open tasks
 
@@ -83,11 +83,8 @@ Steps (done: 1 foundation — tokens in `src/index.css`, components in `src/comp
 unsaved count, its save bar is `sticky bottom-0` inside `<main>`; 6 light/dark theme — `src/lib/theme.ts` (pref in localStorage `iq-theme`,
 none = system) mirrored by the inline script in `index.html`; light values live in `:root:not(.dark)` in `index.css`, which also remaps the
 few status palette shades components use directly; charts rebuild on theme change; toggle in the top bar, Sistem/Terang/Gelap in Settings; 7 PWA — `public/manifest.webmanifest`, `public/icons/*.svg`, `public/sw.js`
-(cache `iq-static-v1`, routing in `route()`, tested by `tests/sw.test.ts`), registered in production only by `src/lib/pwa.ts`):
-- [ ] 8. Owner-approved extra — daily PnL calendar on Overview: small month grid, green/red by realised PnL per WIB day, with a tooltip
-  (PnL, number of trades). Compute it in the frontend from existing API data (`/api/positions?status=closed&limit=1000`). That endpoint
-  returns closed positions of every account, including before the last reset, max 1000 rows: filter by the active account id and
-  `closed_at >= reset_at` (both from `/api/portfolio`). If the API cannot provide enough data, stop and ask the owner before changing the Worker.
+(cache `iq-static-v1`, routing in `route()`, tested by `tests/sw.test.ts`), registered in production only by `src/lib/pwa.ts`; 8 PnL calendar — `src/components/PnlCalendar.tsx` next to Posisi Terbuka on Overview,
+pure logic in `src/lib/pnlCalendar.ts` (WIB day = UTC+7, filtered by account id and `reset_at`, 6-week grid), tested by `tests/pnlCalendar.test.ts`):
 - [ ] 9. Final pass: consistency, keyboard focus and contrast check (both themes), mobile check at 375 px width, confirm the bundle budget,
   confirm the new bundle is live in production, update README only if behaviour changed.
 
