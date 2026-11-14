@@ -292,6 +292,14 @@ export async function killSwitch(env: Env, db: Db, actor: string, fetchImpl: Fet
       results.push({ pair: pos.pair_id, ok: false, error: errorMessage(e) });
     }
   }
-  await sendTelegram(env, messages.killSwitch(`manual by ${actor}`, closed), fetchImpl).catch(() => undefined);
+  const failures = results.flatMap((value) => {
+    const result = value as { pair?: string; ok?: boolean; error?: string; reason?: string };
+    if (result.ok === true) return [];
+    return [{
+      pair: result.pair ?? 'unknown',
+      reason: result.error ?? result.reason ?? 'failed_to_close',
+    }];
+  });
+  await sendTelegram(env, messages.killSwitch(`manual by ${actor}`, closed, { total: open.length, failures }), fetchImpl).catch(() => undefined);
   return { ok: true, status: 'KILLED', closed, total: open.length, results };
 }
