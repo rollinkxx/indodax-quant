@@ -76,12 +76,24 @@ export function findCoverageRecoveryStart(candles: Candle[], nowSec: number, min
 
   const contiguous = rows.length - suffixStart;
   if (contiguous < minCandles) {
+    // Recover enough history to reach the strategy's contiguous-bar threshold,
+    // not merely the first missing bucket. A short recovered suffix would leave
+    // the pair permanently below minCandles even after a complete OHLC response.
+    const minimumWindowStart = floorTo(
+      Math.max(nowSec - BOOTSTRAP_SECONDS, expectedLast - (minCandles + 2) * 300),
+      300,
+    );
     if (suffixStart > 0) {
       const boundary = rows[suffixStart - 1];
-      return floorTo(boundary.source === 'synthetic' ? boundary.t : boundary.t + 300, 300);
+      const gapStart = floorTo(boundary.source === 'synthetic' ? boundary.t : boundary.t + 300, 300);
+      return Math.min(gapStart, minimumWindowStart);
     }
     const missingBars = Math.max(1, minCandles - contiguous + 2);
-    return floorTo(Math.max(nowSec - BOOTSTRAP_SECONDS, expectedLast - missingBars * 300), 300);
+    const availableStart = floorTo(
+      Math.max(nowSec - BOOTSTRAP_SECONDS, expectedLast - missingBars * 300),
+      300,
+    );
+    return Math.min(availableStart, minimumWindowStart);
   }
 
   // A healthy historical suffix is still unusable if its tail stopped before the

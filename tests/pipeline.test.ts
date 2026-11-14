@@ -135,10 +135,12 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(r.status).toBe('SUCCESS');
     const oneMinute = indodax.filter((p) => p.startsWith('/tradingview/history_v2') && new URLSearchParams(p.split('?')[1]).get('tf') === '1');
     expect(oneMinute).toHaveLength(1);
-    const expectedGap = expectedLast - (249 - gapIndex) * 300;
-    expect(Number(new URLSearchParams(oneMinute[0].split('?')[1]).get('from'))).toBe(expectedGap);
+    const firstGap = expectedLast - (249 - gapIndex) * 300;
+    const minimumWindowStart = expectedLast - (60 + 2) * 300;
+    const expectedRecoveryStart = Math.min(firstGap, minimumWindowStart);
+    expect(Number(new URLSearchParams(oneMinute[0].split('?')[1]).get('from'))).toBe(expectedRecoveryStart);
     const info = (r.steps as any).build_candles.info.btcidr;
-    expect(info.recovery_from).toBe(expectedGap);
+    expect(info.recovery_from).toBe(expectedRecoveryStart);
     expect(info.history_complete).toBe(true);
     expect(rpcs.some((x) => x.fn === 'save_analysis')).toBe(true);
   });
