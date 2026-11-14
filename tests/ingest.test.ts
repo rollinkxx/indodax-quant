@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPairCandles, planCoverage } from '../worker/src/ingest';
+import { buildPairCandles, findCoverageRecoveryStart, planCoverage } from '../worker/src/ingest';
 import type { Candle, Trade } from '../shared/candles';
 
 const T0 = 1_800_000_000 - (1_800_000_000 % 300);
@@ -16,6 +16,24 @@ const history = (minute: number, close = 99, volume = 0): Candle => ({
 const completeHistory = () => Array.from({ length: 5 }, (_, i) => history(i));
 
 describe('minute coverage recovery', () => {
+
+  it('finds an old 5m hole even when the latest 5m cursor is otherwise current', () => {
+    const bars = Array.from({ length: 70 }, (_, i) => ({
+      t: T0 + i * 300, o: 100, h: 101, l: 99, c: 100, v: 5, n: 1, source: 'trades' as const,
+    })).filter((c) => c.t !== T0 + 20 * 300);
+
+    expect(findCoverageRecoveryStart(bars, T0 + 70 * 300 + 30, 60)).toBe(T0 + 20 * 300);
+  });
+
+  it('does not request historical repair once 60 completed observed 5m bars are contiguous and current', () => {
+    const bars = Array.from({ length: 70 }, (_, i) => ({
+      t: T0 + i * 300, o: 100, h: 101, l: 99, c: 100, v: 5, n: 1, source: 'trades' as const,
+    }));
+
+    expect(findCoverageRecoveryStart(bars, T0 + 70 * 300 + 30, 60)).toBeNull();
+  });
+
+
   it('bootstraps from official history when no coverage frontier exists', () => {
     const plan = planCoverage([trade('1', 4)], null, NOW);
     expect(plan.historyRange).toEqual({ from: nowMin - 24 * 3600, to: nowMin });
