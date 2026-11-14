@@ -1,8 +1,20 @@
+import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { usePoll } from '../lib/usePoll';
 import { Badge, Card, ErrorBox, Loading, PageHeader, PageSkeleton, Stat, Table, Td, statusColor, Empty } from '../components/ui';
-import { AreaChart, toSec } from '../components/Charts';
+import { EquityHero, PositionGrid } from '../components/Portfolio';
 import { ago, idr, num, pairLabel, pct, pnlClass, wib } from '../lib/format';
+
+const more = 'rounded text-xs font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus';
+
+function Row({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-h-9 items-center justify-between gap-3 border-b border-line/70 last:border-0">
+      <span className="text-muted">{label}</span>
+      <span className="num truncate text-right">{children}</span>
+    </div>
+  );
+}
 
 export default function Overview() {
   const pf = usePoll<any>('/api/portfolio?points=1440', 20000);
@@ -13,55 +25,61 @@ export default function Overview() {
   if (pf.loading && !pf.data) return <PageSkeleton />;
   const acc = pf.data?.account;
   const stats = pf.data?.stats;
-  const curve = (pf.data?.equityCurve ?? []).map((p: any) => ({ time: toSec(p.snapshot_time), value: Number(p.equity) }));
-  const ret = acc ? (Number(acc.equity) / Number(acc.initial_balance) - 1) * 100 : null;
+  const open: any[] = pf.data?.openPositions ?? [];
+  const curve: number[] = (pf.data?.equityCurve ?? []).map((p: any) => Number(p.equity));
 
   return (
     <div className="space-y-5">
       <PageHeader title="Overview" subtitle="Ringkasan portfolio simulasi, pasar, dan kesehatan sistem"
         actions={acc && <Badge color={statusColor(acc.status)}>Paper trading: {acc.status}</Badge>} />
       <ErrorBox error={pf.error ?? tk.error ?? sys.error} />
-      {acc && (
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat label="Equity" value={idr(acc.equity)} sub={<span className={pnlClass(ret)}>{pct(ret)} dari modal awal</span>} />
-          <Stat label="Kas" value={idr(acc.cash_balance)} sub={`Modal awal ${idr(acc.initial_balance)}`} />
-          <Stat label="Realized PnL" value={idr(acc.realized_pnl, { sign: true })} valueClass={pnlClass(acc.realized_pnl)} sub={`Unrealized ${idr(acc.unrealized_pnl, { sign: true })}`} />
-          <Stat label="Max Drawdown" value={pct(acc.max_drawdown_pct, 2, false)} sub={`Win rate ${num(stats?.winRate, 1)}% • ${stats?.trades ?? 0} trade`} />
-        </div>
-      )}
+
       <div className="grid gap-4 lg:grid-cols-3">
-        <Card title="Kurva Equity" className="lg:col-span-2">
-          {curve.length > 1 ? <AreaChart data={curve} /> : <Empty>Belum ada snapshot portfolio. Snapshot dibuat setiap menit oleh cron.</Empty>}
-        </Card>
-        <Card title="Kesehatan Sistem" actions={<Link to="/system" className="text-xs text-emerald-400">Detail →</Link>}>
+        {acc ? <EquityHero account={acc} curve={curve} className="lg:col-span-2" />
+          : <Card className="lg:col-span-2"><Empty>Akun paper trading belum tersedia.</Empty></Card>}
+        <Card title="Kesehatan Sistem" actions={<Link to="/system" className={more}>Detail →</Link>}>
           {sys.data ? (
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between"><span className="text-slate-400">Status</span><Badge color={sys.data.healthy ? 'green' : 'red'}>{sys.data.healthy ? 'SEHAT' : 'BERMASALAH'}</Badge></div>
-              <div className="flex justify-between"><span className="text-slate-400">Run terakhir</span><span>{ago(sys.data.runs?.[0]?.started_at)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-400">Sukses terakhir</span><span>{wib(sys.data.lastSuccessAt)}</span></div>
-              <div className="flex justify-between"><span className="text-slate-400">Telegram</span><Badge color={sys.data.telegramConfigured ? 'green' : 'yellow'}>{sys.data.telegramConfigured ? 'aktif' : 'belum diatur'}</Badge></div>
-              <div className="flex justify-between"><span className="text-slate-400">Posisi terbuka</span><span>{pf.data?.openPositions?.length ?? 0}</span></div>
-              <div className="flex justify-between"><span className="text-slate-400">Live trading</span><Badge color="gray">NONAKTIF</Badge></div>
+            <div className="text-sm">
+              <Row label="Status"><Badge color={sys.data.healthy ? 'green' : 'red'}>{sys.data.healthy ? 'SEHAT' : 'BERMASALAH'}</Badge></Row>
+              <Row label="Run terakhir">{ago(sys.data.runs?.[0]?.started_at)}</Row>
+              <Row label="Sukses terakhir">{wib(sys.data.lastSuccessAt)}</Row>
+              <Row label="Telegram"><Badge color={sys.data.telegramConfigured ? 'green' : 'yellow'}>{sys.data.telegramConfigured ? 'aktif' : 'belum diatur'}</Badge></Row>
+              <Row label="Posisi terbuka">{open.length}</Row>
+              <Row label="Live trading"><Badge color="gray">NONAKTIF</Badge></Row>
             </div>
-          ) : <Loading />}
+          ) : <Loading height={216} rows={6} />}
         </Card>
       </div>
+
+      {acc && (
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Stat label="Kas" value={idr(acc.cash_balance)} sub={`Awal ${idr(acc.initial_balance)}`} />
+          <Stat label="Realized PnL" value={idr(acc.realized_pnl, { sign: true })} valueClass={pnlClass(acc.realized_pnl)} sub={`Fee ${idr(acc.total_fees)}`} />
+          <Stat label="Unrealized PnL" value={idr(acc.unrealized_pnl, { sign: true })} valueClass={pnlClass(acc.unrealized_pnl)} sub={`${open.length} posisi terbuka`} />
+          <Stat label="Win rate" value={`${num(stats?.winRate, 1)}%`} sub={`${stats?.wins ?? 0} menang / ${stats?.losses ?? 0} kalah`} />
+        </div>
+      )}
+
+      <Card title={`Posisi Terbuka (${open.length})`} actions={<Link to="/paper" className={more}>Paper Trading →</Link>}>
+        {open.length ? <PositionGrid positions={open} /> : <Empty>Tidak ada posisi terbuka.</Empty>}
+      </Card>
+
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Pasar yang Dipantau" actions={<Link to="/market" className="text-xs text-emerald-400">Semua →</Link>}>
+        <Card title="Pasar yang Dipantau" actions={<Link to="/market" className={more}>Semua →</Link>}>
           {tk.data?.tickers?.length ? (
             <Table head={['Pair', 'Harga', '24j', 'Volume (IDR)']}>
               {tk.data.tickers.map((t: any) => (
                 <tr key={t.pair_id}>
-                  <Td><Link to={`/chart?pair=${t.pair_id}`} className="font-medium hover:text-emerald-300">{pairLabel(t.pair_id)}</Link></Td>
+                  <Td><Link to={`/chart?pair=${t.pair_id}`} className="font-medium hover:text-accent">{pairLabel(t.pair_id)}</Link></Td>
                   <Td>{idr(t.last)}</Td>
                   <Td className={pnlClass(t.change_24h_pct)}>{pct(t.change_24h_pct)}</Td>
                   <Td>{idr(t.vol_idr, { compact: true })}</Td>
                 </tr>
               ))}
             </Table>
-          ) : <Empty>Belum ada data ticker.</Empty>}
+          ) : tk.loading ? <Loading /> : <Empty>Belum ada data ticker.</Empty>}
         </Card>
-        <Card title="Sinyal Terbaru" actions={<Link to="/signals" className="text-xs text-emerald-400">Semua →</Link>}>
+        <Card title="Sinyal Terbaru" actions={<Link to="/signals" className={more}>Semua →</Link>}>
           {sg.data?.signals?.length ? (
             <Table head={['Waktu', 'Pair', 'Sinyal', 'Harga', 'Kekuatan']}>
               {sg.data.signals.map((s: any) => (
@@ -74,7 +92,7 @@ export default function Overview() {
                 </tr>
               ))}
             </Table>
-          ) : <Empty>Belum ada sinyal trading.</Empty>}
+          ) : sg.loading ? <Loading /> : <Empty>Belum ada sinyal trading.</Empty>}
         </Card>
       </div>
     </div>

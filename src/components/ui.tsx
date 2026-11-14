@@ -1,4 +1,5 @@
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 
 export function Card({ title, actions, children, className = '' }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
@@ -17,9 +18,9 @@ export function Card({ title, actions, children, className = '' }: { title?: Rea
 
 export function Stat({ label, value, sub, valueClass = '' }: { label: string; value: ReactNode; sub?: ReactNode; valueClass?: string }) {
   return (
-    <div className="min-w-0 rounded-card border border-line bg-surface p-4 shadow-card transition-colors hover:border-line-strong">
+    <div className="min-w-0 rounded-card border border-line bg-surface p-3.5 shadow-card transition-colors hover:border-line-strong sm:p-4">
       <div className="truncate text-xs font-medium uppercase tracking-wider text-subtle">{label}</div>
-      <div className={`num mt-1.5 truncate text-xl font-semibold leading-7 ${valueClass}`}>{value}</div>
+      <div className={`num mt-1.5 truncate text-base font-semibold leading-7 min-[400px]:text-lg sm:text-xl ${valueClass}`} title={typeof value === 'string' ? value : undefined}>{value}</div>
       <div className="num mt-1 min-h-4 truncate text-xs leading-4 text-muted">{sub}</div>
     </div>
   );
@@ -168,5 +169,70 @@ export function Select({ value, onChange, options }: { value: string; onChange: 
       </select>
       <Icon name="chevronDown" className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted" />
     </div>
+  );
+}
+
+/**
+ * Modal confirm dialog. Locks the page scroll (<main> and body), traps Tab focus, closes on Escape / backdrop
+ * click (unless busy) and returns focus to the trigger. Focus starts on "Batal" so Enter never confirms by accident.
+ */
+export function ConfirmDialog({ open, title, children, confirmLabel = 'OK', cancelLabel = 'Batal', variant = 'primary', busy = false, onConfirm, onCancel }: {
+  open: boolean; title: string; children?: ReactNode; confirmLabel?: string; cancelLabel?: string;
+  variant?: 'primary' | 'danger'; busy?: boolean; onConfirm: () => void; onCancel: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const id = useId();
+  const state = useRef({ busy, onCancel });
+  state.current = { busy, onCancel };
+
+  useEffect(() => {
+    if (!open) return;
+    const main = document.querySelector('main');
+    const prevMain = main?.style.overflow ?? '';
+    const prevBody = document.body.style.overflow;
+    if (main) main.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    const prevFocus = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>('button')?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !state.current.busy) { e.preventDefault(); state.current.onCancel(); return; }
+      if (e.key !== 'Tab' || !ref.current) return;
+      const f = Array.from(ref.current.querySelectorAll<HTMLElement>('button:not([disabled])'));
+      if (!f.length) return;
+      const first = f[0]; const last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (main) main.style.overflow = prevMain;
+      document.body.style.overflow = prevBody;
+      prevFocus?.focus?.();
+    };
+  }, [open]);
+
+  if (!open) return null;
+  return createPortal(
+    <div className="fixed inset-0 z-[60] flex items-end justify-center p-4 sm:items-center">
+      <div aria-hidden="true" className="absolute inset-0 animate-fade-in bg-overlay backdrop-blur-[2px]" onClick={() => !busy && onCancel()} />
+      <div ref={ref} role="alertdialog" aria-modal="true" aria-labelledby={`${id}t`} aria-describedby={`${id}d`}
+        className="relative w-full max-w-md animate-slide-up rounded-card border border-line-strong bg-surface-2 p-5 shadow-card">
+        <div className="flex items-start gap-3">
+          <span className={`grid size-10 shrink-0 place-items-center rounded-full ${variant === 'danger' ? 'bg-rose-500/15 text-rose-300' : 'bg-accent-soft text-accent'}`}>
+            <Icon name={variant === 'danger' ? 'alert' : 'info'} className="size-5" />
+          </span>
+          <div className="min-w-0 pt-0.5">
+            <h2 id={`${id}t`} className="text-base font-semibold">{title}</h2>
+            <div id={`${id}d`} className="mt-1.5 text-sm text-muted">{children}</div>
+          </div>
+        </div>
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button variant="default" onClick={onCancel} disabled={busy} className="sm:min-w-24">{cancelLabel}</Button>
+          <Button variant={variant} onClick={onConfirm} loading={busy} className="sm:min-w-28">{confirmLabel}</Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }
