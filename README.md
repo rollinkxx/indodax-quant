@@ -85,6 +85,23 @@ The active `strategy_configs` row in the database is the source of truth; the va
 Stop loss and take profit keep protecting open positions while the account is STOPPED.
 All parameters are editable on the *Strategy Configuration* page (validated server-side).
 
+## Backtest scope and interpretation
+
+`npm run backtest` is a **5m candle-only approximation**, not a production-parity strategy test or a portfolio performance report.
+Read its scope warnings before interpreting the output:
+
+- Entries are modeled at the next 5m candle open; exits use candle high/low with stop-first ordering and modeled slippage.
+  Historical bid/ask quotes, spread checks, tick-level fills and gap-through-stop prices are not available.
+- The 15m/1h MTF filter/score is not applied. When the active config has MTF enabled, the script prints this omission.
+- Every pair is simulated independently with its own Rp10.000.000 starting cash. Combined win rate and profit factor pool individual
+  trades; they are not a shared portfolio equity curve. Shared cash, total exposure, max concurrent positions, daily-loss flattening
+  and portfolio drawdown kill-switch are not simulated.
+- Dynamic slippage tiers use the **current** 24h volume tier from `market_tickers_latest` as a proxy for the whole historical sample,
+  not the volume tier that applied at each historical candle.
+
+The script shares the paper fee, stop, sizing, net reward/risk and trailing/time-stop calculations where candle inputs allow them.
+Use the output to compare rough per-pair rule behavior, not to estimate production portfolio returns.
+
 ## Repository layout
 
 ```
@@ -94,7 +111,7 @@ src/            React dashboard (9 pages + login)
 public/         PWA manifest, icons and service worker (copied to dist/ by Vite)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
 supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
-tests/          Vitest suites (138 tests, 17 files)
+tests/          Vitest suites (153 tests, 18 files)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
 scripts/backtest.ts        offline backtest on stored 5m candles (needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY; MTF not simulated)
 PROJECT_STATE.md           current production state, open tasks and notes for maintainers/agents
@@ -176,10 +193,10 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 
 ```bash
 npm install              # required first (there is no package-lock.json)
-npm test                 # 138 unit + integration tests in 17 files (fake Supabase / INDODAX)
+npm test                 # 153 unit + integration tests in 18 files (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
-npm run backtest         # old rules vs live params on stored candles
+npm run backtest         # older vs current rules on stored 5m candles; see Backtest scope and interpretation
 ```
 
 Coverage includes: indicator maths (reference RSI values), candle building and gap handling,

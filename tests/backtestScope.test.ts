@@ -36,4 +36,11 @@ describe('backtest scope warnings', () => {
   it('does not report an MTF omission when MTF is disabled', () => {
     expect(backtestScopeWarnings({ mtfMode: 'off' }).join('\n')).not.toContain('MTF mode');
   });
+  
+  it('discloses that historical slippage tiers use the current ticker snapshot', () => {
+    const scope = backtestScopeWarnings(DEFAULT_PARAMS).join('\\n');
+    expect(scope).toContain('current 24h volume tier');
+    expect(scope).toContain('historical volume tiers are unavailable');
+  });
+
 });
