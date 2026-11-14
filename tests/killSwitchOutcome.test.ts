@@ -34,7 +34,7 @@ describe('manual kill-switch outcome', () => {
   it('reports zero open positions without showing a failure warning', () => {
     expect(killSwitchOutcome({ status: 'KILLED', closed: 0, total: 0, results: [] })).toEqual({
       msg: 'Kill switch aktif: 0/0 posisi berhasil ditutup.',
-      err: null,
+      err: undefined,
     });
   });
 
