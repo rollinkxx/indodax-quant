@@ -130,8 +130,27 @@ export interface NetRewardRiskInput {
   exitSlippageBps: number;
 }
 
+/** Minimum expected net reward per unit of net stop-loss risk. */
+export const MIN_NET_REWARD_RISK_RATIO = 1;
+
 /** Blocks an entry when expected net reward does not justify net stop risk. */
-export function netRewardRiskGate(_i: NetRewardRiskInput): string | null {
+export function netRewardRiskGate(i: NetRewardRiskInput): string | null {
+  if (
+    ![i.entry, i.stopLoss, i.takeProfit, i.feePct, i.exitSlippageBps].every(Number.isFinite) ||
+    !(i.entry > 0) || !(i.stopLoss > 0) || i.stopLoss >= i.entry || !(i.takeProfit > i.entry) ||
+    i.feePct < 0 || i.feePct >= 100 || i.exitSlippageBps < 0 || i.exitSlippageBps >= 10_000
+  ) return 'invalid_reward_risk_inputs';
+
+  // Entry is already the simulated ask + entry slippage fill. Model each possible exit at
+  // its stop/target trigger less exit slippage, then deduct the fee on each side.
+  const entryCost = i.entry * (1 + i.feePct / 100);
+  const netExit = (triggerPrice: number) =>
+    sellFillPrice(triggerPrice, i.exitSlippageBps) * (1 - i.feePct / 100);
+  const netRisk = entryCost - netExit(i.stopLoss);
+  const netReward = netExit(i.takeProfit) - entryCost;
+  if (!(netRisk > 0) || !Number.isFinite(netRisk)) return 'invalid_reward_risk_inputs';
+  if (!(netReward > 0) || !Number.isFinite(netReward)) return 'net_reward_non_positive';
+  if (netReward / netRisk < MIN_NET_REWARD_RISK_RATIO) return 'net_reward_risk_below_minimum';
   return null;
 }
 

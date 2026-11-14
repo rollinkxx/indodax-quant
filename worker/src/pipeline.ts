@@ -10,7 +10,7 @@ import { fillGaps, floorTo, type Candle, type Trade } from '../../shared/candles
 import { checkDataQuality, computeIndicatorsTail, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtf, buildHigherSeries, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskGate, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -509,6 +509,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);
           const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, params);
           if (gate) { actions.push(`skip ${s.pair_id}: ${gate}`); continue; }
+          const economicsGate = netRewardRiskGate({
+            entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
+            feePct: params.feePct, exitSlippageBps: slip,
+          });
+          if (economicsGate) { actions.push(`skip ${s.pair_id}: ${economicsGate}`); continue; }
           const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
           if (size.qty <= 0) { actions.push(`skip ${s.pair_id}: ${size.reason}`); continue; }
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
