@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 15:30 WIB (session 15: UI redesign step 9 final pass — done; the redesign is complete)_
+_Last updated: 2026-11-14 23:34 WIB (session 16: MTF synthetic-candle remediation — in progress)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,6 +48,9 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
+- Assistant: harden MTF candle provenance. A higher-timeframe bucket containing any synthetic 5m candle must remain synthetic,
+  and trend calculations must use only the latest contiguous non-synthetic candles, requiring at least `mtfMinCandles`.
+  Add regression tests; remove this task when complete.
 - Owner: quick look at the live site in a real browser (desktop + 375 px, light and dark, browser console). Step 9 was checked
   statically only (contrast maths on the tokens, focus styles in code, no fixed widths over 375 px) because the agent sandbox cannot run
   a browser. Report anything broken as a new task.
