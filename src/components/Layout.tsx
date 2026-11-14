@@ -39,7 +39,7 @@ export function Layout({ children, email, role, onLogout }: { children: ReactNod
           </div>
         </div>
       </aside>
-      <div className="flex-1">
+      <div className="min-w-0 flex-1">
         <header className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-slate-950/90 px-4 py-3 backdrop-blur md:hidden">
           <div className="font-bold">INDODAX <span className="text-emerald-400">QUANT</span></div>
           <button onClick={() => setOpen(!open)} className="rounded-md border border-slate-700 px-3 py-1 text-sm">Menu</button>

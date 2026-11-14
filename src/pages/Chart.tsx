@@ -71,7 +71,7 @@ export default function Chart() {
         ))}
       </div>
       <Card title={`${pairLabel(pair)} • ${tf}`}>
-        {cd.loading && !cd.data ? <Loading /> : candles.length ? <CandleChart candles={candles} lines={lines} markers={markers} /> : <Empty>Belum ada candle untuk pair ini.</Empty>}
+        {cd.loading && !cd.data ? <Loading height={460} /> : candles.length ? <CandleChart candles={candles} lines={lines} markers={markers} /> : <Empty>Belum ada candle untuk pair ini.</Empty>}
       </Card>
       {tf === '5m' && rows.length > 0 && (
         <div className="grid gap-4 lg:grid-cols-2">

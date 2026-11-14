@@ -4,7 +4,7 @@ import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from './lib/supabase';
 import { api } from './lib/api';
 import { Layout } from './components/Layout';
-import { ErrorBox, Loading, Button } from './components/ui';
+import { ErrorBox, Loading, Button, PageSkeleton } from './components/ui';
 import Login from './pages/Login';
 
 // Dashboard pages are code-split: lightweight-charts and page code load only after login.
@@ -45,7 +45,7 @@ export default function App() {
 
   const logout = async () => { (await getSupabase()).auth.signOut(); };
 
-  if (session === undefined) return <Loading />;
+  if (session === undefined) return <div className="mx-auto max-w-6xl p-4 sm:p-6"><PageSkeleton /></div>;
   if (!session) return <Login initialError={error} />;
   if (!me) {
     return (
@@ -58,7 +58,7 @@ export default function App() {
   const isAdmin = me.role === 'admin';
   return (
     <Layout email={me.email} role={me.role} onLogout={logout}>
-      <Suspense fallback={<Loading />}>
+      <Suspense fallback={<PageSkeleton />}>
       <Routes>
         <Route path="/" element={<Overview />} />
         <Route path="/market" element={<Market />} />

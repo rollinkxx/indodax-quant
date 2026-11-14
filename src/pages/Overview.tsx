@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { usePoll } from '../lib/usePoll';
-import { Badge, Card, ErrorBox, Loading, PageHeader, Stat, Table, Td, statusColor, Empty } from '../components/ui';
+import { Badge, Card, ErrorBox, Loading, PageHeader, PageSkeleton, Stat, Table, Td, statusColor, Empty } from '../components/ui';
 import { AreaChart, toSec } from '../components/Charts';
 import { ago, idr, num, pairLabel, pct, pnlClass, wib } from '../lib/format';
 
@@ -10,7 +10,7 @@ export default function Overview() {
   const sg = usePoll<any>('/api/signals?limit=8', 30000);
   const sys = usePoll<any>('/api/system?limit=5', 30000);
 
-  if (pf.loading && !pf.data) return <Loading />;
+  if (pf.loading && !pf.data) return <PageSkeleton />;
   const acc = pf.data?.account;
   const stats = pf.data?.stats;
   const curve = (pf.data?.equityCurve ?? []).map((p: any) => ({ time: toSec(p.snapshot_time), value: Number(p.equity) }));

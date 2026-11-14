@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { usePoll } from '../lib/usePoll';
 import { post } from '../lib/api';
-import { Badge, Button, Card, ErrorBox, Loading, PageHeader, Stat, Table, Td, statusColor, Empty } from '../components/ui';
+import { Badge, Button, Card, ErrorBox, PageHeader, PageSkeleton, Stat, Table, Td, statusColor, Empty } from '../components/ui';
 import { AreaChart, toSec } from '../components/Charts';
 import { idr, num, pairLabel, pct, pnlClass, wib } from '../lib/format';
 
@@ -19,7 +19,7 @@ export default function Paper({ isAdmin }: { isAdmin: boolean }) {
     finally { setBusy(false); }
   };
 
-  if (loading && !data) return <Loading />;
+  if (loading && !data) return <PageSkeleton />;
   const acc = data?.account;
   const st = data?.stats;
   const curve = (data?.equityCurve ?? []).map((p: any) => ({ time: toSec(p.snapshot_time), value: Number(p.equity) }));

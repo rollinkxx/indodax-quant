@@ -1,11 +1,12 @@
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { Icon } from './Icon';
 
 export function Card({ title, actions, children, className = '' }: { title?: ReactNode; actions?: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <section className={`rounded-xl border border-slate-800 bg-slate-900/60 p-4 ${className}`}>
+    <section className={`min-w-0 rounded-card border border-line bg-surface p-4 shadow-card sm:p-5 ${className}`}>
       {(title || actions) && (
-        <div className="mb-3 flex items-center justify-between gap-2">
-          {title && <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-400">{title}</h2>}
+        <div className="mb-3 flex min-h-8 flex-wrap items-center justify-between gap-2">
+          {title && <h2 className="text-xs font-semibold uppercase tracking-wider text-muted">{title}</h2>}
           {actions}
         </div>
       )}
@@ -16,10 +17,10 @@ export function Card({ title, actions, children, className = '' }: { title?: Rea
 
 export function Stat({ label, value, sub, valueClass = '' }: { label: string; value: ReactNode; sub?: ReactNode; valueClass?: string }) {
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`num mt-1 text-xl font-semibold ${valueClass}`}>{value}</div>
-      {sub && <div className="num mt-1 text-xs text-slate-400">{sub}</div>}
+    <div className="min-w-0 rounded-card border border-line bg-surface p-4 shadow-card transition-colors hover:border-line-strong">
+      <div className="truncate text-xs font-medium uppercase tracking-wider text-subtle">{label}</div>
+      <div className={`num mt-1.5 truncate text-xl font-semibold leading-7 ${valueClass}`}>{value}</div>
+      <div className="num mt-1 min-h-4 truncate text-xs leading-4 text-muted">{sub}</div>
     </div>
   );
 }
@@ -33,7 +34,11 @@ const badgeColors: Record<string, string> = {
 };
 
 export function Badge({ color = 'gray', children }: { color?: keyof typeof badgeColors | string; children: ReactNode }) {
-  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${badgeColors[color] ?? badgeColors.gray}`}>{children}</span>;
+  return (
+    <span className={`inline-flex h-5 items-center whitespace-nowrap rounded-md px-2 text-xs font-medium leading-none ring-1 ring-inset ${badgeColors[color] ?? badgeColors.gray}`}>
+      {children}
+    </span>
+  );
 }
 
 export function statusColor(s: string | undefined): string {
@@ -45,68 +50,123 @@ export function statusColor(s: string | undefined): string {
   }
 }
 
-export function Button({ children, onClick, variant = 'default', disabled, type = 'button', className = '' }: {
-  children: ReactNode; onClick?: () => void; variant?: 'default' | 'primary' | 'danger' | 'ghost'; disabled?: boolean; type?: 'button' | 'submit'; className?: string;
+const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-app';
+
+export function Button({ children, onClick, variant = 'default', disabled, loading = false, type = 'button', className = '' }: {
+  children: ReactNode; onClick?: () => void; variant?: 'default' | 'primary' | 'danger' | 'ghost'; disabled?: boolean;
+  /** Shows a shimmer and blocks clicks; the button keeps its width. */
+  loading?: boolean; type?: 'button' | 'submit'; className?: string;
 }) {
   const styles = {
-    default: 'bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700',
-    primary: 'bg-emerald-600 hover:bg-emerald-500 text-white',
-    danger: 'bg-rose-600 hover:bg-rose-500 text-white',
-    ghost: 'hover:bg-slate-800 text-slate-300',
+    default: 'border border-line-strong bg-elevated text-fg hover:border-slate-600 hover:bg-slate-700',
+    primary: 'bg-accent-strong text-accent-fg hover:bg-accent',
+    danger: 'bg-rose-600 text-white hover:bg-rose-500',
+    ghost: 'text-muted hover:bg-elevated hover:text-fg',
   }[variant];
   return (
-    <button type={type} onClick={onClick} disabled={disabled} className={`rounded-lg px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${styles} ${className}`}>
+    <button type={type} onClick={onClick} disabled={disabled || loading} aria-busy={loading || undefined}
+      className={`relative inline-flex h-9 items-center justify-center gap-2 overflow-hidden whitespace-nowrap rounded-control px-3 text-sm font-medium transition-[background-color,border-color,color,transform] duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100 ${focusRing} ${styles} ${className}`}>
       {children}
+      {loading && <span aria-hidden="true" className="skeleton pointer-events-none absolute inset-0 rounded-none bg-transparent" />}
     </button>
   );
 }
 
 export function ErrorBox({ error }: { error: string | null }) {
   if (!error) return null;
-  return <div className="rounded-lg border border-rose-800 bg-rose-950/50 p-3 text-sm text-rose-200">{error}</div>;
+  return (
+    <div role="alert" className="flex animate-fade-in items-start gap-2 rounded-control border border-rose-800/70 bg-rose-950/50 p-3 text-sm text-rose-200">
+      <Icon name="alert" className="mt-0.5 size-4 text-rose-300" />
+      <span className="min-w-0 break-words">{error}</span>
+    </div>
+  );
 }
 
-export function Loading() {
-  return <div className="animate-pulse p-6 text-sm text-slate-500">Memuat data…</div>;
+/** Placeholder block with a shimmer. Give it the size of the content it replaces. */
+export function Skeleton({ className = '', style }: { className?: string; style?: CSSProperties }) {
+  return <div aria-hidden="true" className={`skeleton ${className}`} style={style} />;
+}
+
+/** Loading state inside a card or table area: skeleton rows filling `height` px (default 160). */
+export function Loading({ height = 160, rows }: { height?: number; rows?: number }) {
+  const n = rows ?? Math.max(2, Math.floor(height / 36));
+  return (
+    <div role="status" aria-label="Memuat data" className="flex flex-col justify-center gap-3 py-2" style={{ minHeight: height }}>
+      {Array.from({ length: n }, (_, i) => (
+        <Skeleton key={i} className="h-5" style={{ width: `${[100, 92, 96, 84, 90, 78][i % 6]}%` }} />
+      ))}
+      <span className="sr-only">Memuat data…</span>
+    </div>
+  );
+}
+
+/** Whole-page loading state: header, four stat cards and a large card. */
+export function PageSkeleton() {
+  return (
+    <div role="status" aria-label="Memuat halaman" className="animate-fade-in">
+      <div className="mb-5 space-y-2">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-4 w-72 max-w-full" />
+      </div>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-[104px] rounded-card" />)}
+      </div>
+      <Skeleton className="mt-4 h-[300px] rounded-card" />
+      <span className="sr-only">Memuat data…</span>
+    </div>
+  );
 }
 
 export function Empty({ children }: { children: ReactNode }) {
-  return <div className="p-6 text-center text-sm text-slate-500">{children}</div>;
+  return (
+    <div className="flex min-h-32 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-subtle">
+      <Icon name="inbox" className="size-6 text-slate-600" />
+      <div className="max-w-md">{children}</div>
+    </div>
+  );
 }
 
-export function Table({ head, children }: { head: ReactNode[]; children: ReactNode }) {
+/**
+ * Data table. The header sticks while the table scrolls; pass `maxHeight` (px or CSS length) to scroll
+ * long tables inside the card.
+ */
+export function Table({ head, children, maxHeight }: { head: ReactNode[]; children: ReactNode; maxHeight?: number | string }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-auto" style={maxHeight !== undefined ? { maxHeight } : undefined}>
       <table className="w-full text-left text-sm">
-        <thead className="border-b border-slate-800 text-xs uppercase text-slate-500">
-          <tr>{head.map((h, i) => <th key={i} className="whitespace-nowrap px-3 py-2 font-medium">{h}</th>)}</tr>
+        <thead className="sticky top-0 z-10 bg-surface-2 text-xs uppercase tracking-wider text-subtle">
+          <tr>{head.map((h, i) => <th key={i} className="whitespace-nowrap border-b border-line px-3 py-2.5 font-medium first:pl-4 last:pr-4 sm:first:pl-5 sm:last:pr-5">{h}</th>)}</tr>
         </thead>
-        <tbody className="num divide-y divide-slate-800/70">{children}</tbody>
+        <tbody className="num divide-y divide-line/70 [&>tr]:transition-colors [&>tr:hover]:bg-white/[0.03]">{children}</tbody>
       </table>
     </div>
   );
 }
 
 export function Td({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <td className={`whitespace-nowrap px-3 py-2 ${className}`}>{children}</td>;
+  return <td className={`whitespace-nowrap px-3 py-2.5 first:pl-4 last:pr-4 sm:first:pl-5 sm:last:pr-5 ${className}`}>{children}</td>;
 }
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h1 className="text-2xl font-semibold">{title}</h1>
-        {subtitle && <p className="mt-1 text-sm text-slate-400">{subtitle}</p>}
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        {subtitle && <p className="mt-1 text-sm text-muted">{subtitle}</p>}
       </div>
-      {actions}
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
   );
 }
 
 export function Select({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm">
-      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
+    <div className="relative inline-flex min-w-0 max-w-full">
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className={`h-9 w-full min-w-0 max-w-full cursor-pointer appearance-none truncate rounded-control border border-line-strong bg-surface-2 py-0 pl-3 pr-9 text-sm text-fg transition-colors hover:border-slate-600 ${focusRing}`}>
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      <Icon name="chevronDown" className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted" />
+    </div>
   );
 }
