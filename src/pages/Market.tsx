@@ -60,7 +60,7 @@ function SortHead({ label, k, sort, onSort, align = 'right' }: { label: string; 
   const active = sort.key === k;
   return (
     <button type="button" onClick={() => onSort(k)} aria-label={`Urutkan menurut ${label}`}
-      className={`group inline-flex items-center gap-1 uppercase tracking-wider transition-colors hover:text-fg focus-visible:outline-none focus-visible:text-fg ${active ? 'text-fg' : ''} ${align === 'right' ? 'flex-row-reverse' : ''}`}>
+      className={`group inline-flex items-center gap-1 uppercase tracking-wider transition-colors rounded hover:text-fg focus-visible:outline-none focus-visible:text-fg focus-visible:ring-2 focus-visible:ring-focus ${active ? 'text-fg' : ''} ${align === 'right' ? 'flex-row-reverse' : ''}`}>
       {label}
       <Icon name={active ? (sort.dir === 1 ? 'arrowUp' : 'arrowDown') : 'sort'} className={`size-3.5 ${active ? 'text-accent' : 'opacity-40 group-hover:opacity-80'}`} />
     </button>
@@ -154,7 +154,7 @@ export default function Market({ isAdmin = false }: { isAdmin?: boolean }) {
                   const spread = spreadOf(t);
                   return (
                     <tr key={t.pair_id}>
-                      <td><div className="flex items-center gap-1.5"><Link to={`/chart?pair=${t.pair_id}`} className="font-medium hover:text-accent">{pairLabel(t.pair_id)}</Link>{badges(t)}</div></td>
+                      <td><div className="flex items-center gap-1.5"><Link to={`/chart?pair=${t.pair_id}`} className="rounded font-medium hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus">{pairLabel(t.pair_id)}</Link>{badges(t)}</div></td>
                       <td className="text-right font-medium"><Price value={t.last} flash={flashOf(t.pair_id, 'last')} /></td>
                       <td className="text-right text-up"><Price value={t.bid} flash={flashOf(t.pair_id, 'bid')} /></td>
                       <td className="text-right text-down"><Price value={t.ask} flash={flashOf(t.pair_id, 'ask')} /></td>
@@ -179,7 +179,7 @@ export default function Market({ isAdmin = false }: { isAdmin?: boolean }) {
                 <li key={t.pair_id} className="space-y-2 px-4 py-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <Link to={`/chart?pair=${t.pair_id}`} className="font-medium hover:text-accent">{pairLabel(t.pair_id)}</Link>
+                      <Link to={`/chart?pair=${t.pair_id}`} className="rounded font-medium hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus">{pairLabel(t.pair_id)}</Link>
                       <div className="mt-1 flex flex-wrap gap-1">{badges(t)}{isStale(t) && <Badge color="yellow">basi</Badge>}</div>
                     </div>
                     <div className="shrink-0 text-right">

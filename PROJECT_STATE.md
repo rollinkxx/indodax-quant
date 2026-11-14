@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 12:30 WIB (session 14: UI redesign steps 7 PWA and 8 PnL calendar — done)_
+_Last updated: 2026-11-14 15:30 WIB (session 15: UI redesign step 9 final pass — done; the redesign is complete)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -30,10 +30,11 @@ and put session details in commit messages. Earlier session logs live in git his
 Notes: the "Workers Builds: indodax-quant" check (Cloudflare Git integration) fails intermittently; the production deploy is the
 GitHub Actions job. New migrations in `supabase/migrations/` were applied automatically by the Supabase integration (entry_gate).
 
-## Current state (verified 2026-11-14 07:35 WIB)
+## Current state (verified 2026-11-14 15:25 WIB)
 
-- `/api/health` 200, `liveTrading:false`. Live bundle `index-Df6dlSPj.js` (code-split `1fc0d2a`) confirmed.
-- Cron since 2026-11-13 18:00Z: 393/393 SUCCESS; last 3 h avg 9.0 s / max 15.3 s. No CPU-limit or relay errors.
+- `/api/health` 200, `liveTrading:false`. Step 8 bundle `index-BqP42N3g.js` was live; the step 9 bundle is live when the served CSS
+  contains `--app-accent-hover` (checked after the CI deploy, see the step 9 commit).
+- Cron since 2026-11-13 18:00Z: 865/865 SUCCESS; last 3 h avg 8.8 s / max 18.4 s. No CPU-limit or relay errors.
   Universe: 5 pinned + 8 dynamic = 13 pairs.
 - Paper account: **RUNNING** since 2026-11-13 13:00 WIB (started by the admin), equity Rp9.939.100 (−0.61 %), max drawdown 0.98 %.
 - Trades: 3, all closed — `nearidr` TAKE_PROFIT +Rp37.551; `anoaidr` STOP_LOSS −Rp64.384; `hypeidr` STOP_LOSS −Rp34.067. 0 open positions.
@@ -42,51 +43,29 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
   signal + paper BUY + stop-loss notices sent. Exit filled 0.35 % below the stop (bid gapped 1.328.854 → 1.325.000 within 1 min).
 - Active strategy config (DB `strategy_configs` row is the source of truth; changed by the admin 2026-11-13 17:52Z):
   `maxEntrySpreadPct` 0.6, `maxEntryDriftPct` 0.5, `universeMinVolumeIdr` 1e9, `universeSize` 25, `maxOpenPositions` 10.
-- Local checks after step 8 (PnL calendar): typecheck 0 errors, 138 tests / 17 files pass, build OK.
+- Local checks after step 9: typecheck 0 errors (TypeScript 5.9, see agent notes), 138 tests / 17 files pass, build OK
+  (index 510.4 kB, CSS 54.3 kB, Charts 184.4 kB).
 
 ## Open tasks
 
-### UI redesign (requested by the owner 2026-11-14)
+- Owner: quick look at the live site in a real browser (desktop + 375 px, light and dark, browser console). Step 9 was checked
+  statically only (contrast maths on the tokens, focus styles in code, no fixed widths over 375 px) because the agent sandbox cannot run
+  a browser. Report anything broken as a new task.
 
-Goal: redesign the whole dashboard so it is nicer to look at and easier to use, with light animations that keep the app fast.
-Work through the steps in order. After each step, remove that step from this list (do not tick it).
+New features, libraries or pages: propose them to the owner first, do not build them.
 
-Commit rule (mandatory, set by the owner):
-- **Commit and push to `main` after every step**, as soon as its checks pass, before starting the next step. Never batch several steps
-  into one commit. The same commit removes the finished step from this file; put the session details in the commit message.
-- If the session runs out in the middle of a step, do not push half-finished UI. Leave a short note under that step instead
-  (what is done, what is left) in a separate docs-only commit.
+## Frontend notes (UI redesign finished 2026-11-14)
 
-Rules for every step:
-- Frontend only (`src/`, `public/`, `index.html`). No changes to the Worker, API, migrations or strategy.
-- No new runtime dependencies (no animation/UI/icon libraries). Use Tailwind v4 (CSS-first, `@theme` in `src/index.css`),
-  CSS transitions/keyframes and inline SVG icons.
-- Animations: only `transform`/`opacity`, 150–300 ms, no infinite animations except the small live-status dot and skeletons.
-  Respect `prefers-reduced-motion`. Do not re-animate on any poll (`usePoll` intervals are 15–120 s per page).
-- Keep the existing texts in Indonesian, the WIB time display, the "PAPER TRADING / simulasi" notice and the code-split routes.
-- Before each commit: `npm install`, `npm run typecheck`, `npm test`, `npm run build`. Put bundle sizes (index, CSS, Charts) in the commit message.
-  Budget: initial `index-*.js` ≤ 520 kB, CSS growth ≤ 15 kB per step (owner, 2026-11-14).
-- Other ideas (new features, new libraries, new pages): propose them to the owner first, do not build them.
-
-Display rules (mandatory, set by the owner):
-- **Fixed app shell**: the sidebar (desktop) and top bar stay in place; only the page content scrolls (e.g. `h-dvh` shell with an
-  `overflow-y-auto` main area). The mobile drawer and dialogs lock the background scroll.
-- **No layout shift**: skeletons have the same size as the content they replace; cards, charts and tables keep a fixed/min height while
-  loading and on every poll; numbers use tabular figures; badges and buttons do not change width when their text changes.
-- **Every step leaves a finished, working UI**: all 9 pages + login render without errors or broken layout on desktop and at 375 px
-  width (check with `npm run build` + `npx vite preview`, and the browser console). No placeholder or half-styled pages in a commit.
-
-Steps (done: 1 foundation — tokens in `src/index.css`, components in `src/components/ui.tsx` + `Icon.tsx`; 2 shell — `src/components/Layout.tsx`,
-`AuthScreen` in `src/pages/Login.tsx`; the page scroll container is `<main>`, not `window`; 3 Overview + Paper — `src/components/Portfolio.tsx`
-(EquityHero + SVG Sparkline, PositionCard, PaperControls), `ConfirmDialog` in `ui.tsx` locks `<main>` scroll; 4 Market + Chart + Signals —
-`Segmented` + `SearchInput` in `ui.tsx`, chart colours are `--chart-*` tokens read by `chartColors()` in `Charts.tsx`, `.flash-up/down` in `index.css`; 5 History + Strategy + System + Settings — Strategy compares the form with `effective` for the
-unsaved count, its save bar is `sticky bottom-0` inside `<main>`; 6 light/dark theme — `src/lib/theme.ts` (pref in localStorage `iq-theme`,
-none = system) mirrored by the inline script in `index.html`; light values live in `:root:not(.dark)` in `index.css`, which also remaps the
-few status palette shades components use directly; charts rebuild on theme change; toggle in the top bar, Sistem/Terang/Gelap in Settings; 7 PWA — `public/manifest.webmanifest`, `public/icons/*.svg`, `public/sw.js`
-(cache `iq-static-v1`, routing in `route()`, tested by `tests/sw.test.ts`), registered in production only by `src/lib/pwa.ts`; 8 PnL calendar — `src/components/PnlCalendar.tsx` next to Posisi Terbuka on Overview,
-pure logic in `src/lib/pnlCalendar.ts` (WIB day = UTC+7, filtered by account id and `reset_at`, 6-week grid), tested by `tests/pnlCalendar.test.ts`):
-- [ ] 9. Final pass: consistency, keyboard focus and contrast check (both themes), mobile check at 375 px width, confirm the bundle budget,
-  confirm the new bundle is live in production, update README only if behaviour changed.
+- Rules that still apply to UI work: no new runtime dependencies (Tailwind v4 CSS-first, inline SVG icons); animations only
+  `transform`/`opacity`, 150–300 ms, respect `prefers-reduced-motion`, never re-animate on a poll; fixed app shell (`<main>` is the
+  scroll container); no layout shift; keep Indonesian texts, WIB times, the PAPER TRADING notice and code-split routes.
+  Budget: initial `index-*.js` ≤ 520 kB.
+- Where things live: tokens and both themes in `src/index.css` (`:root` dark, `:root:not(.dark)` light, which also remaps the status palette
+  shades components use directly); shared components in `src/components/ui.tsx` + `Icon.tsx`; shell in `Layout.tsx`; theme in
+  `src/lib/theme.ts` + inline script in `index.html`; PWA in `public/` + `src/lib/pwa.ts`; PnL calendar in `PnlCalendar.tsx` / `src/lib/pnlCalendar.ts`.
+- Contrast: every text token is ≥ 4.5:1 on `bg-app`/`bg-surface`/`bg-elevated` in both themes. Primary buttons are white on
+  `bg-accent-strong` (hover `bg-accent-hover`); do not put white text on `bg-accent`. A global `:focus-visible` outline is the fallback for
+  elements without their own `focus-visible:ring-*`.
 
 ## Known strategy limitations (watch, not changed)
 
@@ -106,8 +85,11 @@ pure logic in `src/lib/pnlCalendar.ts` (WIB day = UTC+7, filtered by account id 
 - GitHub MCP writes are text-only: binary files (PNG etc.) cannot be committed by the agent. PWA icons are SVG for that reason
   (no iOS `apple-touch-icon` PNG yet; the owner can add one by hand).
 - `create_or_update_file` on an existing file needs its blob SHA (`get_file_contents` first). `push_files` needs the FULL file content.
-  Verify a push by `git clone` in the sandbox and `cmp` against the locally tested copy.
+  Verify a push by downloading the repo tarball in the sandbox and `cmp` against the locally tested copy.
 - Local build/test needs `npm install` first (no `package-lock.json`).
+- The n8n agent sandbox has an empty `/proc`: `tsc` 7 (Go) panics there (`readlink /proc/self/exe`) and headless Chromium cannot start.
+  Typecheck with `npx -p typescript@5 tsc --noEmit -p tsconfig.app.json` (and `tsconfig.worker.json`); CI uses the real `tsc` 7.
+  The sandbox has no git and ~2 GB disk: download the repo as a tarball from codeload.github.com and clear `~/.npm/_cacache` after `npm install`.
 - Supabase via the n8n HTTP node does not work (OAuth credential not allowed there); use the Supabase MCP.
 - Column names: `execution_logs` uses `started_at` (not `created_at`); `trading_signals` / `paper_orders` / `paper_positions` use `pair_id`
   (not `pair`); the signal direction column is `side`. When unsure, check `information_schema.columns`.

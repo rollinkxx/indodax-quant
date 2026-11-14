@@ -60,8 +60,8 @@ export function Button({ children, onClick, variant = 'default', disabled, loadi
 }) {
   const styles = {
     default: 'border border-line-strong bg-elevated text-fg hover:border-slate-600 hover:bg-slate-700',
-    primary: 'bg-accent-strong text-accent-fg hover:bg-accent',
-    danger: 'bg-rose-600 text-white hover:bg-rose-500',
+    primary: 'bg-accent-strong text-accent-fg hover:bg-accent-hover',
+    danger: 'bg-rose-600 text-white hover:bg-rose-700',
     ghost: 'text-muted hover:bg-elevated hover:text-fg',
   }[variant];
   return (

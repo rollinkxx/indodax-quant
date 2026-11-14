@@ -141,16 +141,27 @@ export function Layout({ children, email, role, onLogout }: { children: ReactNod
   const [drawer, setDrawer] = useState(false);
   const { pathname } = useLocation();
   const mainRef = useRef<HTMLElement>(null);
+  const openBtnRef = useRef<HTMLButtonElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
   const current = ALL.find((n) => (n.to === '/' ? pathname === '/' : pathname.startsWith(n.to))) ?? ALL[0];
 
   // New page: close the drawer and start at the top.
   useEffect(() => { setDrawer(false); mainRef.current?.scrollTo({ top: 0 }); }, [pathname]);
 
+  // Drawer focus: move into the drawer when it opens, back to the menu button when it closes (the page behind is inert meanwhile).
   useEffect(() => {
+    if (drawer) closeBtnRef.current?.focus();
+    else if (wasOpen.current) openBtnRef.current?.focus({ preventScroll: true });
+    wasOpen.current = drawer;
     if (!drawer) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawer(false); };
+    // The drawer only exists below md; close it if the window grows past that so the page never stays inert.
+    const mq = matchMedia('(min-width: 768px)');
+    const onMq = () => { if (mq.matches) setDrawer(false); };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    mq.addEventListener('change', onMq);
+    return () => { document.removeEventListener('keydown', onKey); mq.removeEventListener('change', onMq); };
   }, [drawer]);
 
   return (
@@ -172,7 +183,7 @@ export function Layout({ children, email, role, onLogout }: { children: ReactNod
           className={`absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col border-r border-line bg-app shadow-card transition-transform duration-250 ease-out ${drawer ? 'translate-x-0' : '-translate-x-full'}`}>
           <div className="flex h-14 items-center justify-between border-b border-line pl-5 pr-3">
             <Brand />
-            <button onClick={() => setDrawer(false)} aria-label="Tutup menu"
+            <button ref={closeBtnRef} onClick={() => setDrawer(false)} aria-label="Tutup menu"
               className={`grid size-9 place-items-center rounded-control text-muted hover:bg-elevated hover:text-fg ${focusRing}`}>
               <Icon name="x" className="size-5" />
             </button>
@@ -181,9 +192,9 @@ export function Layout({ children, email, role, onLogout }: { children: ReactNod
         </aside>
       </div>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col" inert={drawer || undefined}>
         <header className="z-30 flex h-14 shrink-0 items-center gap-3 border-b border-line bg-header px-3 backdrop-blur sm:px-4 md:px-6">
-          <button onClick={() => setDrawer(true)} aria-label="Buka menu" aria-expanded={drawer}
+          <button ref={openBtnRef} onClick={() => setDrawer(true)} aria-label="Buka menu" aria-expanded={drawer}
             className={`grid size-9 shrink-0 place-items-center rounded-control text-muted hover:bg-elevated hover:text-fg md:hidden ${focusRing}`}>
             <Icon name="menu" className="size-5" />
           </button>
