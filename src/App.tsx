@@ -4,8 +4,9 @@ import type { Session } from '@supabase/supabase-js';
 import { getSupabase } from './lib/supabase';
 import { api } from './lib/api';
 import { Layout } from './components/Layout';
-import { ErrorBox, Loading, Button, PageSkeleton } from './components/ui';
-import Login from './pages/Login';
+import { ErrorBox, Button, PageSkeleton } from './components/ui';
+import { Icon } from './components/Icon';
+import Login, { AuthScreen } from './pages/Login';
 
 // Dashboard pages are code-split: lightweight-charts and page code load only after login.
 const Overview = lazy(() => import('./pages/Overview'));
@@ -48,11 +49,31 @@ export default function App() {
   if (session === undefined) return <div className="mx-auto max-w-6xl p-4 sm:p-6"><PageSkeleton /></div>;
   if (!session) return <Login initialError={error} />;
   if (!me) {
+    if (!error) return <div className="mx-auto max-w-6xl p-4 sm:p-6"><PageSkeleton /></div>;
+    const notAuth = error === 'not_authorized';
     return (
-      <div className="mx-auto mt-24 max-w-md space-y-4 p-6">
-        {error ? <ErrorBox error={error === 'not_authorized' ? `Akun ${session.user.email} belum terdaftar di app_users. Minta administrator menambahkan email Anda.` : error} /> : <Loading />}
-        {error && <Button onClick={logout}>Keluar</Button>}
-      </div>
+      <AuthScreen>
+        <div className="space-y-4">
+          <div className="flex items-start gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-amber-500/15 text-amber-300">
+              <Icon name={notAuth ? 'shield' : 'alert'} className="size-5" />
+            </span>
+            <div className="min-w-0">
+              <h1 className="text-lg font-semibold">{notAuth ? 'Akses belum diberikan' : 'Gagal memuat akun'}</h1>
+              <p className="mt-1 break-words text-sm text-muted">
+                {notAuth
+                  ? <>Akun <b className="text-fg">{session.user.email}</b> belum terdaftar di <code className="rounded bg-elevated px-1 py-0.5">app_users</code>. Minta administrator menambahkan email Anda.</>
+                  : 'Data akun tidak dapat dimuat. Coba lagi beberapa saat lagi.'}
+              </p>
+            </div>
+          </div>
+          {!notAuth && <ErrorBox error={error} />}
+          <div className="flex gap-2">
+            {!notAuth && <Button onClick={() => window.location.reload()} className="h-10 flex-1"><Icon name="refresh" className="size-4" />Coba lagi</Button>}
+            <Button onClick={logout} variant={notAuth ? 'primary' : 'default'} className="h-10 flex-1"><Icon name="logout" className="size-4" />Keluar</Button>
+          </div>
+        </div>
+      </AuthScreen>
     );
   }
   const isAdmin = me.role === 'admin';

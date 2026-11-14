@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 08:30 WIB (session 12: UI redesign step 1 — foundation — done)_
+_Last updated: 2026-11-14 10:10 WIB (session 12: UI redesign step 2 — shell — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -76,11 +76,8 @@ Display rules (mandatory, set by the owner):
 - **Every step leaves a finished, working UI**: all 9 pages + login render without errors or broken layout on desktop and at 375 px
   width (check with `npm run build` + `npx vite preview`, and the browser console). No placeholder or half-styled pages in a commit.
 
-Steps (step 1 foundation is done: tokens in `src/index.css`, components in `src/components/ui.tsx` + `Icon.tsx`):
-- [ ] 2. Shell: `src/components/Layout.tsx` — fixed app shell (see display rules), sidebar with icons and groups (Pasar / Trading / Sistem), mobile drawer with overlay and
-  slide animation, top bar with page title, live status dot (last cron run, from the existing `/api/system?limit=1` at ~60 s — no new endpoint)
-  and user menu, slimmer paper-trading notice,
-  page fade-in on route change. Redesign `src/pages/Login.tsx` and the not-authorised screen in `src/App.tsx`.
+Steps (done: 1 foundation — tokens in `src/index.css`, components in `src/components/ui.tsx` + `Icon.tsx`; 2 shell — `src/components/Layout.tsx`,
+`AuthScreen` in `src/pages/Login.tsx`; the page scroll container is `<main>`, not `window`):
 - [ ] 3. Overview + Paper Trading: hero equity card (return, drawdown, mini curve), KPI cards, open positions as cards with an SL→TP
   progress bar, clear Start / Stop / Kill / Reset buttons with a confirm dialog (admin only, same API calls).
 - [ ] 4. Market + Chart + Signals: market table with search, sort and a mobile card view, short price flash only on changed cells;
