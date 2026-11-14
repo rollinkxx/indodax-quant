@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 07:40 WIB (session 12: first gated BUY reviewed)_
+_Last updated: 2026-11-14 07:40 WIB (session 12: open tasks cleared by the owner)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -46,11 +46,7 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
-- [ ] Watch run duration/CPU as the universe grows (13 pairs now, `universeSize` 25) on Workers Free. If runs start failing, set `universeMode: 'manual'` on the Strategy page (no deploy needed).
-- [ ] After ≥ 30 closed trades: run `npm run backtest` and review the known limitations below.
-- [ ] Owner: confirm all 9 dashboard pages show real data after login.
-- [ ] Optional: disable public sign-ups in Supabase Auth; Workers Paid plan (30 s CPU).
-- [ ] Only if the relay 502 "Maximum number of redirects" (seen once, 2026-11-13 13:47 WIB, self-recovered) repeats: add retry/backoff in `indodax-proxy`.
+None.
 
 ## Known strategy limitations (watch, not changed)
 
