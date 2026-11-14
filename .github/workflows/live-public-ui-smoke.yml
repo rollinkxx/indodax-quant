@@ -1,12 +1,7 @@
-name: One-off live public UI browser smoke
+name: Live public UI smoke
 
 on:
-  push:
-    branches:
-      - fix/forensic-audit-remediation
-    paths:
-      - scripts/browser-smoke/live-public-ui.mjs
-      - .github/workflows/oneoff-live-browser.yml
+  workflow_dispatch:
 
 permissions:
   contents: read

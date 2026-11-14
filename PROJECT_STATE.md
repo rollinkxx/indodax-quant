@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 00:22 WIB (session 21: public login browser smoke — in progress)_
+_Last updated: 2026-11-15 00:24 WIB (session 21: public login browser smoke — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,14 +48,10 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
-- Assistant: add a one-off Playwright smoke check against the live public login page at desktop and 375 px, light and dark.
-  Assert login controls, theme-color, no horizontal overflow, and no browser console/page errors. Keep it read-only; do not
-  submit login credentials or interact with dashboard controls.
 - Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
   This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
-- Owner: quick look at the live site in a real browser (desktop + 375 px, light and dark, browser console). Step 9 was checked
-  statically only (contrast maths on the tokens, focus styles in code, no fixed widths over 375 px) because the agent sandbox cannot run
-  a browser. Report anything broken as a new task.
+- Owner: inspect the authenticated dashboard in a real browser (desktop + 375 px, light/dark, browser console).
+  The public login page is already smoke-tested with Playwright in all four viewport/theme combinations; no admin credentials were used.
 
 New features, libraries or pages: propose them to the owner first, do not build them.
 
@@ -83,6 +79,9 @@ New features, libraries or pages: propose them to the owner first, do not build 
 - Only 3 closed trades: no meaningful win rate yet.
 
 ## Agent notes
+
+- Read-only public login browser check: `scripts/browser-smoke/live-public-ui.mjs`, manually runnable from the
+  `Live public UI smoke` workflow. It checks 1440 px / 375 px in light/dark, login controls, theme-color, overflow and browser errors.
 
 - **"Session approvals are not available for this tool"** on GitHub/Supabase MCP calls: the connector is fine. Reconnect the server
   (`mcp-servers` → `connect`, slug `git-hub` or `supabase`) and retry. The approval is per tool: each write tool
