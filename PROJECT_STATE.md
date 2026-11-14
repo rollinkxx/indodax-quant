@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 00:17 WIB (session 20: RLS auth initplan optimization — in progress)_
+_Last updated: 2026-11-15 00:20 WIB (session 20: app_users RLS initplan optimization — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,9 +48,8 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
-- Assistant: optimize `public.app_users_self` RLS policy by evaluating `auth.jwt()` through a scalar initplan subquery,
-  preserving the exact email predicate. Add a CLI-generated non-destructive migration and validate registered/unregistered
-  access in isolated PostgreSQL; do not mutate production.
+- Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
+  This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
 - Owner: quick look at the live site in a real browser (desktop + 375 px, light and dark, browser console). Step 9 was checked
   statically only (contrast maths on the tokens, focus styles in code, no fixed widths over 375 px) because the agent sandbox cannot run
   a browser. Report anything broken as a new task.
