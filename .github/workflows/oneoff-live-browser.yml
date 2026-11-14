@@ -1,0 +1,33 @@
+name: One-off live public UI browser smoke
+
+on:
+  push:
+    branches:
+      - fix/forensic-audit-remediation
+    paths:
+      - scripts/browser-smoke/live-public-ui.mjs
+      - .github/workflows/oneoff-live-browser.yml
+
+permissions:
+  contents: read
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install Playwright for this read-only browser check
+        run: npm install --no-save --no-package-lock playwright@1.65.1
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Check live public login page (desktop/mobile, light/dark)
+        run: node scripts/browser-smoke/live-public-ui.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-public-ui-smoke-screenshots
+          path: artifacts/live-login-smoke/
+          if-no-files-found: ignore
