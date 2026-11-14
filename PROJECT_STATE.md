@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 23:48 WIB (session 17: net reward/risk entry gate — done)_
+_Last updated: 2026-11-14 23:50 WIB (session 18: database function/RLS hardening — in progress)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,6 +48,9 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
+- Assistant: harden `public.is_app_user()` by moving from `SECURITY DEFINER` to `SECURITY INVOKER` with a locked search path,
+  after confirming the existing `app_users_self` SELECT policy supports the lookup. Retain EXECUTE only for authenticated/service_role.
+  Add a non-destructive Supabase migration and validate outside production; do not mutate the live project.
 - Owner: quick look at the live site in a real browser (desktop + 375 px, light and dark, browser console). Step 9 was checked
   statically only (contrast maths on the tokens, focus styles in code, no fixed widths over 375 px) because the agent sandbox cannot run
   a browser. Report anything broken as a new task.
