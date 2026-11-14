@@ -253,38 +253,17 @@ export interface IndicatorRow {
   resistance: number | null;
 }
 
-export function computeIndicators(candles: Candle[], p: StrategyParams = DEFAULT_PARAMS): IndicatorRow[] {
-  const closes = candles.map((c) => c.c);
-  const vols = candles.map((c) => c.v);
-  const f = ema(closes, p.emaFast);
-  const s = ema(closes, p.emaSlow);
-  const tr = ema(closes, p.emaTrend);
-  const r = rsi(closes, p.rsiPeriod);
-  const m = macd(closes);
-  const a = atr(candles, p.atrPeriod);
-  const vm = sma(vols, p.volumeMaPeriod);
-  return candles.map((c, i) => {
-    const sr = i >= 5 ? supportResistance(candles.slice(0, i + 1), 50) : { support: null, resistance: null };
-    return {
-      t: c.t,
-      close: c.c,
-      ema9: f[i],
-      ema21: s[i],
-      ema50: tr[i],
-      rsi14: r[i],
-      macd: m.macd[i],
-      macdSignal: m.signal[i],
-      macdHist: m.hist[i],
-      atr14: a[i],
-      volMa20: vm[i],
-      support: sr.support,
-      resistance: sr.resistance,
-    };
-  });
+function emptyIndicatorRow(c: Candle): IndicatorRow {
+  return {
+    t: c.t, close: c.c, ema9: null, ema21: null, ema50: null, rsi14: null,
+    macd: null, macdSignal: null, macdHist: null, atr14: null, volMa20: null,
+    support: null, resistance: null,
+  };
 }
 
-/** Cheaper variant: indicators for all candles but support/resistance only on the last `tail` rows. */
-export function computeIndicatorsTail(candles: Candle[], p: StrategyParams, tail = 3): IndicatorRow[] {
+/** Calculate indicators within one uninterrupted segment that contains no synthetic candles. */
+function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = candles.length): IndicatorRow[] {
+  if (candles.length === 0) return [];
   const closes = candles.map((c) => c.c);
   const vols = candles.map((c) => c.v);
   const f = ema(closes, p.emaFast);
@@ -294,7 +273,7 @@ export function computeIndicatorsTail(candles: Candle[], p: StrategyParams, tail
   const m = macd(closes);
   const a = atr(candles, p.atrPeriod);
   const vm = sma(vols, p.volumeMaPeriod);
-  const start = Math.max(0, candles.length - tail);
+  const start = Math.max(0, candles.length - Math.max(1, Math.floor(tail)));
   const rows: IndicatorRow[] = [];
   for (let i = start; i < candles.length; i++) {
     const sr = supportResistance(candles.slice(0, i + 1), 50);
@@ -305,6 +284,38 @@ export function computeIndicatorsTail(candles: Candle[], p: StrategyParams, tail
     });
   }
   return rows;
+}
+
+/**
+ * Calculate indicators independently on each uninterrupted non-synthetic segment.
+ * A synthetic candle has no market observation and must not carry EMA/RSI/ATR state across the gap.
+ */
+export function computeIndicators(candles: Candle[], p: StrategyParams = DEFAULT_PARAMS): IndicatorRow[] {
+  const rows: IndicatorRow[] = [];
+  let start = 0;
+  for (let i = 0; i < candles.length; i++) {
+    if (candles[i].source !== 'synthetic') continue;
+    rows.push(...computeIndicatorSegment(candles.slice(start, i), p));
+    rows.push(emptyIndicatorRow(candles[i]));
+    start = i + 1;
+  }
+  rows.push(...computeIndicatorSegment(candles.slice(start), p));
+  return rows;
+}
+
+/**
+ * Efficient indicator tail for the latest contiguous non-synthetic segment only.
+ * If the latest candle is synthetic, return an unready row so callers can still inspect its timestamp.
+ */
+export function computeIndicatorsTail(candles: Candle[], p: StrategyParams, tail = 3): IndicatorRow[] {
+  if (candles.length === 0) return [];
+  let lastSynthetic = -1;
+  for (let i = candles.length - 1; i >= 0; i--) {
+    if (candles[i].source === 'synthetic') { lastSynthetic = i; break; }
+  }
+  if (lastSynthetic === candles.length - 1) return [emptyIndicatorRow(candles[candles.length - 1])];
+  const segment = candles.slice(lastSynthetic + 1);
+  return computeIndicatorSegment(segment, p, tail);
 }
 
 export interface SignalDecision {
@@ -425,6 +436,17 @@ export function checkDataQuality(q: QualityInput): { ok: boolean; reason?: strin
   if (last.source === 'synthetic' || last.n === 0 && last.source === 'trades') return { ok: false, reason: 'no_trades_in_signal_candle' };
   for (let i = 1; i < q.candles.length; i++) {
     if (q.candles[i].t - q.candles[i - 1].t !== q.intervalSec) return { ok: false, reason: 'non_contiguous_series' };
+  }
+
+  // Gap-filled candles are for display/aggregation only. The signal engine must warm up again
+  // from a contiguous suffix of observed candles after the most recent synthetic interval.
+  let contiguousCandles = 1;
+  for (let i = q.candles.length - 2; i >= 0; i--) {
+    if (q.candles[i].source === 'synthetic') break;
+    contiguousCandles++;
+  }
+  if (contiguousCandles < q.minCandles) {
+    return { ok: false, reason: `insufficient_contiguous_candles (${contiguousCandles}/${q.minCandles})` };
   }
   return { ok: true };
 }
