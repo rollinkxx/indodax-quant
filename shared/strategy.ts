@@ -433,7 +433,7 @@ export function checkDataQuality(q: QualityInput): { ok: boolean; reason?: strin
   const last = q.candles[q.candles.length - 1];
   if (last.t !== expectedLast) return { ok: false, reason: 'stale_last_candle' };
   if (q.coveredUntilSec === null || q.coveredUntilSec < expectedLast + q.intervalSec) return { ok: false, reason: 'incomplete_trade_coverage' };
-  if (last.source === 'synthetic' || last.n === 0 && last.source === 'trades') return { ok: false, reason: 'no_trades_in_signal_candle' };
+  if (last.source === 'synthetic' || last.v <= 0) return { ok: false, reason: 'no_trades_in_signal_candle' };
   for (let i = 1; i < q.candles.length; i++) {
     if (q.candles[i].t - q.candles[i - 1].t !== q.intervalSec) return { ok: false, reason: 'non_contiguous_series' };
   }
