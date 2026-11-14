@@ -1,0 +1,34 @@
+name: One-off Supabase migration filename
+
+on:
+  push:
+    branches:
+      - fix/forensic-audit-remediation
+    paths:
+      - .github/workflows/oneoff-supabase-migration.yml
+
+permissions:
+  contents: read
+
+jobs:
+  generate-migration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Generate migration filename with Supabase CLI
+        run: npx --yes supabase@3.1.0 migration new optimize_app_users_self_rls_initplan
+      - name: Verify generated migration skeleton
+        run: |
+          FILE="$(find supabase/migrations -maxdepth 1 -type f -name '*_optimize_app_users_self_rls_initplan.sql' -print -quit)"
+          test -n "$FILE"
+          test ! -s "$FILE"
+          echo "MIGRATION_FILE=$FILE" >> "$GITHUB_ENV"
+          echo "Generated $FILE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-users-rls-initplan-migration-skeleton
+          path: ${{ env.MIGRATION_FILE }}
+          if-no-files-found: error
