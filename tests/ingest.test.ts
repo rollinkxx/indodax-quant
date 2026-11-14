@@ -17,12 +17,14 @@ const completeHistory = () => Array.from({ length: 5 }, (_, i) => history(i));
 
 describe('minute coverage recovery', () => {
 
-  it('finds an old 5m hole even when the latest 5m cursor is otherwise current', () => {
+  it('backs up far enough to restore at least 60 contiguous 5m candles after an old hole', () => {
     const bars = Array.from({ length: 70 }, (_, i) => ({
       t: T0 + i * 300, o: 100, h: 101, l: 99, c: 100, v: 5, n: 1, source: 'trades' as const,
     })).filter((c) => c.t !== T0 + 20 * 300);
 
-    expect(findCoverageRecoveryStart(bars, T0 + 70 * 300 + 30, 60)).toBe(T0 + 20 * 300);
+    // The first gap is at index 20, but the remaining suffix has only 49 bars.
+    // Recovery must begin at index 7 to rebuild a full 62-bar contiguous window.
+    expect(findCoverageRecoveryStart(bars, T0 + 70 * 300 + 30, 60)).toBe(T0 + 7 * 300);
   });
 
   it('does not request historical repair once 60 completed observed 5m bars are contiguous and current', () => {
