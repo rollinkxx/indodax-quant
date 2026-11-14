@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 00:52 WIB (session 26: manual kill-switch outcome visibility — in progress)_
+_Last updated: 2026-11-15 01:05 WIB (session 26: partial kill-switch close visibility — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -48,8 +48,6 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
 
 ## Open tasks
 
-- Assistant: make the manual kill-switch UI clearly distinguish account status `KILLED` from positions actually closed. When
-  `closed < total`, show a warning with each unclosed pair and its stale/crossed quote or RPC failure reason. Add pure helper tests.
 - Owner: enable Supabase Auth leaked-password protection in the project Auth settings; the security advisor reported it disabled.
   This is an Auth project setting, not a database migration, and was deliberately not changed from this branch.
 - Owner: inspect the authenticated dashboard in a real browser (desktop + 375 px, light/dark, browser console).
