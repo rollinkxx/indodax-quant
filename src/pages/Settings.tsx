@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react';
 import { usePoll } from '../lib/usePoll';
 import { post } from '../lib/api';
-import { Badge, Button, ErrorBox, PageHeader } from '../components/ui';
+import { Badge, Button, ErrorBox, PageHeader, Segmented } from '../components/ui';
+import { setThemePref, useTheme, type ThemePref } from '../lib/theme';
 import { Icon, type IconName } from '../components/Icon';
 import Market from './Market';
 import type { Me } from '../App';
@@ -36,6 +37,7 @@ export default function Settings({ isAdmin, me }: { isAdmin: boolean; me: Me }) 
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { pref } = useTheme();
 
   const testTelegram = async () => {
     setMsg(null); setErr(null); setBusy(true);
@@ -50,10 +52,19 @@ export default function Settings({ isAdmin, me }: { isAdmin: boolean; me: Me }) 
       <ErrorBox error={err ?? sys.error} />
       {msg && <div role="status" className="flex items-center gap-2 rounded-card border border-emerald-800 bg-emerald-950/40 p-3 text-sm text-emerald-200"><Icon name="check" className="size-4 shrink-0" />{msg}</div>}
       <div className="grid gap-4 lg:grid-cols-3">
-        <Panel icon="user" title="Akun" desc="Sesi login Supabase Anda.">
+        <Panel icon="user" title="Akun" desc="Sesi login Supabase dan tampilan.">
           <Row label="Email"><span title={me.email}>{me.email}</span></Row>
           <Row label="Peran"><Badge color={me.role === 'admin' ? 'blue' : 'gray'}>{me.role}</Badge></Row>
           <Row label="Zona waktu">Asia/Jakarta (WIB)</Row>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-muted">Tema</span>
+            <Segmented label="Tema tampilan" value={pref} onChange={(v) => setThemePref(v as ThemePref)} options={[
+              { value: 'system', label: <span className="inline-flex items-center gap-1.5"><Icon name="monitor" className="size-3.5" />Sistem</span> },
+              { value: 'light', label: <span className="inline-flex items-center gap-1.5"><Icon name="sun" className="size-3.5" />Terang</span> },
+              { value: 'dark', label: <span className="inline-flex items-center gap-1.5"><Icon name="moon" className="size-3.5" />Gelap</span> },
+            ]} />
+          </div>
+          <p className="text-xs text-subtle">Disimpan di browser ini. “Sistem” mengikuti pengaturan perangkat.</p>
         </Panel>
         <Panel icon="mail" title="Telegram" desc="Notifikasi sinyal, order, dan perubahan universe.">
           <Row label="Status"><Badge color={sys.data?.telegramConfigured ? 'green' : 'yellow'}>{sys.data?.telegramConfigured ? 'terkonfigurasi' : 'belum diatur'}</Badge></Row>

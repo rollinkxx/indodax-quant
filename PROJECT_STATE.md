@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 11:10 WIB (session 13: UI redesign step 5 — History + Strategy + System + Settings — done)_
+_Last updated: 2026-11-14 11:20 WIB (session 13: UI redesign step 6 — light/dark theme — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -65,7 +65,7 @@ Rules for every step:
   Respect `prefers-reduced-motion`. Do not re-animate on any poll (`usePoll` intervals are 15–120 s per page).
 - Keep the existing texts in Indonesian, the WIB time display, the "PAPER TRADING / simulasi" notice and the code-split routes.
 - Before each commit: `npm install`, `npm run typecheck`, `npm test`, `npm run build`. Put bundle sizes (index, CSS, Charts) in the commit message.
-  Budget: initial `index-*.js` ≤ 520 kB, CSS growth ≤ 15 kB.
+  Budget: initial `index-*.js` ≤ 520 kB, CSS growth ≤ 15 kB per step (owner, 2026-11-14).
 - Other ideas (new features, new libraries, new pages): propose them to the owner first, do not build them.
 
 Display rules (mandatory, set by the owner):
@@ -80,10 +80,9 @@ Steps (done: 1 foundation — tokens in `src/index.css`, components in `src/comp
 `AuthScreen` in `src/pages/Login.tsx`; the page scroll container is `<main>`, not `window`; 3 Overview + Paper — `src/components/Portfolio.tsx`
 (EquityHero + SVG Sparkline, PositionCard, PaperControls), `ConfirmDialog` in `ui.tsx` locks `<main>` scroll; 4 Market + Chart + Signals —
 `Segmented` + `SearchInput` in `ui.tsx`, chart colours are `--chart-*` tokens read by `chartColors()` in `Charts.tsx`, `.flash-up/down` in `index.css`; 5 History + Strategy + System + Settings — Strategy compares the form with `effective` for the
-unsaved count, its save bar is `sticky bottom-0` inside `<main>`; CSS is now ~50 kB vs 24.12 kB before the redesign — owner to confirm whether "CSS growth ≤ 15 kB" is per step or in total):
-- [ ] 6. Owner-approved extra — light/dark theme: colour tokens as CSS variables for both themes, a toggle in the top bar, choice saved in
-  `localStorage` and defaulting to the system setting, no flash of the wrong theme on load (small inline script in `index.html`),
-  chart colours follow the theme; the `dark` class on `<html>` and the `theme-color` meta follow the theme too.
+unsaved count, its save bar is `sticky bottom-0` inside `<main>`; 6 light/dark theme — `src/lib/theme.ts` (pref in localStorage `iq-theme`,
+none = system) mirrored by the inline script in `index.html`; light values live in `:root:not(.dark)` in `index.css`, which also remaps the
+few status palette shades components use directly; charts rebuild on theme change; toggle in the top bar, Sistem/Terang/Gelap in Settings):
 - [ ] 7. Owner-approved extra — PWA: hand-written `public/manifest.webmanifest`, icons and a small service worker that caches only the
   static assets (never `/api/*`), so the dashboard can be installed on a phone. No new dependencies (no vite-plugin-pwa).
   Navigations / `index.html` go network-first (offline fallback only), hashed `/assets/*` cache-first, so a deploy is never stuck on an

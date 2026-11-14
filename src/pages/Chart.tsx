@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { usePoll } from '../lib/usePoll';
+import { useTheme } from '../lib/theme';
 import { Card, ErrorBox, Loading, PageHeader, Segmented, Stat, Empty } from '../components/ui';
 import { CandleChart, LineChart, chartColors, toSec, type Marker } from '../components/Charts';
 import { idr, num, pairLabel, wib } from '../lib/format';
@@ -13,7 +14,9 @@ export default function Chart() {
   const tfRaw = sp.get('tf');
   const tf = tfRaw === '1m' || tfRaw === '15m' || tfRaw === '1h' ? tfRaw : '5m';
   const set = (k: string, v: string) => { const n = new URLSearchParams(sp); n.set(k, v); setSp(n, { replace: true }); };
-  const colors = useMemo(() => chartColors(), []);
+  const { theme } = useTheme();
+  // Re-read the CSS tokens when the theme changes.
+  const colors = useMemo(() => chartColors(), [theme]);
   const [chartH] = useState(() => (typeof window !== 'undefined' && window.innerWidth < 640 ? 340 : 460));
 
   const cd = usePoll<any>(`/api/candles?pair=${pair}&tf=${tf}&limit=300`, 30000);

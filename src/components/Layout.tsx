@@ -3,6 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { Badge } from './ui';
 import { Icon, type IconName } from './Icon';
 import { usePoll } from '../lib/usePoll';
+import { setThemePref, useTheme } from '../lib/theme';
 
 interface NavItem { to: string; label: string; icon: IconName }
 
@@ -86,6 +87,18 @@ function LiveStatus() {
       <span className="hidden truncate sm:inline">{text}</span>
       {age != null && state !== 'wait' && <span className="num ml-auto hidden text-subtle sm:inline">{age < 60 ? `${Math.round(age)}d` : `${Math.round(age / 60)}m`}</span>}
     </div>
+  );
+}
+
+function ThemeToggle() {
+  const { theme } = useTheme();
+  const next = theme === 'dark' ? 'light' : 'dark';
+  const label = theme === 'dark' ? 'Ganti ke tema terang' : 'Ganti ke tema gelap';
+  return (
+    <button type="button" onClick={() => setThemePref(next)} aria-label={label} title={label}
+      className={`grid size-9 shrink-0 place-items-center rounded-control text-muted transition-colors hover:bg-elevated hover:text-fg ${focusRing}`}>
+      <Icon name={theme === 'dark' ? 'sun' : 'moon'} className="size-[18px]" />
+    </button>
   );
 }
 
@@ -179,6 +192,7 @@ export function Layout({ children, email, role, onLogout }: { children: ReactNod
             <span className="truncate text-sm font-semibold">{current.label}</span>
           </div>
           <LiveStatus />
+          <ThemeToggle />
           <UserMenu email={email} role={role} onLogout={onLogout} />
         </header>
         <div className="flex h-7 shrink-0 items-center justify-center gap-1.5 border-b border-amber-900/50 bg-amber-950/30 px-3 text-[11px] text-amber-300">

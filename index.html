@@ -4,6 +4,19 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#020617" />
+    <script>
+      /* Theme before first paint (no flash). Keep in sync with src/lib/theme.ts. */
+      (function () {
+        try {
+          var p = localStorage.getItem('iq-theme');
+          var d = p === 'dark' || p === 'light' ? p === 'dark' : !window.matchMedia || matchMedia('(prefers-color-scheme: dark)').matches;
+          var r = document.documentElement;
+          r.classList.toggle('dark', d);
+          r.style.colorScheme = d ? 'dark' : 'light';
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', d ? '#020617' : '#f8fafc');
+        } catch (e) {}
+      })();
+    </script>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2310b981'/><path d='M7 22l6-7 5 4 7-9' stroke='white' stroke-width='3' fill='none'/></svg>" />
     <title>INDODAX QUANT — Paper Trading</title>
   </head>

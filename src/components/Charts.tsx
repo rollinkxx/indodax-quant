@@ -5,6 +5,7 @@ import {
 } from 'lightweight-charts';
 import { TZ } from '../lib/format';
 import { padRange } from '../lib/chartRange';
+import { useTheme } from '../lib/theme';
 
 const fmtTime = (t: Time) => {
   const d = new Date((t as number) * 1000);
@@ -16,8 +17,8 @@ const fmtTick = (t: Time) => {
 };
 
 /**
- * Chart colours come from the CSS tokens (`--chart-*` in src/index.css), read when a chart is created,
- * so a second theme only has to override the variables.
+ * Chart colours come from the CSS tokens (`--chart-*` in src/index.css), read when a chart is created.
+ * Each chart lists the resolved theme in its effect deps, so it is rebuilt with the new colours on a theme switch.
  */
 const FALLBACK = {
   text: '#94a3b8', grid: '#1e293b', border: '#334155', up: '#10b981', down: '#f43f5e', volume: '#334155',
@@ -71,6 +72,7 @@ export function CandleChart({ candles, lines = [], markers = [], height = 460 }:
   height?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const { theme } = useTheme();
   useEffect(() => {
     if (!ref.current) return;
     const chart = baseChart(ref.current, height);
@@ -100,12 +102,13 @@ export function CandleChart({ candles, lines = [], markers = [], height = 460 }:
     }
     chart.timeScale().fitContent();
     return () => chart.remove();
-  }, [candles, lines, markers, height]);
+  }, [candles, lines, markers, height, theme]);
   return <div ref={ref} className="w-full" style={{ height }} />;
 }
 
 export function AreaChart({ data, height = 260, color }: { data: LinePoint[]; height?: number; color?: string }) {
   const ref = useRef<HTMLDivElement>(null);
+  const { theme } = useTheme();
   useEffect(() => {
     if (!ref.current) return;
     const chart = baseChart(ref.current, height);
@@ -116,12 +119,13 @@ export function AreaChart({ data, height = 260, color }: { data: LinePoint[]; he
     s.setData(data.map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
     chart.timeScale().fitContent();
     return () => chart.remove();
-  }, [data, height, color]);
+  }, [data, height, color, theme]);
   return <div ref={ref} className="w-full" style={{ height }} />;
 }
 
 export function LineChart({ series, height = 160 }: { series: { name: string; color: string; data: LinePoint[] }[]; height?: number }) {
   const ref = useRef<HTMLDivElement>(null);
+  const { theme } = useTheme();
   useEffect(() => {
     if (!ref.current) return;
     const chart = baseChart(ref.current, height);
@@ -131,7 +135,7 @@ export function LineChart({ series, height = 160 }: { series: { name: string; co
     }
     chart.timeScale().fitContent();
     return () => chart.remove();
-  }, [series, height]);
+  }, [series, height, theme]);
   return <div ref={ref} className="w-full" style={{ height }} />;
 }
 
