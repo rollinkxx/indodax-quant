@@ -4,9 +4,11 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './index.css';
 import { applyTheme, watchSystemTheme } from './lib/theme';
+import { registerServiceWorker } from './lib/pwa';
 
 applyTheme();
 watchSystemTheme();
+registerServiceWorker();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

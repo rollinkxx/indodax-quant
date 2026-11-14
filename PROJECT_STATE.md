@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-14 11:20 WIB (session 13: UI redesign step 6 — light/dark theme — done)_
+_Last updated: 2026-11-14 11:45 WIB (session 14: UI redesign step 7 — PWA — done)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
@@ -42,7 +42,7 @@ GitHub Actions job. New migrations in `supabase/migrations/` were applied automa
   signal + paper BUY + stop-loss notices sent. Exit filled 0.35 % below the stop (bid gapped 1.328.854 → 1.325.000 within 1 min).
 - Active strategy config (DB `strategy_configs` row is the source of truth; changed by the admin 2026-11-13 17:52Z):
   `maxEntrySpreadPct` 0.6, `maxEntryDriftPct` 0.5, `universeMinVolumeIdr` 1e9, `universeSize` 25, `maxOpenPositions` 10.
-- Local checks at `1fc0d2a`: typecheck 0 errors, 130 tests / 15 files pass, build OK.
+- Local checks after step 7 (PWA): typecheck 0 errors, 134 tests / 16 files pass, build OK.
 
 ## Open tasks
 
@@ -82,11 +82,8 @@ Steps (done: 1 foundation — tokens in `src/index.css`, components in `src/comp
 `Segmented` + `SearchInput` in `ui.tsx`, chart colours are `--chart-*` tokens read by `chartColors()` in `Charts.tsx`, `.flash-up/down` in `index.css`; 5 History + Strategy + System + Settings — Strategy compares the form with `effective` for the
 unsaved count, its save bar is `sticky bottom-0` inside `<main>`; 6 light/dark theme — `src/lib/theme.ts` (pref in localStorage `iq-theme`,
 none = system) mirrored by the inline script in `index.html`; light values live in `:root:not(.dark)` in `index.css`, which also remaps the
-few status palette shades components use directly; charts rebuild on theme change; toggle in the top bar, Sistem/Terang/Gelap in Settings):
-- [ ] 7. Owner-approved extra — PWA: hand-written `public/manifest.webmanifest`, icons and a small service worker that caches only the
-  static assets (never `/api/*`), so the dashboard can be installed on a phone. No new dependencies (no vite-plugin-pwa).
-  Navigations / `index.html` go network-first (offline fallback only), hashed `/assets/*` cache-first, so a deploy is never stuck on an
-  old bundle; never cache cross-origin requests (Supabase auth). Bump the cache name on change and delete old caches on activate.
+few status palette shades components use directly; charts rebuild on theme change; toggle in the top bar, Sistem/Terang/Gelap in Settings; 7 PWA — `public/manifest.webmanifest`, `public/icons/*.svg`, `public/sw.js`
+(cache `iq-static-v1`, routing in `route()`, tested by `tests/sw.test.ts`), registered in production only by `src/lib/pwa.ts`):
 - [ ] 8. Owner-approved extra — daily PnL calendar on Overview: small month grid, green/red by realised PnL per WIB day, with a tooltip
   (PnL, number of trades). Compute it in the frontend from existing API data (`/api/positions?status=closed&limit=1000`). That endpoint
   returns closed positions of every account, including before the last reset, max 1000 rows: filter by the active account id and
@@ -109,6 +106,8 @@ few status palette shades components use directly; charts rebuild on theme chang
 - **"Session approvals are not available for this tool"** on GitHub/Supabase MCP calls: the connector is fine. Reconnect the server
   (`mcp-servers` → `connect`, slug `git-hub` or `supabase`) and retry. The approval is per tool: each write tool
   (`create_or_update_file`, `push_files`, `merge_pull_request`, `execute_sql`) may need its own reconnect.
+- GitHub MCP writes are text-only: binary files (PNG etc.) cannot be committed by the agent. PWA icons are SVG for that reason
+  (no iOS `apple-touch-icon` PNG yet; the owner can add one by hand).
 - `create_or_update_file` on an existing file needs its blob SHA (`get_file_contents` first). `push_files` needs the FULL file content.
   Verify a push by `git clone` in the sandbox and `cmp` against the locally tested copy.
 - Local build/test needs `npm install` first (no `package-lock.json`).

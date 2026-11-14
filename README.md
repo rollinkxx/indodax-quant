@@ -2,7 +2,8 @@
 
 Cryptocurrency monitoring and **automated paper trading** platform for INDODAX markets.
 
-- **Frontend**: React + TypeScript + Tailwind CSS (dark, responsive) served by **Cloudflare Workers Static Assets**
+- **Frontend**: React + TypeScript + Tailwind CSS (light/dark, responsive) served by **Cloudflare Workers Static Assets**;
+  installable as a PWA (hand-written `public/sw.js` caches static assets only, never `/api/*`)
 - **Backend**: Cloudflare Worker REST API (`/api/*`)
 - **Scheduler**: Cloudflare Cron Trigger `* * * * *` (UTC)
 - **Database / Auth**: Supabase PostgreSQL + Supabase Auth, Row Level Security
@@ -90,9 +91,10 @@ All parameters are editable on the *Strategy Configuration* page (validated serv
 worker/src/     Cloudflare Worker (index, api, pipeline, indodax, relay, db, auth, telegram, notify, ingest)
 shared/         Pure, tested logic (indicators, candles, strategy, paper maths)
 src/            React dashboard (9 pages + login)
+public/         PWA manifest, icons and service worker (copied to dist/ by Vite)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
 supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
-tests/          Vitest suites (130 tests, 15 files)
+tests/          Vitest suites (134 tests, 16 files)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
 scripts/backtest.ts        offline backtest on stored 5m candles (needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY; MTF not simulated)
 PROJECT_STATE.md           current production state, open tasks and notes for maintainers/agents
@@ -174,7 +176,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 
 ```bash
 npm install              # required first (there is no package-lock.json)
-npm test                 # 130 unit + integration tests in 15 files (fake Supabase / INDODAX)
+npm test                 # 134 unit + integration tests in 16 files (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
 npm run backtest         # old rules vs live params on stored candles
