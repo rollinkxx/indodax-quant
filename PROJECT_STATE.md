@@ -1,6 +1,6 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 00:01 WIB (session 19: backtest scope clarity — done)_
+_Last updated: 2026-11-15 00:05 WIB (session 18: database function/RLS hardening — in progress)_
 
 This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
 Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
