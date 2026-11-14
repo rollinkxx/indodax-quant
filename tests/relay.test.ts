@@ -26,7 +26,7 @@ describe('INDODAX relay (Cloudflare Workers are blocked by indodax.com)', () => 
     const calls: string[] = [];
     const f = withIndodaxRelay(async (u) => { calls.push(u); return okJson({ ticker: { last: '1', buy: '1', sell: '2', server_time: '5' } }); }, PROXY);
     const dx = new IndodaxClient(f, { timeoutMs: 1000, retries: 0 });
-    expect(await dx.getTicker('btcidr')).toEqual({ last: 1, bid: 1, ask: 2, server_time: 5 });
+    expect(await dx.getTicker('btcidr')).toEqual({ last: 1, bid: 1, ask: 2, server_time: 5, vol_idr: null });
     await expect(dx.getJson('/tapi')).rejects.toThrow(/Blocked/);
     expect(calls).toEqual([`${PROXY}?path=%2Fapi%2Fticker%2Fbtcidr`]);
   });
