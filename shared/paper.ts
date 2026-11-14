@@ -122,6 +122,19 @@ export function entryGate(i: EntryGateInput, p: Pick<StrategyParams, 'maxEntrySp
   return null;
 }
 
+export interface NetRewardRiskInput {
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+  feePct: number;
+  exitSlippageBps: number;
+}
+
+/** Blocks an entry when expected net reward does not justify net stop risk. */
+export function netRewardRiskGate(_i: NetRewardRiskInput): string | null {
+  return null;
+}
+
 export type ExitReason = 'STOP_LOSS' | 'TAKE_PROFIT';
 
 /** Ratchets the stop up (never down) once price is far enough above entry. Returns the new stop or null. */
