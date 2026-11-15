@@ -74,3 +74,25 @@ describe('mergeBacktestCandles', () => {
     expect(result.every((c) => c.source !== 'synthetic')).toBe(true);
   });
 });
+
+
+describe('filterBacktestCandlesToRange', () => {
+  it('keeps only observed candles inside the half-open evaluation window', async () => {
+    const { filterBacktestCandlesToRange } = await import('../scripts/backtest-history');
+    const candles = [
+      minute(0),
+      minute(300, { source: 'trades' }),
+      minute(600),
+      minute(900),
+      minute(1200, { source: 'synthetic', v: 0 }),
+    ];
+    const result = filterBacktestCandlesToRange(candles, 300, 900);
+    expect(result.map((c) => c.t)).toEqual([300, 600]);
+    expect(result[0].source).toBe('trades');
+  });
+
+  it('rejects invalid time ranges', async () => {
+    const { filterBacktestCandlesToRange } = await import('../scripts/backtest-history');
+    expect(() => filterBacktestCandlesToRange([], 600, 300)).toThrow('Invalid backtest candle range');
+  });
+});

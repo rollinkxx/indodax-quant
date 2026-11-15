@@ -30,9 +30,11 @@ SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... BACKTEST_HISTORY_DAYS=30 npm run 
 
 - Reads the official public `/tradingview/history_v2` 1-minute OHLC endpoint through the existing read-only Supabase INDODAX relay.
 - Requests bounded 12-hour windows, converts only complete groups of five 1-minute candles into 5-minute bars, and excludes partial, invalid, synthetic, and still-forming intervals.
-- Combines the downloaded history in memory with stored 5-minute candles. Trade-built candles take precedence over OHLC at matching timestamps; newly validated OHLC fills missing/older-history timestamps.
+- Combines the downloaded history in memory with stored 5-minute candles. Trade-built candles take precedence over OHLC at matching timestamps; newly validated OHLC fills missing/older-history timestamps. Persisted candles are then clipped to the exact requested half-open interval so out-of-window database tails cannot shift the 70/30 split.
 - Does not write the downloaded data to Supabase or change the Worker, active strategy, signals, paper balance, or orders.
-- The CI strategy-evaluation job uses a 30-day window and attaches the full JSON and retrieval diagnostics to its `strategy-evaluation` artifact. The public history endpoint may return fewer bars for low-liquidity periods; the report includes actual 1-minute and complete 5-minute counts so incomplete coverage remains visible.
+- The CI strategy-evaluation job uses a 30-day window and attaches the full JSON and retrieval diagnostics to its `strategy-evaluation` artifact. Each pair reports complete 5m bars versus the expected window and a coverage percentage; a recent listing or unavailable history can therefore show less than 100% coverage.
+- Any position still open at the final observed candle is closed at that candle's close with exit slippage and fee charged (`END_OF_DATA`), so unfinished trades are not silently omitted from PnL or trade counts.
+- Combined holdout metrics are the sum of independent per-pair simulations, each funded with its own starting balance. They are not a shared-cash portfolio result.
 
 The simulation is a per-pair 5m candle approximation. Historical bid/ask, tick-level execution, true historical liquidity tiers, MTF confirmations, and shared portfolio/risk constraints are not available. Outputs must not be described as production-parity results or proof of profitability. Compare trade count, win rate, profit factor, expectancy, average win/loss, and simulated drawdown; treat small samples as inconclusive.
 

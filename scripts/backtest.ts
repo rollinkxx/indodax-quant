@@ -14,7 +14,8 @@ import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
-import { aggregateCompleteMinuteHistory, mergeBacktestCandles } from './backtest-history';
+import { aggregateCompleteMinuteHistory, filterBacktestCandlesToRange, mergeBacktestCandles } from './backtest-history';
+import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -46,6 +47,12 @@ interface OfficialHistoryResult {
     apiChunks: number;
     minuteBarsReceived: number;
     complete5mBars: number;
+    expected5mBars: number;
+    historyCoveragePct: number;
+    firstObservedAt: string | null;
+    lastObservedAt: string | null;
+    fromSec: number;
+    toSec: number;
     from: string;
     to: string;
   };
@@ -74,7 +81,7 @@ async function loadStoredCandles(pair: string): Promise<Candle[]> {
 }
 
 /** Pulls official 1m OHLC in 12h windows and aggregates only complete 5m buckets. */
-async function loadOfficialHistory(pair: string, symbol: string, days: number): Promise<OfficialHistoryResult> {
+async function loadOfficialHistory(symbol: string, days: number): Promise<OfficialHistoryResult> {
   const nowSec = Math.floor(Date.now() / 1000);
   const toSec = Math.floor(nowSec / 300) * 300; // exclude the currently forming 5m candle
   const fromSec = Math.floor((toSec - days * 86_400) / 300) * 300;
@@ -92,6 +99,9 @@ async function loadOfficialHistory(pair: string, symbol: string, days: number): 
   }
 
   const complete5m = aggregateCompleteMinuteHistory(oneMinute, fromSec, toSec);
+  const expected5mBars = Math.floor((toSec - fromSec) / 300);
+  const historyCoveragePct = expected5mBars > 0
+    ? Number((complete5m.length / expected5mBars * 100).toFixed(2)) : 0;
   return {
     candles: complete5m,
     metrics: {
@@ -99,6 +109,12 @@ async function loadOfficialHistory(pair: string, symbol: string, days: number): 
       apiChunks,
       minuteBarsReceived: oneMinute.length,
       complete5mBars: complete5m.length,
+      expected5mBars,
+      historyCoveragePct,
+      firstObservedAt: complete5m.length ? new Date(complete5m[0].t * 1000).toISOString() : null,
+      lastObservedAt: complete5m.length ? new Date(complete5m[complete5m.length - 1].t * 1000).toISOString() : null,
+      fromSec,
+      toSec,
       from: new Date(fromSec * 1000).toISOString(),
       to: new Date(toSec * 1000).toISOString(),
     },
@@ -108,7 +124,13 @@ async function loadOfficialHistory(pair: string, symbol: string, days: number): 
 async function loadCandles(pair: string, officialHistory?: OfficialHistoryResult): Promise<Candle[]> {
   const stored = await loadStoredCandles(pair);
   const history = officialHistory?.candles ?? [];
-  return fillGaps(mergeBacktestCandles(history, stored), 300);
+  const merged = mergeBacktestCandles(history, stored);
+  // The requested evaluation window is a hard boundary. Persisted tail candles
+  // outside it must not silently lengthen the sample or shift the 70/30 split.
+  const scoped = officialHistory
+    ? filterBacktestCandlesToRange(merged, officialHistory.metrics.fromSec, officialHistory.metrics.toSec)
+    : merged;
+  return fillGaps(scoped, 300);
 }
 
 export type ExperimentMode = 'crossover' | 'trend_continuation';
@@ -153,11 +175,11 @@ export function simulate(
     if (c.source === 'synthetic' || !isValidCandle(c)) continue;
 
     if (pos) {
-      // Conservative intrabar ordering: stop loss takes precedence if both levels are touched.
-      let exit: number | null = null;
-      let reason = '';
-      if (c.l <= pos.sl) { exit = c.o < pos.sl ? c.o : pos.sl; reason = 'STOP_LOSS'; }
-      else if (c.h >= pos.tp) { exit = c.o > pos.tp ? c.o : pos.tp; reason = 'TAKE_PROFIT'; }
+      // The entry candle is deliberately processed on the next loop iteration;
+      // if both protective levels are touched, stop loss takes precedence.
+      const protectiveExit = resolveProtectiveExit(pos.sl, pos.tp, c);
+      let exit: number | null = protectiveExit?.price ?? null;
+      let reason = protectiveExit?.reason ?? '';
       if (exit === null) {
         const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p);
         if (nsl !== null) pos.sl = nsl;
@@ -210,8 +232,25 @@ export function simulate(
       qty: size.qty, entry: fill, cost: size.cost, sl: stops.stopLoss,
       tp: stops.takeProfit, openedIdx: i + 1, entryTime: next.t,
     };
-    i += 1;
+    // Do not skip `next`: the next loop iteration must evaluate the entry candle's
+    // high/low for same-candle stop-loss or take-profit execution.
   }
+
+  // Close any remaining position at the final observed candle close. Without this,
+  // an unfinished trade would disappear from win rate, PnL, expectancy, and drawdown.
+  if (pos) {
+    let lastObserved: Candle | null = null;
+    for (let index = series.length - 1; index >= pos.openedIdx; index--) {
+      const candidate = series[index];
+      if (candidate.source !== 'synthetic' && isValidCandle(candidate)) {
+        lastObserved = candidate;
+        break;
+      }
+    }
+    if (!lastObserved) throw new Error(`Open position for ${pair} has no final observed candle`);
+    trades.push(finalizeEndOfDataTrade(pair, pos, lastObserved, slip, p.feePct));
+  }
+
   return trades;
 }
 
@@ -226,9 +265,11 @@ interface Metrics {
   avgWinPct: number;
   avgLossPct: number;
   maxDrawdownPct: number;
+  endOfDataExits: number;
+  exitReasons: Record<string, number>;
 }
 
-function measure(trades: SimTrade[]): Metrics {
+function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
   const stats = computeStats(trades.map((t) => ({ realized_pnl: t.pnl, cost_basis: t.cost })));
   const winning = trades.filter((t) => t.pnl > 0);
   const losing = trades.filter((t) => t.pnl <= 0);
@@ -236,7 +277,7 @@ function measure(trades: SimTrade[]): Metrics {
     ? winning.reduce((sum, t) => sum + t.pnl / t.cost * 100, 0) / winning.length : 0;
   const avgLossPct = losing.length
     ? losing.reduce((sum, t) => sum + t.pnl / t.cost * 100, 0) / losing.length : 0;
-  let equity = 10_000_000;
+  let equity = initialEquity;
   let peak = equity;
   let maxDrawdownPct = 0;
   for (const trade of [...trades].sort((a, b) => a.exitTime - b.exitTime)) {
@@ -255,6 +296,11 @@ function measure(trades: SimTrade[]): Metrics {
     avgWinPct: Number(avgWinPct.toFixed(3)),
     avgLossPct: Number(avgLossPct.toFixed(3)),
     maxDrawdownPct: Number(maxDrawdownPct.toFixed(3)),
+    endOfDataExits: trades.filter((trade) => trade.reason === 'END_OF_DATA').length,
+    exitReasons: trades.reduce<Record<string, number>>((counts, trade) => {
+      counts[trade.reason] = (counts[trade.reason] ?? 0) + 1;
+      return counts;
+    }, {}),
   };
 }
 
@@ -298,9 +344,9 @@ async function main() {
     for (let offset = 0; offset < selectedPairs.length; offset += pairConcurrency) {
       const batch = selectedPairs.slice(offset, offset + pairConcurrency);
       const fetched = await Promise.all(batch.map(async (pair) => {
-        const result = await loadOfficialHistory(pair.id, pair.symbol, historyDays);
+        const result = await loadOfficialHistory(pair.symbol, historyDays);
         console.error(
-          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}`,
+          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% coverage)`,
         );
         return [pair.id, result] as const;
       }));
@@ -309,6 +355,11 @@ async function main() {
   }
 
   const summary: Record<string, unknown> = {};
+  const holdoutTradesByVariant: Record<string, SimTrade[]> = {
+    cross_lookback_2: [],
+    cross_lookback_4: [],
+    ema21_continuation_shadow: [],
+  };
   let usablePairs = 0;
   for (const pair of selectedPairs) {
     const history = officialHistory.get(pair.id);
@@ -343,6 +394,7 @@ async function main() {
     for (const variant of variants) {
       const full = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, 0);
       const holdout = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, splitIndex);
+      holdoutTradesByVariant[variant.key].push(...holdout);
       variantResults[variant.key] = {
         fullPeriod: measure(full),
         outOfSampleLast30Pct: measure(holdout),
@@ -354,6 +406,16 @@ async function main() {
   if (usablePairs === 0) {
     throw new Error('Backtest stopped: no pairs had sufficient closed 5m candle history for the 70/30 split. No experiment results were produced.');
   }
+
+  const officialMetrics = [...officialHistory.values()].map((item) => item.metrics);
+  const officialExpected5mBars = officialMetrics.reduce((sum, item) => sum + item.expected5mBars, 0);
+  const officialComplete5mBars = officialMetrics.reduce((sum, item) => sum + item.complete5mBars, 0);
+  const aggregateOutOfSample = Object.fromEntries(
+    Object.entries(holdoutTradesByVariant).map(([key, trades]) => [
+      key,
+      measure(trades, 10_000_000 * usablePairs),
+    ]),
+  );
 
   console.log(JSON.stringify({
     experiment: {
@@ -367,13 +429,18 @@ async function main() {
       officialHistoryDaysRequested: historyDays,
       officialHistoryPairsWithBars: [...officialHistory.values()].filter((h) => h.metrics.complete5mBars > 0).length,
       officialHistoryMinuteBarsReceived: [...officialHistory.values()].reduce((sum, h) => sum + h.metrics.minuteBarsReceived, 0),
-      officialHistoryComplete5mBars: [...officialHistory.values()].reduce((sum, h) => sum + h.metrics.complete5mBars, 0),
+      officialHistoryComplete5mBars: officialComplete5mBars,
+      officialHistoryExpected5mBars: officialExpected5mBars,
+      officialHistoryCoveragePct: officialExpected5mBars > 0
+        ? Number((officialComplete5mBars / officialExpected5mBars * 100).toFixed(2)) : 0,
       pairsRequested: selectedPairs.length,
       pairsEvaluated: usablePairs,
       initialEquityPerPairIdr: 10_000_000,
       sharedPortfolio: false,
     },
     scopeWarnings: backtestScopeWarnings(live),
+    aggregateOutOfSampleIndependentPairAccounts: aggregateOutOfSample,
+    aggregateAccountMeaning: 'sum of independent per-pair simulations; each evaluated pair starts with its own IDR 10,000,000; not a shared-cash portfolio',
     results: summary,
   }, null, 2));
 }
