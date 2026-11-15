@@ -121,6 +121,11 @@ describe('pipeline: MTF + dynamic universe', () => {
       data_quality: 'ok',
       outcome: 'no_recent_cross',
     });
+    expect(steps.analyze.info.continuation_diagnostics.btcidr).toMatchObject({
+      setup: 'ema21_pullback_reclaim',
+      execution: 'shadow_only',
+      data_quality: 'ok',
+    });
     expect(steps.universe.info.members).toEqual(['pepeidr', 'dogeidr']);
   });
 
@@ -136,8 +141,31 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
     const actions = (r.steps as any)?.paper_trading?.info?.actions as string[];
     expect(actions).toContain('skip btcidr: net_reward_risk_below_minimum');
+    const paperInfo = (r.steps as any)?.paper_trading?.info;
+    expect(paperInfo).toMatchObject({ buy_signals_received: 1, entries_opened: 0 });
+    expect(paperInfo.entry_rejections).toContainEqual(expect.objectContaining({
+      pair_id: 'btcidr', signal_id: 99, stage: 'economics_gate', reason: 'net_reward_risk_below_minimum',
+    }));
+    expect(paperInfo.entry_rejection_counts.net_reward_risk_below_minimum).toBe(1);
   });
 
+
+  it('records spread-versus-stop rejection metrics without opening a paper position', async () => {
+    const signal = {
+      id: 100, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 0.1 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const { f, rpcs } = setup({ mtfMode: 'off', newSignals: [signal] });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+    expect(r.status).toBe('SUCCESS');
+    expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    const info = (r.steps as any)?.paper_trading?.info;
+    expect(info.entry_rejections).toContainEqual(expect.objectContaining({
+      pair_id: 'btcidr', signal_id: 100, stage: 'entry_gate', reason: 'stop_inside_spread',
+    }));
+    expect(info.entry_rejections[0].metrics.spread_pct).toBeGreaterThan(0);
+    expect(info.entry_rejections[0].metrics.stop_distance_pct).toBeGreaterThan(0);
+  });
 
   it('repairs legacy 5m holes although the old covered_until cursor is already current', async () => {
     const gapIndex = 220;

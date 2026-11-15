@@ -1,8 +1,15 @@
-// Offline 5m candle-only approximation (read-only; paper maths only, no trading; not production-parity).
-// Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npx tsx scripts/backtest.ts [pairId ...]
-// Scope warnings are printed at runtime; historical bid/ask, MTF and shared portfolio controls are not simulated.
-import { computeIndicators, DEFAULT_PARAMS, evaluateSignalWindow, mergeParams, type StrategyParams } from '../shared/strategy';
-import { buyFillPrice, computeStats, computeStops, dynamicSlippageBps, feeFor, netRewardRiskGate, positionSize, sellFillPrice, trailingStop } from '../shared/paper';
+// Controlled, read-only strategy experiments. No live or paper orders are submitted.
+// Compare the production setup (crossLookback=2) against only one changed variable (4),
+// plus a separately labelled EMA21 pullback-reclaim continuation shadow variant.
+// Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run backtest [pairId ...]
+import {
+  computeIndicators, DEFAULT_PARAMS, diagnoseTrendContinuationWindow, evaluateSignalWindow,
+  mergeParams, type StrategyParams,
+} from '../shared/strategy';
+import {
+  buyFillPrice, computeStats, computeStops, dynamicSlippageBps, feeFor,
+  netRewardRiskGate, positionSize, sellFillPrice, trailingStop,
+} from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
 
@@ -21,11 +28,12 @@ async function get<T>(path: string): Promise<T> {
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
 
 async function loadCandles(pair: string): Promise<Candle[]> {
-  const rows = await get<Row[]>(`candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc&limit=5000`);
+  const rows = await get<Row[]>(
+    `candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc&limit=5000`,
+  );
   const parsed = rows.map((r): Candle => {
     const source: Candle['source'] = r.source === 'trades' || r.source === 'history' || r.source === 'synthetic'
-      ? r.source
-      : 'synthetic';
+      ? r.source : 'synthetic';
     const candle: Candle = {
       t: Math.floor(Date.parse(r.open_time) / 1000), o: +r.open, h: +r.high, l: +r.low, c: +r.close,
       v: +r.volume, n: Number.isFinite(+r.trade_count) ? +r.trade_count : 0, source,
@@ -36,99 +44,238 @@ async function loadCandles(pair: string): Promise<Candle[]> {
   return fillGaps(aligned, 300);
 }
 
-export interface SimTrade { pair: string; entry: number; exit: number; pnl: number; cost: number; reason: string }
+export type ExperimentMode = 'crossover' | 'trend_continuation';
+export interface SimTrade {
+  pair: string;
+  entry: number;
+  exit: number;
+  pnl: number;
+  cost: number;
+  reason: string;
+  entryTime: number;
+  exitTime: number;
+}
 
-export function simulate(pair: string, candles: Candle[], p: StrategyParams, equity0: number, volIdr: number | null): SimTrade[] {
-  // Insert synthetic gap bars before computing indicators so indicator warm-up resets
-  // exactly where observed historical coverage breaks.
+/**
+ * Per-pair candle-only simulation. Indicators use only current/past bars; entries fill on
+ * the next observed candle open. startIndex makes a chronological holdout possible while
+ * retaining pre-holdout indicator warm-up. It deliberately does not model MTF or shared cash.
+ */
+export function simulate(
+  pair: string,
+  candles: Candle[],
+  p: StrategyParams,
+  equity0: number,
+  volIdr: number | null,
+  mode: ExperimentMode = 'crossover',
+  startIndex = 0,
+): SimTrade[] {
   const series = fillGaps(candles, 300);
   const rows = computeIndicators(series, p);
   const trades: SimTrade[] = [];
   const slip = p.dynamicSlippage ? dynamicSlippageBps(p.slippageBps, volIdr) : p.slippageBps;
-  let pos: { qty: number; entry: number; cost: number; sl: number; tp: number; openedIdx: number } | null = null;
+  let pos: {
+    qty: number; entry: number; cost: number; sl: number; tp: number;
+    openedIdx: number; entryTime: number;
+  } | null = null;
   let equity = equity0;
   const win = Math.max(3, p.crossLookback + 1);
-  for (let i = Math.max(p.minCandles, win); i < series.length; i++) {
+  const firstIndex = Math.max(p.minCandles, win, Math.floor(startIndex));
+  for (let i = firstIndex; i < series.length; i++) {
     const c = series[i];
-    // Synthetic rows have no tradable OHLC. Positions are managed again at the next observed bar.
     if (c.source === 'synthetic' || !isValidCandle(c)) continue;
 
     if (pos) {
-      // Intrabar: stop first (conservative); account for gaps through a stop at the candle open.
-      let exit: number | null = null; let reason = '';
+      // Conservative intrabar ordering: stop loss takes precedence if both levels are touched.
+      let exit: number | null = null;
+      let reason = '';
       if (c.l <= pos.sl) { exit = c.o < pos.sl ? c.o : pos.sl; reason = 'STOP_LOSS'; }
       else if (c.h >= pos.tp) { exit = c.o > pos.tp ? c.o : pos.tp; reason = 'TAKE_PROFIT'; }
       if (exit === null) {
         const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p);
         if (nsl !== null) pos.sl = nsl;
-        if (p.timeStopMinutes > 0 && (i - pos.openedIdx) * 5 >= p.timeStopMinutes) { exit = c.c; reason = 'TIME_STOP'; }
+        if (p.timeStopMinutes > 0 && (i - pos.openedIdx) * 5 >= p.timeStopMinutes) {
+          exit = c.c; reason = 'TIME_STOP';
+        }
       }
       if (exit === null && hasBacktestDataQuality(series, i, p.minCandles)) {
-        const sig = evaluateSignalWindow(rows.slice(i - win + 1, i + 1), series.slice(i - win + 1, i + 1).map((x) => x.v), p);
-        if (sig?.side === 'SELL') { exit = c.c; reason = 'SIGNAL'; }
+        const sell = evaluateSignalWindow(
+          rows.slice(i - win + 1, i + 1), series.slice(i - win + 1, i + 1).map((x) => x.v), p,
+        );
+        if (sell?.side === 'SELL') { exit = c.c; reason = 'SIGNAL'; }
       }
       if (exit !== null) {
         const fill = sellFillPrice(exit, slip);
         const fee = feeFor(pos.qty * fill, p.feePct);
         const pnl = pos.qty * fill - fee - pos.cost;
         equity += pnl;
-        trades.push({ pair, entry: pos.entry, exit: fill, pnl, cost: pos.cost, reason });
+        trades.push({
+          pair, entry: pos.entry, exit: fill, pnl, cost: pos.cost, reason,
+          entryTime: pos.entryTime, exitTime: c.t,
+        });
         pos = null;
       }
       continue;
     }
-    if (!hasBacktestDataQuality(series, i, p.minCandles)) continue;
-    const sig = evaluateSignalWindow(rows.slice(i - win + 1, i + 1), series.slice(i - win + 1, i + 1).map((x) => x.v), p);
-    if (sig?.side !== 'BUY' || i + 1 >= series.length) continue;
-    const next = series[i + 1]; // fill on the next observed candle open (no look-ahead)
+
+    if (!hasBacktestDataQuality(series, i, p.minCandles) || i + 1 >= series.length) continue;
+    const windowRows = rows.slice(i - win + 1, i + 1);
+    const windowVolumes = series.slice(i - win + 1, i + 1).map((x) => x.v);
+    const isBuy = mode === 'crossover'
+      ? evaluateSignalWindow(windowRows, windowVolumes, p)?.side === 'BUY'
+      : diagnoseTrendContinuationWindow(windowRows, windowVolumes, p).ready;
+    if (!isBuy) continue;
+
+    const next = series[i + 1];
     if (next.source === 'synthetic' || !isValidCandle(next) || next.v <= 0) continue;
     const fill = buyFillPrice(next.o, slip);
     const stops = computeStops(fill, rows[i].atr14, p);
-    const economicsGate = netRewardRiskGate({
+    if (netRewardRiskGate({
       entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
       feePct: p.feePct, exitSlippageBps: slip,
-    });
-    if (economicsGate) continue;
+    })) continue;
     const size = positionSize({
-      equity, cash: equity, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params: p,
+      equity, cash: equity, entry: fill, stopLoss: stops.stopLoss,
+      exitSlippageBps: slip, params: p,
     });
     if (size.qty <= 0) continue;
-    pos = { qty: size.qty, entry: fill, cost: size.cost, sl: stops.stopLoss, tp: stops.takeProfit, openedIdx: i + 1 };
+    pos = {
+      qty: size.qty, entry: fill, cost: size.cost, sl: stops.stopLoss,
+      tp: stops.takeProfit, openedIdx: i + 1, entryTime: next.t,
+    };
     i += 1;
   }
   return trades;
 }
 
-function report(label: string, t: SimTrade[]) {
-  const s = computeStats(t.map((x) => ({ realized_pnl: x.pnl, cost_basis: x.cost })));
-  const avgW = t.filter((x) => x.pnl > 0).reduce((a, x) => a + x.pnl / x.cost, 0) / Math.max(1, s.wins) * 100;
-  const avgL = t.filter((x) => x.pnl <= 0).reduce((a, x) => a + x.pnl / x.cost, 0) / Math.max(1, s.losses) * 100;
-  const be = avgW - avgL > 0 ? (-avgL / (avgW - avgL)) * 100 : NaN;
-  console.log(`${label}: trades=${s.trades} win=${s.winRate.toFixed(1)}% PF=${s.profitFactor?.toFixed(2) ?? 'inf'} pnl=${s.totalPnl.toFixed(0)} avgRet=${s.avgReturnPct.toFixed(2)}% avgWin=${avgW.toFixed(2)}% avgLoss=${avgL.toFixed(2)}% breakevenWin=${be.toFixed(1)}%`);
+interface Metrics {
+  trades: number;
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  profitFactor: number | null;
+  netPnlIdr: number;
+  expectancyIdr: number;
+  avgWinPct: number;
+  avgLossPct: number;
+  maxDrawdownPct: number;
+}
+
+function measure(trades: SimTrade[]): Metrics {
+  const stats = computeStats(trades.map((t) => ({ realized_pnl: t.pnl, cost_basis: t.cost })));
+  const winning = trades.filter((t) => t.pnl > 0);
+  const losing = trades.filter((t) => t.pnl <= 0);
+  const avgWinPct = winning.length
+    ? winning.reduce((sum, t) => sum + t.pnl / t.cost * 100, 0) / winning.length : 0;
+  const avgLossPct = losing.length
+    ? losing.reduce((sum, t) => sum + t.pnl / t.cost * 100, 0) / losing.length : 0;
+  let equity = 10_000_000;
+  let peak = equity;
+  let maxDrawdownPct = 0;
+  for (const trade of [...trades].sort((a, b) => a.exitTime - b.exitTime)) {
+    equity += trade.pnl;
+    peak = Math.max(peak, equity);
+    if (peak > 0) maxDrawdownPct = Math.max(maxDrawdownPct, (peak - equity) / peak * 100);
+  }
+  return {
+    trades: stats.trades,
+    wins: stats.wins,
+    losses: stats.losses,
+    winRatePct: Number(stats.winRate.toFixed(2)),
+    profitFactor: stats.profitFactor === null ? null : Number(stats.profitFactor.toFixed(3)),
+    netPnlIdr: Number(stats.totalPnl.toFixed(2)),
+    expectancyIdr: stats.trades ? Number((stats.totalPnl / stats.trades).toFixed(2)) : 0,
+    avgWinPct: Number(avgWinPct.toFixed(3)),
+    avgLossPct: Number(avgLossPct.toFixed(3)),
+    maxDrawdownPct: Number(maxDrawdownPct.toFixed(3)),
+  };
+}
+
+function assertControlledPair(a: StrategyParams, b: StrategyParams): void {
+  const changed = Object.keys(a).filter((key) =>
+    JSON.stringify((a as unknown as Record<string, unknown>)[key]) !==
+    JSON.stringify((b as unknown as Record<string, unknown>)[key]),
+  );
+  if (changed.length !== 1 || changed[0] !== 'crossLookback') {
+    throw new Error(`Uncontrolled crossLookback experiment; unexpected differences: ${changed.join(', ')}`);
+  }
 }
 
 async function main() {
   const cfg = await get<{ params: unknown }[]>('strategy_configs?select=params&is_active=eq.true&limit=1');
   const live = mergeParams(cfg[0]?.params);
   for (const warning of backtestScopeWarnings(live)) console.warn(`[BACKTEST SCOPE] ${warning}`);
+
+  const params2: StrategyParams = { ...live, crossLookback: 2 };
+  const params4: StrategyParams = { ...params2, crossLookback: 4 };
+  assertControlledPair(params2, params4);
+
   const pairs = process.argv.slice(2).length
     ? process.argv.slice(2)
     : (await get<{ pair_id: string }[]>('market_tickers_latest?select=pair_id&order=vol_idr.desc&limit=25')).map((r) => r.pair_id);
-  const vols = Object.fromEntries((await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr')).map((r) => [r.pair_id, +r.vol_idr]));
-  // Compare older 5m rules with current settings; both remain candle-only per-pair approximations.
-  const baseline: StrategyParams = { ...DEFAULT_PARAMS, ...live, crossLookback: 3, rsiBuyMax: 70, maxEntryExtensionPct: 0, sellRequireConfirm: true, trailingStopEnabled: false, timeStopMinutes: 0, dynamicSlippage: false };
-  const all = { baseline: [] as SimTrade[], hardened: [] as SimTrade[] };
-  for (const pair of pairs) {
+  const vols = Object.fromEntries(
+    (await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr'))
+      .map((r) => [r.pair_id, +r.vol_idr]),
+  );
+
+  const summary: Record<string, unknown> = {};
+  let usablePairs = 0;
+  for (const pair of [...new Set(pairs)]) {
     const candles = await loadCandles(pair);
-    if (candles.length < live.minCandles + 20) continue;
-    all.baseline.push(...simulate(pair, candles, baseline, 10_000_000, vols[pair] ?? null));
-    all.hardened.push(...simulate(pair, candles, live, 10_000_000, vols[pair] ?? null));
+    const observed = candles.filter((c) => c.source !== 'synthetic');
+    if (candles.length < live.minCandles + 20) {
+      console.warn(`[SKIP] ${pair}: only ${candles.length} timeline bars / ${observed.length} observed bars`);
+      continue;
+    }
+    const splitIndex = Math.floor(candles.length * 0.7);
+    if (candles.length - splitIndex < live.minCandles + 5) {
+      console.warn(`[SKIP] ${pair}: holdout too short after 70/30 split`);
+      continue;
+    }
+    usablePairs++;
+    const variants = [
+      { key: 'cross_lookback_2', params: params2, mode: 'crossover' as const },
+      { key: 'cross_lookback_4', params: params4, mode: 'crossover' as const },
+      { key: 'ema21_continuation_shadow', params: params2, mode: 'trend_continuation' as const },
+    ];
+    const pairResult: Record<string, unknown> = {
+      candles: candles.length,
+      observedCandles: observed.length,
+      syntheticGapBars: candles.length - observed.length,
+      from: new Date(candles[0].t * 1000).toISOString(),
+      to: new Date(candles[candles.length - 1].t * 1000).toISOString(),
+      holdoutFrom: new Date(candles[splitIndex].t * 1000).toISOString(),
+      variants: {},
+    };
+    const variantResults = pairResult.variants as Record<string, unknown>;
+    for (const variant of variants) {
+      const full = simulate(pair, candles, variant.params, 10_000_000, vols[pair] ?? null, variant.mode, 0);
+      const holdout = simulate(pair, candles, variant.params, 10_000_000, vols[pair] ?? null, variant.mode, splitIndex);
+      variantResults[variant.key] = {
+        fullPeriod: measure(full),
+        outOfSampleLast30Pct: measure(holdout),
+      };
+    }
+    summary[pair] = pairResult;
   }
-  report('baseline (older 5m rules)', all.baseline);
-  report('hardened (5m approximation)', all.hardened);
-  const reasons: Record<string, number> = {};
-  for (const t of all.hardened) reasons[t.reason] = (reasons[t.reason] ?? 0) + 1;
-  console.log('hardened exits by reason:', reasons);
+
+  console.log(JSON.stringify({
+    experiment: {
+      control: 'crossLookback=2',
+      variant: 'crossLookback=4',
+      controlledParameterDifferences: ['crossLookback'],
+      shadowVariant: 'EMA21 pullback-reclaim in EMA9>EMA21>EMA50 uptrend; not sent to paper execution',
+      split: 'first 70% for indicator warm-up/context; last 30% is chronological holdout; no entries before holdout',
+      pairsRequested: pairs.length,
+      pairsEvaluated: usablePairs,
+      initialEquityPerPairIdr: 10_000_000,
+      sharedPortfolio: false,
+    },
+    scopeWarnings: backtestScopeWarnings(live),
+    results: summary,
+  }, null, 2));
 }
 
-if (process.argv[1]?.endsWith('backtest.ts')) main().catch((e) => { console.error(e); process.exit(1); });
+if (process.argv[1]?.endsWith('backtest.ts')) {
+  main().catch((e) => { console.error(e); process.exit(1); });
+}
