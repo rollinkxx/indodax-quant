@@ -109,3 +109,62 @@ export function createBacktestHistoryRange(days: number, nowMs: number): Backtes
   const fromSec = toSec - days * 86_400;
   return { days, fromSec, toSec };
 }
+
+
+export interface MinuteHistoryQuality {
+  receivedMinuteBars: number;
+  expectedMinuteBars: number;
+  uniqueValidMinuteBars: number;
+  duplicateMinuteBars: number;
+  missingMinuteBars: number;
+  zeroVolumeMinuteBars: number;
+  zeroVolume5mBars: number;
+  activeVolume5mBars: number;
+  expected5mBars: number;
+  activeVolumeCoveragePct: number;
+}
+
+/**
+ * Distinguish structurally complete OHLC coverage from candles that actually
+ * contain trading volume. INDODAX can return valid OHLC rows with Volume=0.
+ */
+export function summarizeMinuteHistoryQuality(
+  minuteCandles: Candle[],
+  fromSec: number,
+  toSec: number,
+  complete5m: Candle[],
+): MinuteHistoryQuality {
+  if (
+    !Number.isFinite(fromSec) || !Number.isFinite(toSec) ||
+    fromSec >= toSec || fromSec % 60 !== 0 || toSec % 60 !== 0
+  ) throw new Error('Invalid minute history quality range');
+
+  const validMinutes = minuteCandles.filter((candle) =>
+    candle.source !== 'synthetic' &&
+    isValidCandle(candle) &&
+    candle.t % 60 === 0 &&
+    candle.t >= fromSec &&
+    candle.t + 60 <= toSec
+  );
+  const uniqueMinutes = new Map<number, Candle>();
+  for (const candle of validMinutes) uniqueMinutes.set(candle.t, candle);
+
+  const expectedMinuteBars = Math.floor((toSec - fromSec) / 60);
+  const expected5mBars = Math.floor((toSec - fromSec) / 300);
+  const zeroVolume5mBars = complete5m.filter((candle) => candle.v <= 0).length;
+  const activeVolume5mBars = complete5m.length - zeroVolume5mBars;
+
+  return {
+    receivedMinuteBars: minuteCandles.length,
+    expectedMinuteBars,
+    uniqueValidMinuteBars: uniqueMinutes.size,
+    duplicateMinuteBars: Math.max(0, validMinutes.length - uniqueMinutes.size),
+    missingMinuteBars: Math.max(0, expectedMinuteBars - uniqueMinutes.size),
+    zeroVolumeMinuteBars: [...uniqueMinutes.values()].filter((candle) => candle.v <= 0).length,
+    zeroVolume5mBars,
+    activeVolume5mBars,
+    expected5mBars,
+    activeVolumeCoveragePct: expected5mBars > 0
+      ? Number((activeVolume5mBars / expected5mBars * 100).toFixed(2)) : 0,
+  };
+}

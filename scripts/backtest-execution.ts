@@ -38,6 +38,7 @@ export function finalizeEndOfDataTrade(
     !Number.isFinite(position.cost) || position.cost <= 0 ||
     !Number.isFinite(position.entryTime) ||
     candle.source === 'synthetic' ||
+    candle.v <= 0 ||
     !isValidCandle(candle) ||
     candle.t < position.entryTime ||
     !Number.isFinite(slippageBps) || slippageBps < 0 || slippageBps >= 10_000 ||
@@ -80,7 +81,7 @@ export function resolveProtectiveExit(
   if (
     !Number.isFinite(stopLoss) || stopLoss <= 0 ||
     !Number.isFinite(takeProfit) || takeProfit <= 0 || stopLoss >= takeProfit ||
-    candle.source === 'synthetic' || !isValidCandle(candle)
+    candle.source === 'synthetic' || candle.v <= 0 || !isValidCandle(candle)
   ) throw new Error('Invalid protective exit inputs');
 
   if (candle.l <= stopLoss) {
