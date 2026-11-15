@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Candle } from '../shared/candles';
-import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles } from '../scripts/backtest-history';
+import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality } from '../scripts/backtest-history';
 
 const minute = (t: number, patch: Partial<Candle> = {}): Candle => ({
   t, o: 100 + t / 60, h: 102 + t / 60, l: 99 + t / 60,
@@ -115,5 +115,39 @@ describe('createBacktestHistoryRange', () => {
     expect(() => createBacktestHistoryRange(0, Date.now())).toThrow('Invalid backtest history range inputs');
     expect(() => createBacktestHistoryRange(181, Date.now())).toThrow('Invalid backtest history range inputs');
     expect(() => createBacktestHistoryRange(30, Number.NaN)).toThrow('Invalid backtest history range inputs');
+  });
+});
+
+
+describe('summarizeMinuteHistoryQuality', () => {
+  it('separates full OHLC availability from actual positive-volume trading bars', () => {
+    const oneMinute = Array.from({ length: 10 }, (_, i) =>
+      minute(i * 60, { v: i < 5 ? 0 : 2 }),
+    );
+    const complete5m = aggregateCompleteMinuteHistory(oneMinute, 0, 600);
+    const report = summarizeMinuteHistoryQuality(
+      [...oneMinute, minute(0)], // duplicate timestamp is counted, never double-counted
+      0,
+      600,
+      complete5m,
+    );
+
+    expect(complete5m).toHaveLength(2);
+    expect(report).toMatchObject({
+      receivedMinuteBars: 11,
+      expectedMinuteBars: 10,
+      uniqueValidMinuteBars: 10,
+      duplicateMinuteBars: 1,
+      missingMinuteBars: 0,
+      zeroVolumeMinuteBars: 5,
+      zeroVolume5mBars: 1,
+      activeVolume5mBars: 1,
+      expected5mBars: 2,
+      activeVolumeCoveragePct: 50,
+    });
+  });
+
+  it('rejects invalid ranges', () => {
+    expect(() => summarizeMinuteHistoryQuality([], 600, 300, [])).toThrow('Invalid minute history quality range');
   });
 });
