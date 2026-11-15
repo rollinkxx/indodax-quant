@@ -12,6 +12,9 @@ import {
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
+import { IndodaxClient } from '../worker/src/indodax';
+import { withIndodaxRelay } from '../worker/src/relay';
+import { aggregateCompleteMinuteHistory, mergeBacktestCandles } from './backtest-history';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -25,9 +28,32 @@ async function get<T>(path: string): Promise<T> {
   return (await r.json()) as T;
 }
 
-interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
+const historyDays = Number(process.env.BACKTEST_HISTORY_DAYS ?? 0);
+if (!Number.isInteger(historyDays) || historyDays < 0 || historyDays > 180) {
+  throw new Error('BACKTEST_HISTORY_DAYS must be an integer from 0 to 180');
+}
+const proxyUrl = process.env.INDODAX_PROXY_URL?.trim() || `${URL_}/functions/v1/indodax-proxy`;
+const indodax = new IndodaxClient(withIndodaxRelay(fetch, proxyUrl), { timeoutMs: 8_000, retries: 2 });
+const HISTORY_CHUNK_SECONDS = 12 * 60 * 60;
+const HISTORY_REQUEST_DELAY_MS = 120;
 
-async function loadCandles(pair: string): Promise<Candle[]> {
+interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
+interface StoredPair { id: string; symbol: string; is_tracked: boolean; in_universe: boolean }
+interface OfficialHistoryResult {
+  candles: Candle[];
+  metrics: {
+    daysRequested: number;
+    apiChunks: number;
+    minuteBarsReceived: number;
+    complete5mBars: number;
+    from: string;
+    to: string;
+  };
+}
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function loadStoredCandles(pair: string): Promise<Candle[]> {
   const rows: Row[] = [];
   const base = `candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc`;
   // Respect PostgREST max_rows settings instead of silently accepting a truncated first page.
@@ -36,7 +62,7 @@ async function loadCandles(pair: string): Promise<Candle[]> {
     rows.push(...page);
     if (page.length < 1_000) break;
   }
-  const parsed = rows.map((r): Candle => {
+  return rows.map((r): Candle => {
     const source: Candle['source'] = r.source === 'trades' || r.source === 'history' || r.source === 'synthetic'
       ? r.source : 'synthetic';
     const candle: Candle = {
@@ -44,9 +70,45 @@ async function loadCandles(pair: string): Promise<Candle[]> {
       v: +r.volume, n: Number.isFinite(+r.trade_count) ? +r.trade_count : 0, source,
     };
     return isValidCandle(candle) ? candle : { ...candle, source: 'synthetic', v: 0, n: 0 };
-  });
-  const aligned = parsed.filter((c) => Number.isFinite(c.t) && c.t % 300 === 0);
-  return fillGaps(aligned, 300);
+  }).filter((c) => Number.isFinite(c.t) && c.t % 300 === 0);
+}
+
+/** Pulls official 1m OHLC in 12h windows and aggregates only complete 5m buckets. */
+async function loadOfficialHistory(pair: string, symbol: string, days: number): Promise<OfficialHistoryResult> {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const toSec = Math.floor(nowSec / 300) * 300; // exclude the currently forming 5m candle
+  const fromSec = Math.floor((toSec - days * 86_400) / 300) * 300;
+  const oneMinute: Candle[] = [];
+  let apiChunks = 0;
+
+  for (let from = fromSec; from < toSec; from += HISTORY_CHUNK_SECONDS) {
+    const endExclusive = Math.min(from + HISTORY_CHUNK_SECONDS, toSec);
+    const lastClosedMinute = endExclusive - 60;
+    if (lastClosedMinute < from) continue;
+    const rows = await indodax.getHistory(symbol.toUpperCase(), '1', from, lastClosedMinute);
+    oneMinute.push(...rows);
+    apiChunks++;
+    await delay(HISTORY_REQUEST_DELAY_MS);
+  }
+
+  const complete5m = aggregateCompleteMinuteHistory(oneMinute, fromSec, toSec);
+  return {
+    candles: complete5m,
+    metrics: {
+      daysRequested: days,
+      apiChunks,
+      minuteBarsReceived: oneMinute.length,
+      complete5mBars: complete5m.length,
+      from: new Date(fromSec * 1000).toISOString(),
+      to: new Date(toSec * 1000).toISOString(),
+    },
+  };
+}
+
+async function loadCandles(pair: string, officialHistory?: OfficialHistoryResult): Promise<Candle[]> {
+  const stored = await loadStoredCandles(pair);
+  const history = officialHistory?.candles ?? [];
+  return fillGaps(mergeBacktestCandles(history, stored), 300);
 }
 
 export type ExperimentMode = 'crossover' | 'trend_continuation';
