@@ -265,6 +265,10 @@ async function main() {
     summary[pair] = pairResult;
   }
 
+  if (usablePairs === 0) {
+    throw new Error('Backtest stopped: no pairs had sufficient closed 5m candle history for the 70/30 split. No experiment results were produced.');
+  }
+
   console.log(JSON.stringify({
     experiment: {
       control: 'crossLookback=2',
