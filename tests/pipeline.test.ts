@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; newSignals?: any[]; oldGap5mAt?: number } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -58,7 +58,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
       if (u.hostname !== 'indodax.com') return;
       indodax.push(u.pathname + u.search);
       if (u.pathname === '/api/summaries') {
-        const t = (id: string, vol: number) => [id.replace('idr', '_idr'), { last: '1000', buy: '999', sell: '1000', high: '1', low: '1', vol_idr: String(vol), server_time: NOW - 5 }];
+        const t = (id: string, vol: number) => [id.replace('idr', '_idr'), { last: '1000', buy: opts.wideSpread ? '998.9' : '999', sell: '1000', high: '1', low: '1', vol_idr: String(vol), server_time: NOW - 5 }];
         return json({ tickers: Object.fromEntries([t('btcidr', 9e10), t('pepeidr', 5e10), t('usdtidr', 8e10), t('dogeidr', 2e10)]), prices_24h: {} });
       }
       if (u.pathname.startsWith('/api/trades/')) return json([{ tid: '1000', date: String(NOW - 20), price: '1000', amount: '1', type: 'buy' }]);
@@ -155,7 +155,7 @@ describe('pipeline: MTF + dynamic universe', () => {
       id: 100, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
       indicators: { atr14: 1.335 }, candle_time: new Date(expectedLast * 1000).toISOString(),
     };
-    const { f, rpcs } = setup({ mtfMode: 'off', newSignals: [signal] });
+    const { f, rpcs } = setup({ mtfMode: 'off', newSignals: [signal], wideSpread: true });
     const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
     expect(r.status).toBe('SUCCESS');
     expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
