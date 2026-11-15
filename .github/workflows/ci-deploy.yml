@@ -120,6 +120,7 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
       BACKTEST_HISTORY_DAYS: 30
@@ -147,7 +148,9 @@ jobs:
       - name: Write evaluation summary
         run: node scripts/write-evaluation-summary.mjs
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: strategy-evaluation
           path: artifacts/
+          if-no-files-found: warn
           retention-days: 30
