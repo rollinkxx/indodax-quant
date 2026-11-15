@@ -57,9 +57,9 @@ export function mergeBacktestCandles(history: Candle[], stored: Candle[]): Candl
   for (const candle of stored) {
     if (candle.source === 'synthetic' || !isValidCandle(candle)) continue;
     const existing = merged.get(candle.t);
-    if (!existing || candle.source === 'trades' || existing.source !== 'trades') {
-      merged.set(candle.t, candle);
-    }
+    // Raw trade-built bars outrank official OHLC; validated new OHLC outranks
+    // older persisted history which may have been formed from partial recovery data.
+    if (candle.source === 'trades' || !existing) merged.set(candle.t, candle);
   }
   return [...merged.values()].sort((a, b) => a.t - b.t);
 }
