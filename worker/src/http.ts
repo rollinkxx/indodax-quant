@@ -1,7 +1,7 @@
 import type { FetchLike } from './env';
 
 export class HttpError extends Error {
-  constructor(message: string, public status: number, public body?: string) {
+  constructor(message: string, public status: number, public body?: string, public attempts = 1) {
     super(message);
     this.name = 'HttpError';
   }
@@ -35,7 +35,7 @@ export async function fetchWithRetry(fetchImpl: FetchLike, url: string, init: Re
       if (res.ok) return res;
       const retryable = res.status === 429 || res.status === 408 || res.status >= 500;
       const body = await res.text().catch(() => '');
-      lastError = new HttpError(`HTTP ${res.status} for ${redact(url)}`, res.status, body.slice(0, 500));
+      lastError = new HttpError(`HTTP ${res.status} for ${redact(url)}`, res.status, body.slice(0, 500), attempt + 1);
       if (!retryable || attempt === retries) throw lastError;
       const ra = Number(res.headers.get('retry-after'));
       await sleep(Math.min(Number.isFinite(ra) && ra > 0 ? ra * 1000 : base * 2 ** attempt, maxDelay));
@@ -46,7 +46,7 @@ export async function fetchWithRetry(fetchImpl: FetchLike, url: string, init: Re
         if (!retryable || attempt === retries) throw e;
         continue;
       }
-      lastError = e instanceof Error && e.name === 'AbortError' ? new HttpError(`Timeout after ${timeoutMs}ms for ${redact(url)}`, 408) : e;
+      lastError = e instanceof Error && e.name === 'AbortError' ? new HttpError(`Timeout after ${timeoutMs}ms for ${redact(url)}`, 408, undefined, attempt + 1) : e;
       if (attempt === retries) throw lastError;
       await sleep(Math.min(base * 2 ** attempt, maxDelay));
     }
