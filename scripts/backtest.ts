@@ -15,7 +15,7 @@ import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtes
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
 import { aggregateCompleteMinuteHistory, filterBacktestCandlesToRange, mergeBacktestCandles } from './backtest-history';
-import { finalizeEndOfDataTrade } from './backtest-execution';
+import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
