@@ -53,7 +53,7 @@ jobs:
 
   deploy:
     needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/extended-official-history-backtest')
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -168,6 +168,7 @@ jobs:
           lines.push(
             '',
             'Pairs evaluated: **' + String((backtest.experiment || {}).pairsEvaluated || 0) + '** of ' + String((backtest.experiment || {}).pairsRequested || 0) + ' requested.',
+            'Official history window: **' + String((backtest.experiment || {}).officialHistoryDaysRequested || 0) + ' days**; complete 5m bars from official source: **' + String((backtest.experiment || {}).officialHistoryComplete5mBars || 0) + '**.',
             '',
             '### Paper account since reset',
             '',
