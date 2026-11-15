@@ -118,7 +118,6 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
       apiChunks,
       minuteBarsReceived: oneMinute.length,
       complete5mBars: complete5m.length,
-      expected5mBars,
       historyCoveragePct,
       ...quality,
       firstObservedAt: complete5m.length ? new Date(complete5m[0].t * 1000).toISOString() : null,
