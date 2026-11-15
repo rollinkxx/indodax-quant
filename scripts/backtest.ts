@@ -218,8 +218,13 @@ async function main() {
   const cliPairs: string[] = process.argv.slice(2);
   const defaultPairs = cliPairs.length
     ? []
-    : await get<{ pair_id: string }[]>('market_tickers_latest?select=pair_id&order=vol_idr.desc&limit=25');
-  const pairs: string[] = cliPairs.length ? cliPairs : defaultPairs.map((r) => String(r.pair_id));
+    : await get<{ id: string; is_tracked: boolean; in_universe: boolean }[]>(
+      'market_pairs?select=id,is_tracked,in_universe&is_maintenance=eq.false&limit=1000',
+    );
+  // Compare only the active production scan universe, not unrelated high-volume IDR pairs.
+  const pairs: string[] = cliPairs.length
+    ? cliPairs
+    : defaultPairs.filter((row) => row.is_tracked || row.in_universe).map((row) => String(row.id));
   const volRows = await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr');
   const vols: Record<string, number> = {};
   for (const row of volRows) vols[String(row.pair_id)] = Number(row.vol_idr);
@@ -276,6 +281,7 @@ async function main() {
       controlledParameterDifferences: ['crossLookback'],
       shadowVariant: 'EMA21 pullback-reclaim in EMA9>EMA21>EMA50 uptrend; not sent to paper execution',
       split: 'first 70% for indicator warm-up/context; last 30% is chronological holdout; no entries before holdout',
+      pairSelection: cliPairs.length ? 'explicit CLI pairs' : 'active tracked + dynamic universe (maintenance excluded)',
       pairsRequested: pairs.length,
       pairsEvaluated: usablePairs,
       initialEquityPerPairIdr: 10_000_000,
