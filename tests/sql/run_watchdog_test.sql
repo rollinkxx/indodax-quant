@@ -31,12 +31,14 @@ CREATE TABLE public.paper_accounts (
 CREATE TABLE public.strategy_configs (is_active boolean NOT NULL, params jsonb NOT NULL);
 CREATE TABLE public.market_pairs (
   id text PRIMARY KEY, symbol text NOT NULL, ticker_id text NOT NULL,
-  is_maintenance boolean NOT NULL, trade_min_base_currency numeric, is_tracked boolean NOT NULL
+  is_maintenance boolean NOT NULL, trade_min_base_currency numeric, is_tracked boolean NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE public.pair_sync_state (
   pair_id text PRIMARY KEY, covered_until timestamptz,
   last_trade_time timestamptz, last_trade_tid text, htf_backfilled_at timestamptz
 );
+CREATE TABLE public.paper_positions (id bigint PRIMARY KEY, account_id bigint NOT NULL, status text NOT NULL);
 CREATE TABLE public.portfolio_snapshots (
   account_id bigint NOT NULL, snapshot_time timestamptz NOT NULL, equity numeric NOT NULL
 );
@@ -50,6 +52,7 @@ INSERT INTO public.strategy_configs(is_active,params) VALUES (true,'{}'::jsonb);
 INSERT INTO public.market_pairs(id,symbol,ticker_id,is_maintenance,trade_min_base_currency,is_tracked)
 VALUES ('btcidr','BTCIDR','btc_idr',false,10000,true);
 INSERT INTO public.pair_sync_state(pair_id) VALUES ('btcidr');
+INSERT INTO public.paper_positions(id,account_id,status) VALUES (1,1,'OPEN');
 INSERT INTO public.portfolio_snapshots(account_id,snapshot_time,equity) VALUES (1,now()-interval '1 day',10000000);
 INSERT INTO public.execution_logs(scheduled_time,status,started_at)
 VALUES (now()-interval '10 minutes','RUNNING',now()-interval '10 minutes');
