@@ -50,7 +50,7 @@ describe('aggregateCompleteMinuteHistory', () => {
 describe('mergeBacktestCandles', () => {
   it('prefers trade-built bars over history at the same timestamp', () => {
     const history = minute(0, { t: 0, o: 100, c: 101 });
-    const trade: Candle = { ...history, o: 102, c: 103, source: 'trades' };
+    const trade: Candle = { ...history, o: 102, h: 104, c: 103, source: 'trades' };
     const result = mergeBacktestCandles([history], [trade]);
     expect(result).toHaveLength(1);
     expect(result[0].source).toBe('trades');
