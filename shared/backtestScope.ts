@@ -34,6 +34,7 @@ export function backtestScopeWarnings(params: Pick<StrategyParams, 'mtfMode'>): 
   const warnings = [
     'This is a 5m candle-only approximation, not a production-parity backtest.',
     'Stored candle source is preserved; synthetic gap bars are excluded from signals and execution, with warm-up restarting after each gap.',
+    'Zero-volume official OHLC rows count toward structural history coverage only; they are excluded from execution and break the contiguous positive-volume warm-up.',
     'Each pair is simulated independently with its own starting balance; combined metrics pool trades and are not a shared portfolio equity curve.',
     'Historical bid/ask quotes and tick-level execution are unavailable: entries use the next 5m candle open and exits use stop-first OHLC assumptions with modeled slippage.',
     'Portfolio controls are not simulated across pairs: shared cash, max total exposure, max open positions, daily-loss flattening, and drawdown kill-switch.',
