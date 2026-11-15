@@ -133,25 +133,83 @@ export interface NetRewardRiskInput {
 /** Minimum expected net reward per unit of net stop-loss risk. */
 export const MIN_NET_REWARD_RISK_RATIO = 1;
 
-/** Blocks an entry when expected net reward does not justify net stop risk. */
-export function netRewardRiskGate(i: NetRewardRiskInput): string | null {
+export interface NetRewardRiskDiagnostics {
+  reason: string | null;
+  metrics: {
+    entry_price: number;
+    stop_loss: number;
+    take_profit: number;
+    fee_pct: number;
+    exit_slippage_bps: number;
+    entry_cost_per_unit: number;
+    stop_exit_fill: number;
+    target_exit_fill: number;
+    net_risk_per_unit: number;
+    net_reward_per_unit: number;
+    net_reward_risk_ratio: number;
+    gross_stop_distance_pct: number;
+    gross_target_distance_pct: number;
+  };
+}
+
+/**
+ * Calculates the exact economics used by the entry gate and exposes its components for
+ * rejection audits. Invalid inputs return finite zero-valued derived metrics so they can
+ * be safely persisted to JSONB without NaN/Infinity.
+ */
+export function netRewardRiskDiagnostics(i: NetRewardRiskInput): NetRewardRiskDiagnostics {
+  const finite = (value: number) => Number.isFinite(value) ? value : 0;
+  const metrics: NetRewardRiskDiagnostics['metrics'] = {
+    entry_price: finite(i.entry),
+    stop_loss: finite(i.stopLoss),
+    take_profit: finite(i.takeProfit),
+    fee_pct: finite(i.feePct),
+    exit_slippage_bps: finite(i.exitSlippageBps),
+    entry_cost_per_unit: 0,
+    stop_exit_fill: 0,
+    target_exit_fill: 0,
+    net_risk_per_unit: 0,
+    net_reward_per_unit: 0,
+    net_reward_risk_ratio: 0,
+    gross_stop_distance_pct: 0,
+    gross_target_distance_pct: 0,
+  };
+
   if (
     ![i.entry, i.stopLoss, i.takeProfit, i.feePct, i.exitSlippageBps].every(Number.isFinite) ||
     !(i.entry > 0) || !(i.stopLoss > 0) || i.stopLoss >= i.entry || !(i.takeProfit > i.entry) ||
     i.feePct < 0 || i.feePct >= 100 || i.exitSlippageBps < 0 || i.exitSlippageBps >= 10_000
-  ) return 'invalid_reward_risk_inputs';
+  ) return { reason: 'invalid_reward_risk_inputs', metrics };
 
   // Entry is already the simulated ask + entry slippage fill. Model each possible exit at
   // its stop/target trigger less exit slippage, then deduct the fee on each side.
   const entryCost = i.entry * (1 + i.feePct / 100);
-  const netExit = (triggerPrice: number) =>
-    sellFillPrice(triggerPrice, i.exitSlippageBps) * (1 - i.feePct / 100);
-  const netRisk = entryCost - netExit(i.stopLoss);
-  const netReward = netExit(i.takeProfit) - entryCost;
-  if (!(netRisk > 0) || !Number.isFinite(netRisk)) return 'invalid_reward_risk_inputs';
-  if (!(netReward > 0) || !Number.isFinite(netReward)) return 'net_reward_non_positive';
-  if (netReward / netRisk < MIN_NET_REWARD_RISK_RATIO) return 'net_reward_risk_below_minimum';
-  return null;
+  const stopExitFill = sellFillPrice(i.stopLoss, i.exitSlippageBps);
+  const targetExitFill = sellFillPrice(i.takeProfit, i.exitSlippageBps);
+  const netStopProceeds = stopExitFill * (1 - i.feePct / 100);
+  const netTargetProceeds = targetExitFill * (1 - i.feePct / 100);
+  const netRisk = entryCost - netStopProceeds;
+  const netReward = netTargetProceeds - entryCost;
+  const ratio = netRisk > 0 ? netReward / netRisk : 0;
+
+  metrics.entry_cost_per_unit = finite(entryCost);
+  metrics.stop_exit_fill = finite(stopExitFill);
+  metrics.target_exit_fill = finite(targetExitFill);
+  metrics.net_risk_per_unit = finite(netRisk);
+  metrics.net_reward_per_unit = finite(netReward);
+  metrics.net_reward_risk_ratio = finite(ratio);
+  metrics.gross_stop_distance_pct = finite((i.entry - i.stopLoss) / i.entry * 100);
+  metrics.gross_target_distance_pct = finite((i.takeProfit - i.entry) / i.entry * 100);
+
+  if (!(netRisk > 0) || !Number.isFinite(netRisk)) return { reason: 'invalid_reward_risk_inputs', metrics };
+  if (!(netReward > 0) || !Number.isFinite(netReward)) return { reason: 'net_reward_non_positive', metrics };
+  if (ratio < MIN_NET_REWARD_RISK_RATIO) return { reason: 'net_reward_risk_below_minimum', metrics };
+  return { reason: null, metrics };
+}
+
+/** Blocks an entry when expected net reward does not justify net stop risk. */
+export function netRewardRiskGate(i: NetRewardRiskInput): string | null {
+  return netRewardRiskDiagnostics(i).reason;
 }
 
 export type ExitReason = 'STOP_LOSS' | 'TAKE_PROFIT';
