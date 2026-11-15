@@ -77,8 +77,7 @@ describe('mergeBacktestCandles', () => {
 
 
 describe('filterBacktestCandlesToRange', () => {
-  it('keeps only observed candles inside the half-open evaluation window', async () => {
-    const { filterBacktestCandlesToRange } = await import('../scripts/backtest-history');
+  it('keeps only observed candles inside the half-open evaluation window', () => {
     const candles = [
       minute(0),
       minute(300, { source: 'trades' }),
@@ -91,8 +90,7 @@ describe('filterBacktestCandlesToRange', () => {
     expect(result[0].source).toBe('trades');
   });
 
-  it('rejects invalid time ranges', async () => {
-    const { filterBacktestCandlesToRange } = await import('../scripts/backtest-history');
+  it('rejects invalid time ranges', () => {
     expect(() => filterBacktestCandlesToRange([], 600, 300)).toThrow('Invalid backtest candle range');
   });
 });
