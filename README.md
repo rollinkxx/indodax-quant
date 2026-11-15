@@ -98,9 +98,15 @@ Read its scope warnings before interpreting the output:
   and portfolio drawdown kill-switch are not simulated.
 - Dynamic slippage tiers use the **current** 24h volume tier from `market_tickers_latest` as a proxy for the whole historical sample,
   not the volume tier that applied at each historical candle.
+- Complete OHLC availability is not the same as active trading coverage: official zero-volume bars remain visible in coverage diagnostics,
+  but are not eligible for simulated fills/exits and break the contiguous positive-volume indicator warm-up.
+- The evidence gate reports `NO_GO` unless the holdout contains at least 100 trades, the Wilson 95% lower confidence bound for win rate is
+  at least 70%, profit factor is above 1, and net expectancy after modeled fees/slippage is positive. This threshold is a conservative
+  project release rule, not proof of independence or future profitability. `ELIGIBLE_FOR_MANUAL_REVIEW` never auto-promotes a strategy.
 
 The script shares the paper fee, stop, sizing, net reward/risk and trailing/time-stop calculations where candle inputs allow them.
-Use the output to compare rough per-pair rule behavior, not to estimate production portfolio returns.
+Use the output to compare rough per-pair rule behavior, not to estimate production portfolio returns. Strategy changes must be evaluated on a
+new, untouched forward holdout; do not tune repeatedly against the same holdout window.
 
 ## Repository layout
 
@@ -111,7 +117,7 @@ src/            React dashboard (9 pages + login)
 public/         PWA manifest, icons and service worker (copied to dist/ by Vite)
 supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
 supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
-tests/          Vitest suites (171 tests, 20 files)
+tests/          Vitest suites (test count evolves with the code)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
 scripts/backtest.ts        offline backtest on stored 5m candles (needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY; MTF not simulated)
 PROJECT_STATE.md           current production state, open tasks and notes for maintainers/agents
