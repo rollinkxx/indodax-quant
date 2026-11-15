@@ -175,19 +175,21 @@ describe('createRequestStartLimiter', () => {
 
   it('releases the queue if the injected sleep fails', async () => {
     let fail = true;
+    let clock = 1_000;
     const limiter = createRequestStartLimiter(
       500,
-      () => 1_000,
-      async () => {
+      () => clock,
+      async (ms) => {
         if (fail) {
           fail = false;
           throw new Error('simulated sleep failure');
         }
+        clock += ms;
       },
     );
 
     await limiter();
     await expect(limiter()).rejects.toThrow('simulated sleep failure');
-    await expect(limiter()).resolves.toBe(1_000);
+    await expect(limiter()).resolves.toBe(1_500);
   });
 });
