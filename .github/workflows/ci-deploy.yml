@@ -138,9 +138,9 @@ jobs:
       - name: Run controlled crossLookback 2 vs 4 backtest
         run: |
           mkdir -p artifacts
-          npm run backtest > artifacts/backtest.json
+          ./node_modules/.bin/tsx scripts/backtest.ts > artifacts/backtest.json 2> artifacts/backtest-stderr.log
       - name: Generate read-only paper account report
-        run: npm run paper:report -- 1 > artifacts/paper-report.json
+        run: ./node_modules/.bin/tsx scripts/paper-report.ts 1 > artifacts/paper-report.json
       - name: Write evaluation summary
         run: |
           node --input-type=module <<'NODE'

@@ -45,13 +45,16 @@ CREATE TABLE public.strategy_configs (is_active boolean NOT NULL, params jsonb N
 CREATE TABLE public.market_pairs (
   id text PRIMARY KEY, symbol text NOT NULL, ticker_id text NOT NULL,
   is_maintenance boolean NOT NULL, trade_min_base_currency numeric, is_tracked boolean NOT NULL,
-  updated_at timestamptz NOT NULL DEFAULT now()
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  in_universe boolean NOT NULL DEFAULT false,
+  universe_rank integer,
+  universe_since timestamptz
 );
 CREATE TABLE public.pair_sync_state (
   pair_id text PRIMARY KEY, covered_until timestamptz,
   last_trade_time timestamptz, last_trade_tid text, htf_backfilled_at timestamptz
 );
-CREATE TABLE public.paper_positions (id bigint PRIMARY KEY, account_id bigint NOT NULL, status text NOT NULL);
+CREATE TABLE public.paper_positions (id bigint PRIMARY KEY, account_id bigint NOT NULL, pair_id text NOT NULL, status text NOT NULL);
 CREATE TABLE public.portfolio_snapshots (
   account_id bigint NOT NULL, snapshot_time timestamptz NOT NULL, equity numeric NOT NULL
 );
@@ -62,10 +65,13 @@ INSERT INTO public.paper_accounts
   (id,name,status,kill_switch,cash_balance,equity,peak_equity,max_drawdown_pct,reset_at)
 VALUES (1,'default','RUNNING',false,10000000,10000000,10000000,0,now()-interval '1 day');
 INSERT INTO public.strategy_configs(is_active,params) VALUES (true,'{}'::jsonb);
-INSERT INTO public.market_pairs(id,symbol,ticker_id,is_maintenance,trade_min_base_currency,is_tracked)
-VALUES ('btcidr','BTCIDR','btc_idr',false,10000,true);
-INSERT INTO public.pair_sync_state(pair_id) VALUES ('btcidr');
-INSERT INTO public.paper_positions(id,account_id,status) VALUES (1,1,'OPEN');
+INSERT INTO public.market_pairs(id,symbol,ticker_id,is_maintenance,trade_min_base_currency,is_tracked,in_universe,universe_rank)
+VALUES
+  ('btcidr','BTCIDR','btc_idr',false,10000,true,false,NULL),
+  ('adaidr','ADAIDR','ada_idr',false,10000,false,true,1),
+  ('ethidr','ETHIDR','eth_idr',false,10000,false,false,NULL);
+INSERT INTO public.pair_sync_state(pair_id) VALUES ('btcidr'),('adaidr'),('ethidr');
+INSERT INTO public.paper_positions(id,account_id,pair_id,status) VALUES (1,1,'ethidr','OPEN');
 INSERT INTO public.portfolio_snapshots(account_id,snapshot_time,equity) VALUES (1,now()-interval '1 day',10000000);
 INSERT INTO public.execution_logs(scheduled_time,status,started_at)
 VALUES (now()-interval '10 minutes','RUNNING',now()-interval '10 minutes');
@@ -73,6 +79,7 @@ INSERT INTO public.execution_logs(scheduled_time,status,started_at)
 VALUES (now()-interval '1 minute','RUNNING',now()-interval '1 minute');
 
 \i supabase/migrations/20261115150000_finalize_orphaned_runs.sql
+\i supabase/migrations/20261115151000_restore_dynamic_universe_watchdog.sql
 
 DO $assert$
 DECLARE
@@ -92,6 +99,28 @@ BEGIN
     RAISE EXCEPTION 'begin_run did not acquire the expired lock: %', v_result;
   END IF;
   v_new_run_id := (v_result->>'run_id')::bigint;
+
+  -- Regression: begin_run must still return pinned + dynamic + open-position pairs
+  -- and the full catalog required by the runtime universe selector.
+  IF jsonb_array_length(v_result->'pairs') <> 3 THEN
+    RAISE EXCEPTION 'expected 3 selected pairs (pinned, universe, open position), got: %', v_result->'pairs';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_result->'pairs') p
+    WHERE p->>'id'='adaidr' AND p->>'in_universe'='true'
+  ) THEN
+    RAISE EXCEPTION 'dynamic-universe ADAIDR missing from begin_run pairs: %', v_result->'pairs';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_result->'pairs') p
+    WHERE p->>'id'='ethidr'
+  ) THEN
+    RAISE EXCEPTION 'pair with open position ETHIDR missing from begin_run pairs: %', v_result->'pairs';
+  END IF;
+  IF v_result->'catalog'->>'adaidr' <> 'false'
+     OR v_result->'catalog'->>'ethidr' <> 'false' THEN
+    RAISE EXCEPTION 'full maintenance catalog missing from begin_run: %', v_result->'catalog';
+  END IF;
 
   SELECT status,steps INTO v_status,v_steps FROM public.execution_logs WHERE id=v_stale_run_id;
   IF v_status <> 'FAILED' OR v_steps->'watchdog'->>'reason' <> 'stale_run_without_lease' THEN
