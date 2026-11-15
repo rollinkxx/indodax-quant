@@ -7,7 +7,7 @@ import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
-import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskGate, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
@@ -669,7 +669,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           });
           if (economicsGate) { rejectEntry(s, 'economics_gate', economicsGate); continue; }
           const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
-          if (size.qty <= 0) { rejectEntry(s, 'sizing_gate', size.reason); continue; }
+          if (size.qty <= 0) { rejectEntry(s, 'sizing_gate', size.reason ?? 'sizing_rejected'); continue; }
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
           if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { rejectEntry(s, 'portfolio_gate', 'max_total_exposure'); continue; }
           const r = await db.rpc<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number }>('paper_open_position', {
@@ -692,7 +692,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           ? `account_${accountStatus.toLowerCase()}`
           : account.kill_switch
             ? 'kill_switch_active'
-            : `risk_blocked:${risk.reasons.join(';') || 'entries_disabled'}`;
+            : 'risk_blocked';
         const stage = accountStatus !== 'RUNNING' ? 'account_gate' : 'risk_gate';
         for (const s of buys) rejectEntry(s, stage, reason);
         if (buys.length === 0 && accountStatus !== 'RUNNING') actions.push(`entries disabled: account ${accountStatus}`);
@@ -716,6 +716,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         entries_opened: entries,
         entry_rejections: entryRejections,
         entry_rejection_counts: entryRejectionCounts,
+        risk_block_reasons: risk.blockEntries ? risk.reasons : [],
       };
     }, (r) => r);
 

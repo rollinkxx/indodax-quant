@@ -16,6 +16,17 @@ async function get<T>(table: string, filters: Record<string, string>): Promise<T
 }
 const n = (value: number | string | null | undefined) => Number(value ?? 0);
 
+async function getAll<T>(table: string, filters: Record<string, string>): Promise<T[]> {
+  const all: T[] = [];
+  for (let offset = 0; offset < 50_000; offset += 1_000) {
+    const page = await get<T[]>(table, { ...filters, limit: '1000', offset: String(offset) });
+    all.push(...page);
+    if (page.length < 1_000) break;
+  }
+  return all;
+}
+
+
 interface Account {
   id: number; name: string; status: string; reset_at: string;
   equity: number | string; cash_balance: number | string; realized_pnl: number | string;
@@ -39,16 +50,16 @@ async function main() {
 
   const since = account.reset_at;
   const [positions, snapshots, logs] = await Promise.all([
-    get<Position[]>('paper_positions', {
+    getAll<Position>('paper_positions', {
       select: 'id,pair_id,status,cost_basis,realized_pnl,entry_fee,exit_fee,opened_at,closed_at,exit_reason',
-      account_id: `eq.${ACCOUNT_ID}`, opened_at: `gte.${since}`, order: 'opened_at.asc', limit: '5000',
+      account_id: `eq.${ACCOUNT_ID}`, opened_at: `gte.${since}`, order: 'opened_at.asc',
     }),
-    get<Snapshot[]>('portfolio_snapshots', {
+    getAll<Snapshot>('portfolio_snapshots', {
       select: 'snapshot_time,drawdown_pct,equity',
-      account_id: `eq.${ACCOUNT_ID}`, snapshot_time: `gte.${since}`, order: 'snapshot_time.asc', limit: '5000',
+      account_id: `eq.${ACCOUNT_ID}`, snapshot_time: `gte.${since}`, order: 'snapshot_time.asc',
     }),
-    get<ExecutionLog[]>('execution_logs', {
-      select: 'scheduled_time,steps', scheduled_time: `gte.${since}`, order: 'scheduled_time.asc', limit: '5000',
+    getAll<ExecutionLog>('execution_logs', {
+      select: 'scheduled_time,steps', scheduled_time: `gte.${since}`, order: 'scheduled_time.asc',
     }),
   ]);
 

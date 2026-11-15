@@ -28,9 +28,14 @@ async function get<T>(path: string): Promise<T> {
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
 
 async function loadCandles(pair: string): Promise<Candle[]> {
-  const rows = await get<Row[]>(
-    `candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc&limit=5000`,
-  );
+  const rows: Row[] = [];
+  const base = `candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc`;
+  // Respect PostgREST max_rows settings instead of silently accepting a truncated first page.
+  for (let offset = 0; offset < 10_000; offset += 1_000) {
+    const page = await get<Row[]>(`${base}&limit=1000&offset=${offset}`);
+    rows.push(...page);
+    if (page.length < 1_000) break;
+  }
   const parsed = rows.map((r): Candle => {
     const source: Candle['source'] = r.source === 'trades' || r.source === 'history' || r.source === 'synthetic'
       ? r.source : 'synthetic';
@@ -210,17 +215,18 @@ async function main() {
   const params4: StrategyParams = { ...params2, crossLookback: 4 };
   assertControlledPair(params2, params4);
 
-  const pairs = process.argv.slice(2).length
-    ? process.argv.slice(2)
-    : (await get<{ pair_id: string }[]>('market_tickers_latest?select=pair_id&order=vol_idr.desc&limit=25')).map((r) => r.pair_id);
-  const vols = Object.fromEntries(
-    (await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr'))
-      .map((r) => [r.pair_id, +r.vol_idr]),
-  );
+  const cliPairs: string[] = process.argv.slice(2);
+  const defaultPairs = cliPairs.length
+    ? []
+    : await get<{ pair_id: string }[]>('market_tickers_latest?select=pair_id&order=vol_idr.desc&limit=25');
+  const pairs: string[] = cliPairs.length ? cliPairs : defaultPairs.map((r) => String(r.pair_id));
+  const volRows = await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr');
+  const vols: Record<string, number> = {};
+  for (const row of volRows) vols[String(row.pair_id)] = Number(row.vol_idr);
 
   const summary: Record<string, unknown> = {};
   let usablePairs = 0;
-  for (const pair of [...new Set(pairs)]) {
+  for (const pair of [...new Set<string>(pairs)]) {
     const candles = await loadCandles(pair);
     const observed = candles.filter((c) => c.source !== 'synthetic');
     if (candles.length < live.minCandles + 20) {
