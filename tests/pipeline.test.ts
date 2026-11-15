@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: any[]; oldGap5mAt?: number } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; newSignals?: any[]; oldGap5mAt?: number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -40,8 +40,14 @@ function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: a
           if (opts.oldGap5mAt !== undefined) rows.splice(opts.oldGap5mAt, 1);
           return json({ btcidr: rows });
         }
-        case 'get_recent_candles_multi':
-          return json({ '15m': { btcidr: candleRows(100, Math.floor((expectedLast + 300) / 900) * 900 - 900, 900, (i) => 900 + i) }, '1h': { btcidr: [] } });
+        case 'get_recent_candles_multi': {
+          const last15m = Math.floor((expectedLast + 300) / 900) * 900 - 900;
+          const last1h = Math.floor((expectedLast + 300) / 3600) * 3600 - 3600;
+          return json({
+            '15m': { btcidr: candleRows(100, last15m, 900, (i) => 900 + i) },
+            '1h': { btcidr: opts.htfCoverageReady ? candleRows(100, last1h, 3600, (i) => 900 + i) : [] },
+          });
+        }
         case 'save_analysis': return json({ new_signals: opts.newSignals ?? [] });
         case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
         case 'claim_notifications': return json(body.p_items.map((x: any) => x.dedupe_key));
@@ -65,7 +71,8 @@ function setup(opts: { htfBackfilled?: boolean; mtfMode?: string; newSignals?: a
           const count = Math.floor((to - from) / tf) + 1;
           return json(Array.from({ length: count }, (_, i) => ({ Time: from + i * tf, Open: 1000, High: 1001, Low: 999, Close: 1000, Volume: 1 })));
         }
-        return json(Array.from({ length: 5 }, (_, i) => ({ Time: end - (4 - i) * tf, Open: 1000, High: 1001, Low: 999, Close: 1000, Volume: 1 })));
+        const count = opts.htfHistoryBars ?? 40;
+        return json(Array.from({ length: count }, (_, i) => ({ Time: end - (count - 1 - i) * tf, Open: 1000, High: 1001, Low: 999, Close: 1000, Volume: 1 })));
       }
       return undefined;
     },
@@ -96,7 +103,7 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(indodax.filter((p) => p.startsWith('/tradingview/history_v2')).map((p) => new URLSearchParams(p.split('?')[1]).get('tf')).filter((tf) => tf !== '1')).toEqual(['15', '60']);
     const ingest = rpcs.find((x) => x.fn === 'ingest_market')!.body;
     const htf = ingest.p_candles.filter((c: any) => c.timeframe === '15m' || c.timeframe === '1h');
-    expect(htf.length).toBe(8);
+    expect(htf.length).toBe(78); // one forming 15m and one forming 1h bar are discarded
     expect(htf.every((c: any) => c.source === 'history' && Date.parse(c.open_time) / 1000 + (c.timeframe === '1h' ? 3600 : 900) <= NOW)).toBe(true);
     expect(ingest.p_sync).toHaveLength(1);
     expect(ingest.p_sync[0].htf_backfilled_at).toBeTruthy();
@@ -145,8 +152,21 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(rpcs.some((x) => x.fn === 'save_analysis')).toBe(true);
   });
 
+  it('does not mark HTF backfill complete when the API returns only a partial contiguous history', async () => {
+    // Even a legacy non-null marker is not trusted when the actual 1h suffix is still short.
+    const { f, rpcs, indodax } = setup({ htfBackfilled: true, htfHistoryBars: 5 });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('SUCCESS');
+    expect(indodax.filter((p) => p.startsWith('/tradingview/history_v2')).map((p) => new URLSearchParams(p.split('?')[1]).get('tf')).filter((tf) => tf !== '1')).toEqual(['15', '60']);
+    const ingest = rpcs.find((x) => x.fn === 'ingest_market')!.body;
+    expect(ingest.p_sync[0].htf_backfilled_at).toBeNull();
+    expect((r.steps as any).backfill_htf.info.btcidr.ready).toBe(false);
+    expect((r.steps as any).backfill_htf.info.btcidr.timeframes['1h'].contiguous).toBe(4); // final 1h candle is still forming
+  });
+
   it('skips the backfill once done and skips higher timeframes when MTF is off', async () => {
-    const done = setup({ htfBackfilled: true });
+    const done = setup({ htfBackfilled: true, htfCoverageReady: true });
     await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: done.f, now: () => NOW * 1000 });
     const htfCalls = (list: string[]) => list.filter((p) => p.startsWith('/tradingview') && !p.includes('tf=1&'));
     expect(htfCalls(done.indodax)).toEqual([]);

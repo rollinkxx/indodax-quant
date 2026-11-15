@@ -3,8 +3,8 @@
 // Scope warnings are printed at runtime; historical bid/ask, MTF and shared portfolio controls are not simulated.
 import { computeIndicators, DEFAULT_PARAMS, evaluateSignalWindow, mergeParams, type StrategyParams } from '../shared/strategy';
 import { buyFillPrice, computeStats, computeStops, dynamicSlippageBps, feeFor, netRewardRiskGate, positionSize, sellFillPrice, trailingStop } from '../shared/paper';
-import type { Candle } from '../shared/candles';
-import { backtestScopeWarnings } from '../shared/backtestScope';
+import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
+import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -18,36 +18,53 @@ async function get<T>(path: string): Promise<T> {
   return (await r.json()) as T;
 }
 
-interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number }
+interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
 
 async function loadCandles(pair: string): Promise<Candle[]> {
-  const rows = await get<Row[]>(`candles?select=open_time,open,high,low,close,volume&pair_id=eq.${pair}&timeframe=eq.5m&order=open_time.asc&limit=5000`);
-  return rows.map((r) => ({ t: Math.floor(Date.parse(r.open_time) / 1000), o: +r.open, h: +r.high, l: +r.low, c: +r.close, v: +r.volume, n: 1, source: 'trades' as const }));
+  const rows = await get<Row[]>(`candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc&limit=5000`);
+  const parsed = rows.map((r): Candle => {
+    const source: Candle['source'] = r.source === 'trades' || r.source === 'history' || r.source === 'synthetic'
+      ? r.source
+      : 'synthetic';
+    const candle: Candle = {
+      t: Math.floor(Date.parse(r.open_time) / 1000), o: +r.open, h: +r.high, l: +r.low, c: +r.close,
+      v: +r.volume, n: Number.isFinite(+r.trade_count) ? +r.trade_count : 0, source,
+    };
+    return isValidCandle(candle) ? candle : { ...candle, source: 'synthetic', v: 0, n: 0 };
+  });
+  const aligned = parsed.filter((c) => Number.isFinite(c.t) && c.t % 300 === 0);
+  return fillGaps(aligned, 300);
 }
 
 export interface SimTrade { pair: string; entry: number; exit: number; pnl: number; cost: number; reason: string }
 
 export function simulate(pair: string, candles: Candle[], p: StrategyParams, equity0: number, volIdr: number | null): SimTrade[] {
-  const rows = computeIndicators(candles, p);
+  // Insert synthetic gap bars before computing indicators so indicator warm-up resets
+  // exactly where observed historical coverage breaks.
+  const series = fillGaps(candles, 300);
+  const rows = computeIndicators(series, p);
   const trades: SimTrade[] = [];
   const slip = p.dynamicSlippage ? dynamicSlippageBps(p.slippageBps, volIdr) : p.slippageBps;
   let pos: { qty: number; entry: number; cost: number; sl: number; tp: number; openedIdx: number } | null = null;
   let equity = equity0;
   const win = Math.max(3, p.crossLookback + 1);
-  for (let i = Math.max(p.minCandles, win); i < candles.length; i++) {
-    const c = candles[i];
+  for (let i = Math.max(p.minCandles, win); i < series.length; i++) {
+    const c = series[i];
+    // Synthetic rows have no tradable OHLC. Positions are managed again at the next observed bar.
+    if (c.source === 'synthetic' || !isValidCandle(c)) continue;
+
     if (pos) {
-      // intrabar: stop first (conservative), then target
+      // Intrabar: stop first (conservative); account for gaps through a stop at the candle open.
       let exit: number | null = null; let reason = '';
-      if (c.l <= pos.sl) { exit = pos.sl; reason = 'STOP_LOSS'; }
-      else if (c.h >= pos.tp) { exit = pos.tp; reason = 'TAKE_PROFIT'; }
+      if (c.l <= pos.sl) { exit = c.o < pos.sl ? c.o : pos.sl; reason = 'STOP_LOSS'; }
+      else if (c.h >= pos.tp) { exit = c.o > pos.tp ? c.o : pos.tp; reason = 'TAKE_PROFIT'; }
       if (exit === null) {
         const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p);
         if (nsl !== null) pos.sl = nsl;
         if (p.timeStopMinutes > 0 && (i - pos.openedIdx) * 5 >= p.timeStopMinutes) { exit = c.c; reason = 'TIME_STOP'; }
       }
-      if (exit === null) {
-        const sig = evaluateSignalWindow(rows.slice(i - win + 1, i + 1), candles.slice(i - win + 1, i + 1).map((x) => x.v), p);
+      if (exit === null && hasBacktestDataQuality(series, i, p.minCandles)) {
+        const sig = evaluateSignalWindow(rows.slice(i - win + 1, i + 1), series.slice(i - win + 1, i + 1).map((x) => x.v), p);
         if (sig?.side === 'SELL') { exit = c.c; reason = 'SIGNAL'; }
       }
       if (exit !== null) {
@@ -60,9 +77,11 @@ export function simulate(pair: string, candles: Candle[], p: StrategyParams, equ
       }
       continue;
     }
-    const sig = evaluateSignalWindow(rows.slice(i - win + 1, i + 1), candles.slice(i - win + 1, i + 1).map((x) => x.v), p);
-    if (sig?.side !== 'BUY' || i + 1 >= candles.length) continue;
-    const next = candles[i + 1]; // fill on the next candle open (no look-ahead)
+    if (!hasBacktestDataQuality(series, i, p.minCandles)) continue;
+    const sig = evaluateSignalWindow(rows.slice(i - win + 1, i + 1), series.slice(i - win + 1, i + 1).map((x) => x.v), p);
+    if (sig?.side !== 'BUY' || i + 1 >= series.length) continue;
+    const next = series[i + 1]; // fill on the next observed candle open (no look-ahead)
+    if (next.source === 'synthetic' || !isValidCandle(next) || next.v <= 0) continue;
     const fill = buyFillPrice(next.o, slip);
     const stops = computeStops(fill, rows[i].atr14, p);
     const economicsGate = netRewardRiskGate({

@@ -6,9 +6,9 @@ import { buildPairCandles, findCoverageRecoveryStart, newestTrade, newTradesSinc
 import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage } from './http';
-import { fillGaps, floorTo, type Candle, type Trade } from '../../shared/candles';
+import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
 import { checkDataQuality, computeIndicatorsTail, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
-import { aggregateComplete, applyMtf, buildHigherSeries, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
+import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskGate, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
@@ -198,34 +198,64 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       }, (r) => ({ mode: params.universeMode, members: r.members.map((m) => m.pair_id), added: r.added, removed: r.removed, eligible: r.eligible, rejected: r.rejected }));
     }
 
-    // 1c. One-time 15m / 1h OHLC history backfill so MTF trends are available immediately (throttled)
+    // 1c. Check actual higher-timeframe coverage on every run. The legacy timestamp
+    // marker is not proof that a complete history backfill was stored.
     const htfBackfilled = new Set<string>();
     const htfCandles: unknown[] = [];
+    const storedHtf: Record<string, Record<string, CandleRow[]>> = params.mtfMode !== 'off'
+      ? (await step('load_htf_coverage_state', async () =>
+          db.rpc<Record<string, Record<string, CandleRow[]>>>('get_recent_candles_multi', {
+            p_pairs: tracked, p_timeframes: HIGHER_TFS.map((h) => h.tf), p_limit: MTF_WINDOW,
+          }),
+        (r) => Object.fromEntries(HIGHER_TFS.map((h) => [
+          h.tf, Object.fromEntries(tracked.map((id) => [id, r?.[h.tf]?.[id]?.length ?? 0])),
+        ]))) ?? {})
+      : {};
     if (params.mtfMode !== 'off') {
-      const todo = pairs.filter((p) => !p.htf_backfilled_at)
-        .sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id))
-        .slice(0, HTF_BACKFILL_PER_RUN);
+      const expectedLast5m = floorTo(nowSec, 300) - 300;
+      const needsHtfHistory = (p: PairCtx) => HIGHER_TFS.some((h) => {
+        const lastComplete = lastCompleteBucket(expectedLast5m, h.sec);
+        const stored = (storedHtf[h.tf]?.[p.id] ?? []).map(toCandle);
+        return contiguousObservedSuffix(stored, h.sec, lastComplete) < params.mtfMinCandles;
+      });
+      const candidates = pairs.filter(needsHtfHistory)
+        .sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id));
+      // Rotate the bounded work queue so a failed pair cannot starve every later pair.
+      const offset = candidates.length ? Math.floor(nowSec / 60) % candidates.length : 0;
+      const rotated = candidates.length
+        ? [...candidates.slice(offset), ...candidates.slice(0, offset)]
+        : [];
+      const todo = rotated.slice(0, HTF_BACKFILL_PER_RUN);
       if (todo.length) {
         await step('backfill_htf', async () => {
           const info: Record<string, unknown> = {};
           await Promise.all(todo.map(async (p) => {
             try {
-              const counts: Record<string, number> = {};
+              const counts: Record<string, { received: number; contiguous: number }> = {};
+              let pairReady = true;
               for (const h of HIGHER_TFS) {
                 const from = nowSec - (MTF_WINDOW + 4) * h.sec;
                 const list = await dx.getHistory(p.symbol, h.historyTf, from, nowSec);
-                const done = list.filter((c) => c.t % h.sec === 0 && c.t + h.sec <= nowSec);
+                const lastComplete = lastCompleteBucket(expectedLast5m, h.sec);
+                const done = list.filter((c) =>
+                  c.t % h.sec === 0 && c.t + h.sec <= nowSec && isValidCandle(c),
+                );
                 for (const c of done) {
                   htfCandles.push({ pair_id: p.id, timeframe: h.tf, open_time: iso(c.t), open: c.o, high: c.h, low: c.l, close: c.c,
                     volume: c.v, trade_count: 0, is_closed: true, source: 'history' });
                 }
-                counts[h.tf] = done.length;
+                const previous = (storedHtf?.[h.tf]?.[p.id] ?? []).map(toCandle);
+                const merged = buildHigherSeries(previous, done, h.sec, lastComplete, MTF_WINDOW);
+                const contiguous = contiguousObservedSuffix(merged, h.sec, lastComplete);
+                counts[h.tf] = { received: done.length, contiguous };
+                if (contiguous < params.mtfMinCandles) pairReady = false;
               }
-              htfBackfilled.add(p.id);
-              info[p.id] = counts;
+              // Store the marker only after BOTH mandatory timeframes are fully warmed up.
+              if (pairReady) htfBackfilled.add(p.id);
+              info[p.id] = { timeframes: counts, ready: pairReady };
             } catch (e) {
               errors.push(`backfill_htf ${p.id}: ${errorMessage(e)}`);
-              info[p.id] = 'error';
+              info[p.id] = { ready: false, error: errorMessage(e) };
             }
           }));
           return info;
