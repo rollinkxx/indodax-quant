@@ -20,12 +20,12 @@ describe('finalizeEndOfDataTrade', () => {
       pair: 'btcidr',
       entry: 100,
       exit: 108.9,
-      pnl: 15.58,
       cost: 202,
       reason: 'END_OF_DATA',
       entryTime: 300,
       exitTime: 300,
     });
+    expect(trade.pnl).toBeCloseTo(15.58, 8);
   });
 
   it('rejects synthetic or pre-entry final candles rather than fabricating an exit', () => {
