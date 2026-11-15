@@ -471,9 +471,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         buyDiagnostics[p.id] = {
           ...diagnosticBase,
           raw_signal_side: raw5m?.side ?? null,
-          outcome: buyDiag.ready
-            ? (mtf.blocked ? 'blocked_by_mtf' : mtf.decision?.side === 'BUY' ? 'passed_mtf' : 'diagnostic_mismatch')
-            : raw5m?.side === 'SELL' ? 'sell_signal' : buyDiag.stage,
+          outcome: (raw5m?.side === 'BUY') !== buyDiag.ready
+            ? 'diagnostic_mismatch'
+            : buyDiag.ready
+              ? (mtf.blocked ? 'blocked_by_mtf' : mtf.decision?.side === 'BUY' ? 'passed_mtf' : 'diagnostic_mismatch')
+              : raw5m?.side === 'SELL' ? 'sell_signal' : buyDiag.stage,
           mtf_block: mtf.blocked ?? null,
         };
         const decision = mtf.decision;
