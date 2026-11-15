@@ -7,7 +7,7 @@ import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
-import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskGate, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
@@ -379,6 +379,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const mtfInfo: Record<string, string> = {};
       const mtfBlocked: Record<string, string> = {};
       const buyDiagnostics: Record<string, Record<string, unknown>> = {};
+      const continuationDiagnostics: Record<string, Record<string, unknown>> = {};
       const expectedLast = floorTo(nowSec, 300) - 300;
       const indicatorRows: unknown[] = [];
       const signalRows: unknown[] = [];
@@ -386,7 +387,12 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       for (const p of pairs) {
         const raw = (map?.[p.id] ?? []).filter((r) => Number(r[0]) <= expectedLast);
         const candles: Candle[] = raw.map(toCandle);
-        if (candles.length === 0) { quality[p.id] = 'no_candles'; continue; }
+        if (candles.length === 0) {
+          quality[p.id] = 'no_candles';
+          buyDiagnostics[p.id] = { stage: 'indicators_not_ready', candidate_5m: false, outcome: 'blocked_by_no_candles' };
+          continuationDiagnostics[p.id] = { setup: 'ema21_pullback_reclaim', stage: 'indicators_not_ready', candidate_5m: false, outcome: 'blocked_by_no_candles' };
+          continue;
+        }
         const series = fillGaps(candles, 300, expectedLast).slice(-250);
 
         // Higher timeframes (completed candles only): stored history + exact aggregates of the 5m series
@@ -419,6 +425,26 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const rows = computeIndicatorsTail(series, params, Math.max(3, params.crossLookback + 1));
         const rowVolumes = series.slice(-rows.length).map((c) => c.v);
         const buyDiag = diagnoseBuySignalWindow(rows, rowVolumes, params);
+        const continuationDiag = diagnoseTrendContinuationWindow(rows, rowVolumes, params);
+        const continuationBase = {
+          setup: 'ema21_pullback_reclaim',
+          stage: continuationDiag.stage,
+          candidate_5m: continuationDiag.ready,
+          filters: {
+            trend: continuationDiag.trendOk,
+            pullback_reclaimed: continuationDiag.pullbackReclaimed,
+            no_recent_cross: !continuationDiag.recentCross,
+            rsi: continuationDiag.rsiOk,
+            volume: continuationDiag.volumeOk,
+            extension: continuationDiag.extensionOk,
+          },
+          metrics: {
+            rsi: continuationDiag.rsi,
+            volume_ratio: continuationDiag.volumeRatio,
+            extension_pct: continuationDiag.extensionPct,
+          },
+          execution: 'shadow_only',
+        };
         for (const r of rows.slice(-3)) {
           indicatorRows.push({
             pair_id: p.id, timeframe: '5m', open_time: iso(r.t), close: r.close, ema9: r.ema9, ema21: r.ema21, ema50: r.ema50,
@@ -447,24 +473,29 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (!q.ok) {
           quality[p.id] = q.reason!;
           buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_data_quality' };
+          continuationDiagnostics[p.id] = { ...continuationBase, outcome: 'blocked_by_data_quality', data_quality: q.reason };
           continue;
         }
         if (p.is_maintenance) {
           quality[p.id] = 'pair_maintenance';
           buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_maintenance' };
+          continuationDiagnostics[p.id] = { ...continuationBase, outcome: 'blocked_by_maintenance' };
           continue;
         }
         if (!freshTicker(p.id)) {
           quality[p.id] = 'stale_ticker';
           buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_stale_ticker' };
+          continuationDiagnostics[p.id] = { ...continuationBase, outcome: 'blocked_by_stale_ticker' };
           continue;
         }
         if (rows.length < 2) {
           quality[p.id] = 'insufficient_rows';
           buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_insufficient_rows' };
+          continuationDiagnostics[p.id] = { ...continuationBase, outcome: 'blocked_by_insufficient_rows' };
           continue;
         }
         quality[p.id] = 'ok';
+        continuationDiagnostics[p.id] = { ...continuationBase, data_quality: 'ok', outcome: continuationDiag.ready ? 'shadow_candidate' : continuationDiag.stage };
         const raw5m = evaluateSignalWindow(rows, rowVolumes, params);
         const mtf = applyMtf(raw5m, states, params.mtfMode);
         if (raw5m && mtf.blocked) mtfBlocked[p.id] = `${raw5m.side} ${mtf.blocked}`;
@@ -491,13 +522,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         }
       }
       const saved = await db.rpc<{ new_signals: SignalRow[] }>('save_analysis', { p_indicators: indicatorRows, p_signals: signalRows, p_candles: htfSave });
-      return { newSignals: saved?.new_signals ?? [], quality, mtf: mtfInfo, mtfBlocked, buyDiagnostics };
+      return { newSignals: saved?.new_signals ?? [], quality, mtf: mtfInfo, mtfBlocked, buyDiagnostics, continuationDiagnostics };
     }, (r) => ({
       new_signals: r.newSignals.length,
       quality: r.quality,
       ...(Object.keys(r.mtf).length ? { mtf: r.mtf } : {}),
       ...(Object.keys(r.mtfBlocked).length ? { mtf_blocked: r.mtfBlocked } : {}),
       buy_diagnostics: r.buyDiagnostics,
+      continuation_diagnostics: r.continuationDiagnostics,
     }));
 
     const newSignals = analysis?.newSignals ?? [];
@@ -513,6 +545,17 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // 6+7. Paper trading (simulation only) + portfolio
     await step('paper_trading', async () => {
       const actions: string[] = [];
+      const entryRejections: { pair_id: string; signal_id: number; stage: string; reason: string; metrics?: Record<string, number> }[] = [];
+      const rejectEntry = (signal: SignalRow, stage: string, reason: string, metrics?: Record<string, number>) => {
+        entryRejections.push({
+          pair_id: signal.pair_id,
+          signal_id: signal.id,
+          stage,
+          reason,
+          ...(metrics ? { metrics } : {}),
+        });
+        actions.push(`skip ${signal.pair_id}: ${reason}`);
+      };
       const open = new Map<string, Position>(ctx.open_positions.map((p) => [p.pair_id, p]));
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
@@ -593,31 +636,42 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         }
       }
 
-      // d) Entries on new BUY signals
+      // d) Entries on new BUY signals. Shadow continuation diagnostics are intentionally not used here.
       let entries = 0;
+      const buys = newSignals.filter((s) => s.side === 'BUY').sort((a, b) => Number(b.strength) - Number(a.strength));
       if (accountStatus === 'RUNNING' && !account.kill_switch && !risk.blockEntries) {
         let cash = Number(mtm.cash);
-        const buys = newSignals.filter((s) => s.side === 'BUY').sort((a, b) => Number(b.strength) - Number(a.strength));
-        for (const s of buys) {
-          if (open.size >= params.maxOpenPositions) { actions.push(`skip ${s.pair_id}: max positions`); break; }
-          if (open.has(s.pair_id)) { actions.push(`skip ${s.pair_id}: already open`); continue; }
+        for (let i = 0; i < buys.length; i++) {
+          const s = buys[i];
+          if (open.size >= params.maxOpenPositions) {
+            for (const queued of buys.slice(i)) rejectEntry(queued, 'portfolio_gate', 'max_positions');
+            break;
+          }
+          if (open.has(s.pair_id)) { rejectEntry(s, 'portfolio_gate', 'already_open'); continue; }
           const t = freshTicker(s.pair_id);
-          if (!t) { actions.push(`skip ${s.pair_id}: stale ticker`); continue; }
+          if (!t) { rejectEntry(s, 'market_data_gate', 'stale_ticker'); continue; }
           const slip = slipFor(s.pair_id);
           const fill = buyFillPrice(t.ask, slip);
           const atrValue = s.indicators?.atr14 ?? lastIndicators.get(s.pair_id)?.atr14 ?? null;
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);
           const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, params);
-          if (gate) { actions.push(`skip ${s.pair_id}: ${gate}`); continue; }
+          if (gate) {
+            const mid = (t.ask + t.bid) / 2;
+            rejectEntry(s, 'entry_gate', gate, {
+              spread_pct: mid > 0 ? (t.ask - t.bid) / mid * 100 : 0,
+              stop_distance_pct: fill > 0 ? (fill - stops.stopLoss) / fill * 100 : 0,
+            });
+            continue;
+          }
           const economicsGate = netRewardRiskGate({
             entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
             feePct: params.feePct, exitSlippageBps: slip,
           });
-          if (economicsGate) { actions.push(`skip ${s.pair_id}: ${economicsGate}`); continue; }
+          if (economicsGate) { rejectEntry(s, 'economics_gate', economicsGate); continue; }
           const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
-          if (size.qty <= 0) { actions.push(`skip ${s.pair_id}: ${size.reason}`); continue; }
+          if (size.qty <= 0) { rejectEntry(s, 'sizing_gate', size.reason ?? 'sizing_rejected'); continue; }
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
-          if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { actions.push(`skip ${s.pair_id}: max total exposure`); continue; }
+          if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { rejectEntry(s, 'portfolio_gate', 'max_total_exposure'); continue; }
           const r = await db.rpc<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number }>('paper_open_position', {
             p_account_id: account.id, p_pair_id: s.pair_id, p_qty: size.qty, p_requested_price: t.ask, p_fill_price: fill,
             p_fee: size.fee, p_slippage_bps: slip, p_stop_loss: stops.stopLoss, p_take_profit: stops.takeProfit,
@@ -630,19 +684,40 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             actions.push(`open ${s.pair_id}`);
             notes.push({ event_type: 'paper_buy', dedupe_key: `open:${r.position_id}`, message: messages.paperBuy({ pair_id: s.pair_id, qty: size.qty, fill, fee: size.fee, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, cashAfter: cash }) });
           } else {
-            actions.push(`open ${s.pair_id} rejected: ${r?.reason}`);
+            rejectEntry(s, 'persistence', r?.reason ?? 'paper_open_rejected');
           }
         }
-      } else if (accountStatus !== 'RUNNING') {
-        actions.push(`entries disabled: account ${accountStatus}`);
-      } else if (risk.blockEntries) {
-        actions.push(`entries blocked: ${risk.reasons.join('; ')}`);
+      } else {
+        const reason = accountStatus !== 'RUNNING'
+          ? `account_${accountStatus.toLowerCase()}`
+          : account.kill_switch
+            ? 'kill_switch_active'
+            : 'risk_blocked';
+        const stage = accountStatus !== 'RUNNING' ? 'account_gate' : 'risk_gate';
+        for (const s of buys) rejectEntry(s, stage, reason);
+        if (buys.length === 0 && accountStatus !== 'RUNNING') actions.push(`entries disabled: account ${accountStatus}`);
+        if (buys.length === 0 && risk.blockEntries) actions.push(`entries blocked: ${risk.reasons.join('; ')}`);
       }
       if (entries > 0) {
         mtm = await db.rpc<MtmResult>('paper_mark_to_market', { p_account_id: account.id, p_prices: bids, p_snapshot_time: iso(nowMin) });
         lastEquity = Number(mtm.equity);
       }
-      return { status: accountStatus, equity: Number(mtm.equity), drawdown: Number(mtm.drawdown_pct), open: open.size, actions };
+      const entryRejectionCounts = entryRejections.reduce<Record<string, number>>((counts, rejection) => {
+        counts[rejection.reason] = (counts[rejection.reason] ?? 0) + 1;
+        return counts;
+      }, {});
+      return {
+        status: accountStatus,
+        equity: Number(mtm.equity),
+        drawdown: Number(mtm.drawdown_pct),
+        open: open.size,
+        actions,
+        buy_signals_received: buys.length,
+        entries_opened: entries,
+        entry_rejections: entryRejections,
+        entry_rejection_counts: entryRejectionCounts,
+        risk_block_reasons: risk.blockEntries ? risk.reasons : [],
+      };
     }, (r) => r);
 
     // Daily P/L report at 00:00-00:14 WIB (17:00 UTC)

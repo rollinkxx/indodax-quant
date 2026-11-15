@@ -14,7 +14,8 @@
     "verify:indodax": "tsx scripts/verify-indodax.ts",
     "backtest": "tsx scripts/backtest.ts",
     "deploy": "npm run build && wrangler deploy",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "paper:report": "tsx scripts/paper-report.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.119.0",

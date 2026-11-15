@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
@@ -140,6 +140,33 @@ describe('diagnoseBuySignalWindow', () => {
       [below, above({ ema50: 110 })], [0, 15], { ...DEFAULT_PARAMS, useTrendFilter: false },
     );
     expect(diagnostic).toMatchObject({ stage: 'ready', trendOk: true, ready: true });
+  });
+});
+
+describe('trend continuation shadow diagnostics', () => {
+  const prev = row({ close: 99, ema9: 102, ema21: 100, ema50: 95, rsi14: 58, volMa20: 10 });
+  const reclaimed = row({ close: 101, ema9: 103, ema21: 100, ema50: 96, rsi14: 60, volMa20: 10 });
+
+  it('recognizes a pullback reclaim in a stacked uptrend without emitting a crossover BUY', () => {
+    const rows = [prev, reclaimed];
+    const volumes = [12, 15];
+    expect(diagnoseTrendContinuationWindow(rows, volumes)).toMatchObject({
+      stage: 'ready', ready: true, pullbackReclaimed: true, recentCross: false,
+      trendOk: true, rsiOk: true, volumeOk: true, extensionOk: true,
+    });
+    expect(evaluateSignalWindow(rows, volumes)).toBeNull();
+  });
+
+  it('does not duplicate a fresh crossover as a continuation candidate', () => {
+    const beforeCross = row({ close: 99, ema9: 99, ema21: 100, ema50: 95 });
+    expect(diagnoseTrendContinuationWindow([beforeCross, reclaimed], [12, 15]).stage).toBe('recent_cross');
+  });
+
+  it('requires a reclaim, stacked trend, and the same risk filters', () => {
+    expect(diagnoseTrendContinuationWindow([reclaimed, reclaimed], [12, 15]).stage).toBe('no_pullback_reclaim');
+    expect(diagnoseTrendContinuationWindow([prev, row({ ...reclaimed, ema21: 94 })], [12, 15]).stage).toBe('ema_slow_not_above_trend');
+    expect(diagnoseTrendContinuationWindow([prev, row({ ...reclaimed, rsi14: 75 })], [12, 15]).stage).toBe('rsi_filter');
+    expect(diagnoseTrendContinuationWindow([prev, reclaimed], [12, 11]).stage).toBe('volume_filter');
   });
 });
 

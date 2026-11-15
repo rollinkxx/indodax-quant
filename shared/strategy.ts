@@ -453,6 +453,81 @@ export function diagnoseBuySignalWindow(
  * on the FIRST candle since the cross where all filters pass.
  * SELL: fresh cross down on the last candle only (exits stay responsive). RSI/volume confirmation is optional.
  */
+
+export type TrendContinuationStage =
+  | 'indicators_not_ready'
+  | 'ema_fast_not_above_slow'
+  | 'ema_slow_not_above_trend'
+  | 'price_not_above_trend'
+  | 'recent_cross'
+  | 'no_pullback_reclaim'
+  | 'rsi_filter'
+  | 'volume_filter'
+  | 'entry_extension'
+  | 'ready';
+
+export interface TrendContinuationDiagnostics {
+  stage: TrendContinuationStage;
+  ready: boolean;
+  pullbackReclaimed: boolean;
+  recentCross: boolean;
+  trendOk: boolean | null;
+  rsiOk: boolean | null;
+  volumeOk: boolean | null;
+  extensionOk: boolean | null;
+  rsi: number | null;
+  volumeRatio: number | null;
+  extensionPct: number | null;
+}
+
+/**
+ * Shadow-only setup: price reclaims EMA21 after a pullback while EMA9 > EMA21 > EMA50.
+ * This deliberately does not create a trading signal; callers may log or backtest it separately.
+ */
+export function diagnoseTrendContinuationWindow(
+  rows: IndicatorRow[],
+  volumes: number[],
+  p: StrategyParams = DEFAULT_PARAMS,
+): TrendContinuationDiagnostics {
+  const unavailable: TrendContinuationDiagnostics = {
+    stage: 'indicators_not_ready', ready: false, pullbackReclaimed: false, recentCross: false,
+    trendOk: null, rsiOk: null, volumeOk: null, extensionOk: null,
+    rsi: null, volumeRatio: null, extensionPct: null,
+  };
+  const n = rows.length;
+  if (n < 2 || volumes.length !== n) return unavailable;
+  const last = rows[n - 1];
+  const prev = rows[n - 2];
+  if (!warm(last) || !warm(prev) || last.ema50 === null || prev.ema21 === null || prev.ema50 === null) return unavailable;
+
+  const volume = volumes[n - 1];
+  const volumeRatio = last.volMa20 > 0 ? volume / last.volMa20 : null;
+  const extensionPct = last.ema21 > 0 ? (last.close - last.ema21) / last.ema21 * 100 : null;
+  const trendOk = last.ema21 > last.ema50 && last.close > last.ema50;
+  const pullbackReclaimed = prev.close <= prev.ema21 && last.close > last.ema21;
+  const recentCross = diagnoseBuySignalWindow(rows, volumes, p).crossFound;
+  const rsiOk = last.rsi14 >= p.rsiBuyMin && last.rsi14 <= p.rsiBuyMax;
+  const volumeOk = last.volMa20 > 0 && volume >= last.volMa20 * p.volumeMultiplier;
+  const extensionOk = p.maxEntryExtensionPct <= 0 || last.ema21 <= 0 ||
+    (extensionPct !== null && extensionPct <= p.maxEntryExtensionPct);
+
+  let stage: TrendContinuationStage;
+  if (last.ema9 <= last.ema21) stage = 'ema_fast_not_above_slow';
+  else if (last.ema21 <= last.ema50) stage = 'ema_slow_not_above_trend';
+  else if (last.close <= last.ema50) stage = 'price_not_above_trend';
+  else if (recentCross) stage = 'recent_cross';
+  else if (!pullbackReclaimed) stage = 'no_pullback_reclaim';
+  else if (!rsiOk) stage = 'rsi_filter';
+  else if (!volumeOk) stage = 'volume_filter';
+  else if (!extensionOk) stage = 'entry_extension';
+  else stage = 'ready';
+
+  return {
+    stage, ready: stage === 'ready', pullbackReclaimed, recentCross, trendOk, rsiOk, volumeOk, extensionOk,
+    rsi: last.rsi14, volumeRatio, extensionPct,
+  };
+}
+
 export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
   const n = rows.length;
   if (n < 2 || volumes.length !== n) return null;
