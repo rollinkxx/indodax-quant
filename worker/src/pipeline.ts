@@ -708,7 +708,6 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               bid_price: t.bid,
               ask_price: t.ask,
               signal_price: Number(s.price),
-              entry_price: fill,
               stop_price: stops.stopLoss,
               target_price: stops.takeProfit,
               spread_pct: (t.ask + t.bid) > 0 ? (t.ask - t.bid) / ((t.ask + t.bid) / 2) * 100 : 0,
