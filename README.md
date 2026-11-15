@@ -119,7 +119,7 @@ supabase/migrations/  schema, indexes, constraints, RLS, RPC functions
 supabase/functions/   Edge Function `indodax-proxy` (read-only INDODAX relay)
 tests/          Vitest suites (test count evolves with the code)
 scripts/verify-indodax.ts  live read-only check against the INDODAX public API
-scripts/backtest.ts        offline backtest on stored 5m candles (needs SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY; MTF not simulated)
+scripts/backtest.ts        read-only backtest on stored 5m + optional official 1m OHLC history (MTF not simulated)
 PROJECT_STATE.md           current production state, open tasks and notes for maintainers/agents
 ```
 
@@ -202,7 +202,7 @@ npm install              # required first (there is no package-lock.json)
 npm test                 # 171 unit + integration tests in 20 files (fake Supabase / INDODAX)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
-npm run backtest         # older vs current rules on stored 5m candles; see Backtest scope and interpretation
+BACKTEST_HISTORY_DAYS=30 npm run backtest  # official 30-day history; see Backtest scope and interpretation
 ```
 
 Coverage includes: indicator maths (reference RSI values), candle building and gap handling,
@@ -249,4 +249,4 @@ Telegram messages display Asia/Jakarta (WIB). The daily P/L report is sent short
 
 Current production state and open tasks: see `PROJECT_STATE.md`.
 
-_Last updated: 2026-11-14_
+_Last updated: 2026-11-15_
