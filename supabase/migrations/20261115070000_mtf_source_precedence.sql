@@ -7,11 +7,11 @@ do $$
 declare
   v_sig regprocedure;
   v_definition text;
-  v_pattern constant text := $pattern$
-where not candles\.is_closed[[:space:]]+
-  or \(candles\.source <> 'trades' and excluded\.source = 'trades'\)[[:space:]]+
-  or \(candles\.source = excluded\.source and excluded\.trade_count >= candles\.trade_count\);
-$pattern$;
+  v_old_predicate constant text := $old$
+where not candles.is_closed
+     or (candles.source <> 'trades' and excluded.source = 'trades')
+     or (candles.source = excluded.source and excluded.trade_count >= candles.trade_count);
+$old$;
   v_replacement constant text := $replacement$
 where not candles.is_closed
    or (
@@ -40,10 +40,10 @@ begin
     'public.save_analysis(jsonb,jsonb,jsonb)'::regprocedure
   ] loop
     v_definition := pg_get_functiondef(v_sig);
-    if v_definition !~ v_pattern then
+    if position(v_old_predicate in v_definition) = 0 then
       raise exception 'Expected candle source precedence predicate not found in %', v_sig;
     end if;
-    v_definition := regexp_replace(v_definition, v_pattern, v_replacement, 'g');
+    v_definition := replace(v_definition, v_old_predicate, v_replacement);
     execute v_definition;
   end loop;
 end
