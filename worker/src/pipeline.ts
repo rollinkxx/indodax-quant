@@ -7,7 +7,7 @@ import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
-import { checkDataQuality, computeIndicatorsTail, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskGate, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
@@ -378,6 +378,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const htfSave: unknown[] = [];
       const mtfInfo: Record<string, string> = {};
       const mtfBlocked: Record<string, string> = {};
+      const buyDiagnostics: Record<string, Record<string, unknown>> = {};
       const expectedLast = floorTo(nowSec, 300) - 300;
       const indicatorRows: unknown[] = [];
       const signalRows: unknown[] = [];
@@ -417,6 +418,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         // enough rows to look back for a recent EMA cross (crossLookback) plus the candle before it
         const rows = computeIndicatorsTail(series, params, Math.max(3, params.crossLookback + 1));
         const rowVolumes = series.slice(-rows.length).map((c) => c.v);
+        const buyDiag = diagnoseBuySignalWindow(rows, rowVolumes, params);
         for (const r of rows.slice(-3)) {
           indicatorRows.push({
             pair_id: p.id, timeframe: '5m', open_time: iso(r.t), close: r.close, ema9: r.ema9, ema21: r.ema21, ema50: r.ema50,
@@ -427,14 +429,53 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const last = rows[rows.length - 1];
         lastIndicators.set(p.id, { atr14: last?.atr14 ?? null });
         const q = checkDataQuality({ candles: series, nowSec, intervalSec: 300, coveredUntilSec: coverage.get(p.id) ?? null, minCandles: params.minCandles });
-        if (!q.ok) { quality[p.id] = q.reason!; continue; }
-        if (p.is_maintenance) { quality[p.id] = 'pair_maintenance'; continue; }
-        if (!freshTicker(p.id)) { quality[p.id] = 'stale_ticker'; continue; }
-        if (rows.length < 2) { quality[p.id] = 'insufficient_rows'; continue; }
+        const diagnosticBase = {
+          stage: buyDiag.stage,
+          candidate_5m: buyDiag.ready,
+          bars_since_cross: buyDiag.barsSinceCross,
+          filters: {
+            trend: buyDiag.trendOk, rsi: buyDiag.rsiOk, volume: buyDiag.volumeOk, extension: buyDiag.extensionOk,
+          },
+          metrics: {
+            rsi: buyDiag.rsi,
+            volume_ratio: buyDiag.volumeRatio,
+            extension_pct: buyDiag.extensionPct,
+          },
+          data_quality: q.ok ? 'ok' : q.reason,
+          mtf: mtfOn ? states.map((st) => `${st.tf}:${st.trend}`).join(' ') : 'off',
+        };
+        if (!q.ok) {
+          quality[p.id] = q.reason!;
+          buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_data_quality' };
+          continue;
+        }
+        if (p.is_maintenance) {
+          quality[p.id] = 'pair_maintenance';
+          buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_maintenance' };
+          continue;
+        }
+        if (!freshTicker(p.id)) {
+          quality[p.id] = 'stale_ticker';
+          buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_stale_ticker' };
+          continue;
+        }
+        if (rows.length < 2) {
+          quality[p.id] = 'insufficient_rows';
+          buyDiagnostics[p.id] = { ...diagnosticBase, outcome: 'blocked_by_insufficient_rows' };
+          continue;
+        }
         quality[p.id] = 'ok';
         const raw5m = evaluateSignalWindow(rows, rowVolumes, params);
         const mtf = applyMtf(raw5m, states, params.mtfMode);
         if (raw5m && mtf.blocked) mtfBlocked[p.id] = `${raw5m.side} ${mtf.blocked}`;
+        buyDiagnostics[p.id] = {
+          ...diagnosticBase,
+          raw_signal_side: raw5m?.side ?? null,
+          outcome: buyDiag.ready
+            ? (mtf.blocked ? 'blocked_by_mtf' : mtf.decision?.side === 'BUY' ? 'passed_mtf' : 'diagnostic_mismatch')
+            : raw5m?.side === 'SELL' ? 'sell_signal' : buyDiag.stage,
+          mtf_block: mtf.blocked ?? null,
+        };
         const decision = mtf.decision;
         if (decision) {
           signalRows.push({
@@ -448,8 +489,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         }
       }
       const saved = await db.rpc<{ new_signals: SignalRow[] }>('save_analysis', { p_indicators: indicatorRows, p_signals: signalRows, p_candles: htfSave });
-      return { newSignals: saved?.new_signals ?? [], quality, mtf: mtfInfo, mtfBlocked };
-    }, (r) => ({ new_signals: r.newSignals.length, quality: r.quality, ...(Object.keys(r.mtf).length ? { mtf: r.mtf } : {}), ...(Object.keys(r.mtfBlocked).length ? { mtf_blocked: r.mtfBlocked } : {}) }));
+      return { newSignals: saved?.new_signals ?? [], quality, mtf: mtfInfo, mtfBlocked, buyDiagnostics };
+    }, (r) => ({
+      new_signals: r.newSignals.length,
+      quality: r.quality,
+      ...(Object.keys(r.mtf).length ? { mtf: r.mtf } : {}),
+      ...(Object.keys(r.mtfBlocked).length ? { mtf_blocked: r.mtfBlocked } : {}),
+      buy_diagnostics: r.buyDiagnostics,
+    }));
 
     const newSignals = analysis?.newSignals ?? [];
     if (params.notifySignals) {
