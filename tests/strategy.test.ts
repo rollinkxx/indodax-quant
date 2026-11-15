@@ -145,7 +145,7 @@ describe('diagnoseBuySignalWindow', () => {
 
 describe('trend continuation shadow diagnostics', () => {
   const prev = row({ close: 99, ema9: 102, ema21: 100, ema50: 95, rsi14: 58, volMa20: 10 });
-  const reclaimed = row({ close: 102, ema9: 103, ema21: 100, ema50: 96, rsi14: 60, volMa20: 10 });
+  const reclaimed = row({ close: 101, ema9: 103, ema21: 100, ema50: 96, rsi14: 60, volMa20: 10 });
 
   it('recognizes a pullback reclaim in a stacked uptrend without emitting a crossover BUY', () => {
     const rows = [prev, reclaimed];
