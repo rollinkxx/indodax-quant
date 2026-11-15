@@ -2,7 +2,7 @@
 // Higher-timeframe candles are aggregated from the 5m series (exact, built from real trades) and,
 // for older history, from stored 15m / 1h candles (official INDODAX OHLC backfill).
 import { ema, rsi } from './indicators';
-import { fillGaps, floorTo, type Candle } from './candles';
+import { fillGaps, floorTo, isValidCandle, type Candle } from './candles';
 import type { SignalDecision, StrategyParams } from './strategy';
 
 export type HigherTf = '15m' | '1h';
@@ -40,7 +40,7 @@ export function lastCompleteBucket(last5m: number, tfSec: number): number {
  * Only buckets whose every 5m sub-candle is inside the series are returned (no partial / forming candles).
  */
 export function aggregateComplete(series5m: Candle[], tfSec: number): Candle[] {
-  if (series5m.length === 0) return [];
+  if (series5m.length === 0 || tfSec <= SUB || tfSec % SUB !== 0) return [];
   const first = series5m[0].t;
   const lastBucket = lastCompleteBucket(series5m[series5m.length - 1].t, tfSec);
   const per = tfSec / SUB;
@@ -56,6 +56,8 @@ export function aggregateComplete(series5m: Candle[], tfSec: number): Candle[] {
   for (const [t, list] of buckets) {
     if (list.length !== per) continue;
     list.sort((a, b) => a.t - b.t);
+    // Count alone is insufficient: duplicates can hide a missing 5m slot.
+    if (list.some((c, i) => c.t !== t + i * SUB || !isValidCandle(c))) continue;
     out.push({
       t,
       o: list[0].o,
@@ -76,42 +78,69 @@ export function aggregateComplete(series5m: Candle[], tfSec: number): Candle[] {
  */
 export function buildHigherSeries(stored: Candle[], aggregated: Candle[], tfSec: number, lastComplete: number, limit = MTF_WINDOW): Candle[] {
   const byTime = new Map<number, Candle>();
-  for (const c of stored) if (c.t <= lastComplete && c.t % tfSec === 0) byTime.set(c.t, c);
+  const sourceRank: Record<Candle['source'], number> = { synthetic: 1, history: 2, trades: 3 };
+  for (const c of stored) {
+    if (c.t <= lastComplete && c.t % tfSec === 0 && isValidCandle(c)) byTime.set(c.t, c);
+  }
   for (const c of aggregated) {
-    if (c.t > lastComplete) continue;
+    if (c.t > lastComplete || c.t % tfSec !== 0 || !isValidCandle(c)) continue;
     const existing = byTime.get(c.t);
-    // A synthetic lower-timeframe bucket has no observed price action and must
-    // not erase an official stored 15m/1h candle at the same timestamp.
-    if (c.source === 'synthetic' && existing && existing.source !== 'synthetic') continue;
-    byTime.set(c.t, c);
+    // Enforce one source hierarchy everywhere: trades > official history > synthetic.
+    // Equal-source refreshes may replace old values only when their trade count is not lower.
+    if (!existing || sourceRank[c.source] > sourceRank[existing.source] ||
+        (c.source === existing.source && c.n >= existing.n)) {
+      byTime.set(c.t, c);
+    }
   }
   const sorted = [...byTime.values()].sort((a, b) => a.t - b.t);
   if (sorted.length === 0) return [];
   return fillGaps(sorted.slice(-limit), tfSec, lastComplete).slice(-limit);
 }
 
+/**
+ * Count the latest uninterrupted suffix of valid observed candles ending exactly at lastOpenTime.
+ * Duplicate timestamps, malformed bars, synthetic rows, gaps, or a stale tail fail closed.
+ */
+export function contiguousObservedSuffix(series: Candle[], tfSec: number, lastOpenTime: number): number {
+  if (tfSec <= 0 || lastOpenTime % tfSec !== 0) return 0;
+  const rows = series.filter((c) => c.t <= lastOpenTime && c.t % tfSec === 0).slice().sort((a, b) => a.t - b.t);
+  if (rows.length === 0) return 0;
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i].t === rows[i - 1].t) return 0;
+  }
+  const last = rows[rows.length - 1];
+  if (last.t !== lastOpenTime || last.source === 'synthetic' || !isValidCandle(last)) return 0;
+
+  let count = 1;
+  for (let i = rows.length - 2; i >= 0; i--) {
+    const previous = rows[i];
+    const current = rows[i + 1];
+    if (current.t - previous.t !== tfSec || previous.source === 'synthetic' || !isValidCandle(previous)) break;
+    count++;
+  }
+  return count;
+}
+
 /** Trend on the last completed candle of a higher timeframe. */
 export function trendState(tf: HigherTf, series: Candle[], lastComplete: number, p: Pick<StrategyParams, 'mtfEmaFast' | 'mtfEmaSlow' | 'mtfMinCandles' | 'rsiPeriod'>): TfState {
-  const base: TfState = { tf, trend: 'unknown', candles: series.length, lastOpenTime: series.length ? series[series.length - 1].t : null, close: null, emaFast: null, emaSlow: null, rsi: null };
-  if (series.length < p.mtfMinCandles) return { ...base, reason: `warming_up (${series.length}/${p.mtfMinCandles})` };
-  const last = series[series.length - 1];
+  const ordered = series.slice().sort((a, b) => a.t - b.t);
+  const base: TfState = { tf, trend: 'unknown', candles: ordered.length, lastOpenTime: ordered.length ? ordered[ordered.length - 1].t : null, close: null, emaFast: null, emaSlow: null, rsi: null };
+  if (ordered.length < p.mtfMinCandles) return { ...base, reason: `warming_up (${ordered.length}/${p.mtfMinCandles})` };
+  const last = ordered[ordered.length - 1];
   if (last.t !== lastComplete) return { ...base, reason: 'stale_last_candle' };
   if (last.source === 'synthetic') return { ...base, candles: 0, reason: 'synthetic_last_candle' };
 
   // A gap-filled candle carries no observed price action. Compute indicators only from the
   // latest uninterrupted suffix of actual history/trade candles, never across a synthetic gap.
-  let start = series.length - 1;
-  while (start > 0) {
-    const previous = series[start - 1];
-    const current = series[start];
-    if (previous.source === 'synthetic' || current.t - previous.t !== TF_SECONDS[tf]) break;
-    start--;
+  const contiguous = contiguousObservedSuffix(ordered, TF_SECONDS[tf], lastComplete);
+  if (contiguous < p.mtfMinCandles) {
+    const reason = contiguous === 0 && ordered.some((c) => c.t === lastComplete && !isValidCandle(c))
+      ? 'invalid_last_candle'
+      : `insufficient_contiguous_candles (${contiguous}/${p.mtfMinCandles})`;
+    return { ...base, candles: contiguous, reason };
   }
-  const valid = series.slice(start);
+  const valid = ordered.slice(-contiguous);
   const validBase = { ...base, candles: valid.length };
-  if (valid.length < p.mtfMinCandles) {
-    return { ...validBase, reason: `insufficient_contiguous_candles (${valid.length}/${p.mtfMinCandles})` };
-  }
 
   const closes = valid.map((c) => c.c);
   const f = ema(closes, p.mtfEmaFast).at(-1) ?? null;
@@ -141,15 +170,20 @@ const label = (t: Trend) => ({ bull: 'bullish', bear: 'bearish', neutral: 'netra
  */
 export function applyMtf(decision: SignalDecision | null, states: TfState[], mode: StrategyParams['mtfMode']): MtfOutcome {
   const summary = Object.fromEntries(states.map((s) => [s.tf, { trend: s.trend, rsi: s.rsi, ema_fast: s.emaFast, ema_slow: s.emaSlow, candles: s.candles }])) as MtfOutcome['summary'];
-  if (!decision || mode === 'off' || states.length === 0) return { decision, summary };
+  if (!decision || mode === 'off') return { decision, summary };
   const want: Trend = decision.side === 'BUY' ? 'bull' : 'bear';
   const against: Trend = decision.side === 'BUY' ? 'bear' : 'bull';
   const text = `MTF ${states.map((s) => `${s.tf} ${label(s.trend)}`).join(', ')}`;
 
   if (mode === 'filter' && decision.side === 'BUY') {
-    const anchor = states.find((s) => s.tf === '1h') ?? states[states.length - 1];
-    if (states.some((s) => s.trend === 'unknown')) return { decision: null, blocked: 'mtf_warming_up', summary };
-    if (states.some((s) => s.trend === against)) return { decision: null, blocked: 'mtf_against_trend', summary };
+    // Both 15m and 1h are mandatory. Missing or duplicated state must never fail open.
+    const required: HigherTf[] = ['15m', '1h'];
+    const missing = required.filter((tf) => states.filter((s) => s.tf === tf).length !== 1);
+    if (missing.length) return { decision: null, blocked: `mtf_missing_or_duplicate:${missing.join(',')}`, summary };
+    const requiredStates = required.map((tf) => states.find((s) => s.tf === tf)!);
+    const anchor = requiredStates.find((s) => s.tf === '1h')!;
+    if (requiredStates.some((s) => s.trend === 'unknown')) return { decision: null, blocked: 'mtf_warming_up', summary };
+    if (requiredStates.some((s) => s.trend === against)) return { decision: null, blocked: 'mtf_against_trend', summary };
     if (anchor.trend !== want) return { decision: null, blocked: 'mtf_anchor_not_bullish', summary };
   }
 
