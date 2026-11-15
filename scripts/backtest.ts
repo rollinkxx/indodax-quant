@@ -278,23 +278,41 @@ async function main() {
   assertControlledPair(params2, params4);
 
   const cliPairs: string[] = process.argv.slice(2);
-  const defaultPairs = cliPairs.length
-    ? []
-    : await get<{ id: string; is_tracked: boolean; in_universe: boolean }[]>(
-      'market_pairs?select=id,is_tracked,in_universe&is_maintenance=eq.false&limit=1000',
-    );
+  const marketPairs = await get<StoredPair[]>(
+    'market_pairs?select=id,symbol,is_tracked,in_universe&is_maintenance=eq.false&limit=1000',
+  );
+  const marketById = new Map(marketPairs.map((row) => [row.id, row]));
   // Compare only the active production scan universe, not unrelated high-volume IDR pairs.
-  const pairs: string[] = cliPairs.length
-    ? cliPairs
-    : defaultPairs.filter((row) => row.is_tracked || row.in_universe).map((row) => String(row.id));
+  const selectedPairs = cliPairs.length
+    ? [...new Set(cliPairs)].map((id) => marketById.get(id) ?? { id, symbol: id.toUpperCase(), is_tracked: false, in_universe: false })
+    : marketPairs.filter((row) => row.is_tracked || row.in_universe);
   const volRows = await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr');
   const vols: Record<string, number> = {};
   for (const row of volRows) vols[String(row.pair_id)] = Number(row.vol_idr);
 
+  // Pull history outside the loop with a bounded pair concurrency; each pair is chunked
+  // into 12h calls to remain below the public history endpoint's likely response cap.
+  const officialHistory = new Map<string, OfficialHistoryResult>();
+  if (historyDays > 0) {
+    const pairConcurrency = 3;
+    for (let offset = 0; offset < selectedPairs.length; offset += pairConcurrency) {
+      const batch = selectedPairs.slice(offset, offset + pairConcurrency);
+      const fetched = await Promise.all(batch.map(async (pair) => {
+        const result = await loadOfficialHistory(pair.id, pair.symbol, historyDays);
+        console.error(
+          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}`,
+        );
+        return [pair.id, result] as const;
+      }));
+      for (const [id, result] of fetched) officialHistory.set(id, result);
+    }
+  }
+
   const summary: Record<string, unknown> = {};
   let usablePairs = 0;
-  for (const pair of [...new Set<string>(pairs)]) {
-    const candles = await loadCandles(pair);
+  for (const pair of selectedPairs) {
+    const history = officialHistory.get(pair.id);
+    const candles = await loadCandles(pair.id, history);
     const observed = candles.filter((c) => c.source !== 'synthetic');
     if (candles.length < live.minCandles + 20) {
       console.warn(`[SKIP] ${pair}: only ${candles.length} timeline bars / ${observed.length} observed bars`);
@@ -315,6 +333,7 @@ async function main() {
       candles: candles.length,
       observedCandles: observed.length,
       syntheticGapBars: candles.length - observed.length,
+      officialHistory: history?.metrics ?? null,
       from: new Date(candles[0].t * 1000).toISOString(),
       to: new Date(candles[candles.length - 1].t * 1000).toISOString(),
       holdoutFrom: new Date(candles[splitIndex].t * 1000).toISOString(),
@@ -344,6 +363,11 @@ async function main() {
       shadowVariant: 'EMA21 pullback-reclaim in EMA9>EMA21>EMA50 uptrend; not sent to paper execution',
       split: 'first 70% for indicator warm-up/context; last 30% is chronological holdout; no entries before holdout',
       pairSelection: cliPairs.length ? 'explicit CLI pairs' : 'active tracked + dynamic universe (maintenance excluded)',
+      officialHistorySource: historyDays > 0 ? 'INDODAX public tradingview/history_v2 tf=1, aggregated to complete 5m buckets; in-memory only' : 'stored 5m candles only',
+      officialHistoryDaysRequested: historyDays,
+      officialHistoryPairsWithBars: officialHistory.size,
+      officialHistoryMinuteBarsReceived: [...officialHistory.values()].reduce((sum, h) => sum + h.metrics.minuteBarsReceived, 0),
+      officialHistoryComplete5mBars: [...officialHistory.values()].reduce((sum, h) => sum + h.metrics.complete5mBars, 0),
       pairsRequested: pairs.length,
       pairsEvaluated: usablePairs,
       initialEquityPerPairIdr: 10_000_000,
