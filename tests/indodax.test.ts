@@ -60,10 +60,15 @@ describe('INDODAX public client', () => {
       }), { status: 503 });
     }, { timeoutMs: 1000, retries: 2 });
 
-    const error = await c.getTrades('btcidr').catch((e: unknown) => e as Error & { status?: number; attempts?: number });
+    let error: (Error & { status?: number; attempts?: number }) | null = null;
+    try {
+      await c.getTrades('btcidr');
+    } catch (caught) {
+      error = caught as Error & { status?: number; attempts?: number };
+    }
     expect(error).toBeInstanceOf(Error);
-    expect(error.status).toBe(503);
-    expect(error.attempts).toBe(3);
+    expect(error?.status).toBe(503);
+    expect(error?.attempts).toBe(3);
     expect(n).toBe(3);
   });
 
