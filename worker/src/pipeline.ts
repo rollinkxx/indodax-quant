@@ -202,20 +202,20 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // marker is not proof that a complete history backfill was stored.
     const htfBackfilled = new Set<string>();
     const htfCandles: unknown[] = [];
-    const storedHtf = params.mtfMode !== 'off'
-      ? await step('load_htf_coverage_state', async () =>
+    const storedHtf: Record<string, Record<string, CandleRow[]>> = params.mtfMode !== 'off'
+      ? (await step('load_htf_coverage_state', async () =>
           db.rpc<Record<string, Record<string, CandleRow[]>>>('get_recent_candles_multi', {
             p_pairs: tracked, p_timeframes: HIGHER_TFS.map((h) => h.tf), p_limit: MTF_WINDOW,
           }),
         (r) => Object.fromEntries(HIGHER_TFS.map((h) => [
           h.tf, Object.fromEntries(tracked.map((id) => [id, r?.[h.tf]?.[id]?.length ?? 0])),
-        ])))
+        ]))) ?? {})
       : {};
     if (params.mtfMode !== 'off') {
       const expectedLast5m = floorTo(nowSec, 300) - 300;
       const needsHtfHistory = (p: PairCtx) => HIGHER_TFS.some((h) => {
         const lastComplete = lastCompleteBucket(expectedLast5m, h.sec);
-        const stored = (storedHtf?.[h.tf]?.[p.id] ?? []).map(toCandle);
+        const stored = (storedHtf[h.tf]?.[p.id] ?? []).map(toCandle);
         return contiguousObservedSuffix(stored, h.sec, lastComplete) < params.mtfMinCandles;
       });
       const candidates = pairs.filter(needsHtfHistory)
