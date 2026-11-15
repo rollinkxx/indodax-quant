@@ -175,11 +175,11 @@ export function simulate(
     if (c.source === 'synthetic' || !isValidCandle(c)) continue;
 
     if (pos) {
-      // Conservative intrabar ordering: stop loss takes precedence if both levels are touched.
-      let exit: number | null = null;
-      let reason = '';
-      if (c.l <= pos.sl) { exit = c.o < pos.sl ? c.o : pos.sl; reason = 'STOP_LOSS'; }
-      else if (c.h >= pos.tp) { exit = c.o > pos.tp ? c.o : pos.tp; reason = 'TAKE_PROFIT'; }
+      // The entry candle is deliberately processed on the next loop iteration;
+      // if both protective levels are touched, stop loss takes precedence.
+      const protectiveExit = resolveProtectiveExit(pos.sl, pos.tp, c);
+      let exit: number | null = protectiveExit?.price ?? null;
+      let reason = protectiveExit?.reason ?? '';
       if (exit === null) {
         const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p);
         if (nsl !== null) pos.sl = nsl;
@@ -232,7 +232,8 @@ export function simulate(
       qty: size.qty, entry: fill, cost: size.cost, sl: stops.stopLoss,
       tp: stops.takeProfit, openedIdx: i + 1, entryTime: next.t,
     };
-    i += 1;
+    // Do not skip `next`: the next loop iteration must evaluate the entry candle's
+    // high/low for same-candle stop-loss or take-profit execution.
   }
 
   // Close any remaining position at the final observed candle close. Without this,
