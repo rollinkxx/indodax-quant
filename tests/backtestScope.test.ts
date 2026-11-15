@@ -66,6 +66,15 @@ describe('backtest scope warnings', () => {
     expect(hasBacktestDataQuality(series, 59, 60)).toBe(false);
   });
 
+  it('restarts contiguous warm-up after a zero-volume official OHLC candle', () => {
+    const series: Candle[] = Array.from({ length: 60 }, (_, i) => ({
+      t: i * 300, o: 100, h: 101, l: 99, c: 100, v: 1, n: 0, source: 'history',
+    }));
+    series[10] = { ...series[10], v: 0 };
+    expect(hasBacktestDataQuality(series, 59, 60)).toBe(false);
+    expect(hasBacktestDataQuality(series, 59, 49)).toBe(true);
+  });
+
   it('requires a contiguous suffix after a gap and allows a later full warm-up', () => {
     const series: Candle[] = Array.from({ length: 90 }, (_, i) => ({
       t: i * 300, o: 100, h: 101, l: 99, c: 100, v: 1, n: 0, source: 'history',
