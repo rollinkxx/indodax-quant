@@ -342,7 +342,7 @@ async function main() {
     const variantResults = pairResult.variants as Record<string, unknown>;
     for (const variant of variants) {
       const full = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, 0);
-      const holdout = simulate(pair, candles, variant.params, 10_000_000, vols[pair] ?? null, variant.mode, splitIndex);
+      const holdout = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, splitIndex);
       variantResults[variant.key] = {
         fullPeriod: measure(full),
         outOfSampleLast30Pct: measure(holdout),
