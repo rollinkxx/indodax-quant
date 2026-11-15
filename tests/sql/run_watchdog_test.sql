@@ -79,6 +79,7 @@ INSERT INTO public.execution_logs(scheduled_time,status,started_at)
 VALUES (now()-interval '1 minute','RUNNING',now()-interval '1 minute');
 
 \i supabase/migrations/20261115150000_finalize_orphaned_runs.sql
+\i supabase/migrations/20261115151000_restore_dynamic_universe_watchdog.sql
 
 DO $assert$
 DECLARE
