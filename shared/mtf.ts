@@ -170,6 +170,7 @@ const label = (t: Trend) => ({ bull: 'bullish', bear: 'bearish', neutral: 'netra
 export function applyMtf(decision: SignalDecision | null, states: TfState[], mode: StrategyParams['mtfMode']): MtfOutcome {
   const summary = Object.fromEntries(states.map((s) => [s.tf, { trend: s.trend, rsi: s.rsi, ema_fast: s.emaFast, ema_slow: s.emaSlow, candles: s.candles }])) as MtfOutcome['summary'];
   if (!decision || mode === 'off') return { decision, summary };
+  if (states.length === 0 && !(mode === 'filter' && decision.side === 'BUY')) return { decision, summary };
   const want: Trend = decision.side === 'BUY' ? 'bull' : 'bear';
   const against: Trend = decision.side === 'BUY' ? 'bear' : 'bull';
   const text = `MTF ${states.map((s) => `${s.tf} ${label(s.trend)}`).join(', ')}`;
