@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
@@ -81,6 +81,43 @@ describe('evaluateSignalWindow (crossLookback)', () => {
     expect(validateParams({ crossLookback: 0 })[0]).toMatch(/between/);
     expect(validateParams({ crossLookback: 2.5 }).join()).toMatch(/integer/);
     expect(mergeParams({}).crossLookback).toBe(2);
+  });
+});
+
+describe('diagnoseBuySignalWindow', () => {
+  const below = row({ ema9: 99, ema21: 100 });
+  const above = (o: Partial<IndicatorRow> = {}) => row({ ema9: 101, ema21: 100, ...o });
+
+  it('reports a ready candidate using the same gate as evaluateSignalWindow', () => {
+    const rows = [below, above()];
+    const volumes = [0, 15];
+    const diagnostic = diagnoseBuySignalWindow(rows, volumes);
+    expect(diagnostic).toMatchObject({
+      stage: 'ready', ready: true, crossFound: true, barsSinceCross: 0,
+      trendOk: true, rsiOk: true, volumeOk: true, extensionOk: true,
+      alreadyQualified: false,
+    });
+    expect(evaluateSignalWindow(rows, volumes)?.side).toBe('BUY');
+  });
+
+  it('identifies the exact failing 5m filter without losing the other checks', () => {
+    expect(diagnoseBuySignalWindow([below, above({ ema50: 110 })], [0, 15]).stage).toBe('trend_filter');
+    expect(diagnoseBuySignalWindow([below, above({ rsi14: 75 })], [0, 15]).stage).toBe('rsi_filter');
+    expect(diagnoseBuySignalWindow([below, above()], [0, 11]).stage).toBe('volume_filter');
+    expect(diagnoseBuySignalWindow([below, above({ close: 102 })], [0, 15]).stage).toBe('entry_extension');
+  });
+
+  it('distinguishes no recent cross, an already-qualified cross, and unready indicators', () => {
+    expect(diagnoseBuySignalWindow([above(), above()], [15, 15]).stage).toBe('no_recent_cross');
+    expect(diagnoseBuySignalWindow([below, above(), above()], [0, 15, 15]).stage).toBe('already_qualified');
+    expect(diagnoseBuySignalWindow([below, row({ rsi14: null })], [0, 15]).stage).toBe('indicators_not_ready');
+  });
+
+  it('does not mark a trend filter as failed when that filter is disabled', () => {
+    const diagnostic = diagnoseBuySignalWindow(
+      [below, above({ ema50: 110 })], [0, 15], { ...DEFAULT_PARAMS, useTrendFilter: false },
+    );
+    expect(diagnostic).toMatchObject({ stage: 'ready', trendOk: true, ready: true });
   });
 });
 
