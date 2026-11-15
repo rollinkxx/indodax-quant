@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
-      SUPABASE_SERVICE_ROLE_KEY: \${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
