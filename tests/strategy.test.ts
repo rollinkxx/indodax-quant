@@ -100,6 +100,28 @@ describe('diagnoseBuySignalWindow', () => {
     expect(evaluateSignalWindow(rows, volumes)?.side).toBe('BUY');
   });
 
+  it('recognizes the production ASTERIDR BUY candidate reproduced from 06:50 UTC data', () => {
+    const prev = row({
+      t: 1, close: 9712, ema9: 9663.486437764435, ema21: 9672.05305338471,
+      ema50: 9682.747069586632, rsi14: 53.42769231790498,
+      volMa20: 98.95084675950133,
+    });
+    const last = row({
+      t: 2, close: 9809, ema9: 9692.589150211548, ema21: 9684.502775804282,
+      ema50: 9687.69816489696, rsi14: 61.18504855576645,
+      volMa20: 102.90340480200132,
+    });
+    const volume = 245.90443671;
+    const diagnostic = diagnoseBuySignalWindow([prev, last], [340.84563833, volume]);
+    expect(diagnostic).toMatchObject({
+      stage: 'ready', ready: true, crossFound: true, barsSinceCross: 0,
+      trendOk: true, rsiOk: true, volumeOk: true, extensionOk: true,
+    });
+    expect(diagnostic.volumeRatio).toBeCloseTo(2.39, 2);
+    expect(diagnostic.extensionPct).toBeCloseTo(1.29, 2);
+    expect(evaluateSignalWindow([prev, last], [340.84563833, volume])?.side).toBe('BUY');
+  });
+
   it('identifies the exact failing 5m filter without losing the other checks', () => {
     expect(diagnoseBuySignalWindow([below, above({ ema50: 110 })], [0, 15]).stage).toBe('trend_filter');
     expect(diagnoseBuySignalWindow([below, above({ rsi14: 75 })], [0, 15]).stage).toBe('rsi_filter');
