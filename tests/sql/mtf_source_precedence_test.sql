@@ -98,6 +98,14 @@ BEGIN
 
   v_candles := jsonb_build_array(jsonb_build_object(
     'pair_id','ingesttest','timeframe','1h','open_time','2026-01-01T00:00:00Z',
+    'open',105,'high',106,'low',104,'close',105,'volume',0,'trade_count',0,'is_closed',true,'source','synthetic'
+  ));
+  PERFORM public.ingest_market('[]','[]','[]','[]',v_candles,'[]');
+  SELECT source,close INTO v_source,v_close FROM public.candles WHERE pair_id='ingesttest';
+  IF v_source <> 'history' OR v_close <> 110 THEN RAISE EXCEPTION 'synthetic overwrote history in ingest_market'; END IF;
+
+  v_candles := jsonb_build_array(jsonb_build_object(
+    'pair_id','ingesttest','timeframe','1h','open_time','2026-01-01T00:00:00Z',
     'open',120,'high',121,'low',119,'close',120,'volume',2,'trade_count',2,'is_closed',true,'source','trades'
   ));
   PERFORM public.ingest_market('[]','[]','[]','[]',v_candles,'[]');
@@ -108,6 +116,13 @@ BEGIN
   PERFORM public.ingest_market('[]','[]','[]','[]',v_candles,'[]');
   SELECT source,close INTO v_source,v_close FROM public.candles WHERE pair_id='ingesttest';
   IF v_source <> 'trades' OR v_close <> 120 THEN RAISE EXCEPTION 'history overwrote trades in ingest_market'; END IF;
+  v_candles := jsonb_build_array(jsonb_build_object(
+    'pair_id','ingesttest','timeframe','1h','open_time','2026-01-01T00:00:00Z',
+    'open',105,'high',106,'low',104,'close',105,'volume',0,'trade_count',0,'is_closed',true,'source','synthetic'
+  ));
+  PERFORM public.ingest_market('[]','[]','[]','[]',v_candles,'[]');
+  SELECT source,close INTO v_source,v_close FROM public.candles WHERE pair_id='ingesttest';
+  IF v_source <> 'trades' OR v_close <> 120 THEN RAISE EXCEPTION 'synthetic overwrote trades in ingest_market'; END IF;
 
   -- save_analysis obeys the same source hierarchy.
   v_candles := jsonb_build_array(jsonb_build_object(
@@ -122,6 +137,13 @@ BEGIN
   PERFORM public.save_analysis('[]','[]',v_candles);
   SELECT source,close INTO v_source,v_close FROM public.candles WHERE pair_id='savetest';
   IF v_source <> 'history' OR v_close <> 110 THEN RAISE EXCEPTION 'history did not replace synthetic in save_analysis'; END IF;
+  v_candles := jsonb_build_array(jsonb_build_object(
+    'pair_id','savetest','timeframe','15m','open_time','2026-01-01T00:00:00Z',
+    'open',105,'high',106,'low',104,'close',105,'volume',0,'trade_count',0,'source','synthetic'
+  ));
+  PERFORM public.save_analysis('[]','[]',v_candles);
+  SELECT source,close INTO v_source,v_close FROM public.candles WHERE pair_id='savetest';
+  IF v_source <> 'history' OR v_close <> 110 THEN RAISE EXCEPTION 'synthetic overwrote history in save_analysis'; END IF;
 
   v_candles := jsonb_build_array(jsonb_build_object(
     'pair_id','savetest','timeframe','15m','open_time','2026-01-01T00:00:00Z',
@@ -135,6 +157,13 @@ BEGIN
   PERFORM public.save_analysis('[]','[]',v_candles);
   SELECT source,close INTO v_source,v_close FROM public.candles WHERE pair_id='savetest';
   IF v_source <> 'trades' OR v_close <> 120 THEN RAISE EXCEPTION 'history overwrote trades in save_analysis'; END IF;
+  v_candles := jsonb_build_array(jsonb_build_object(
+    'pair_id','savetest','timeframe','15m','open_time','2026-01-01T00:00:00Z',
+    'open',105,'high',106,'low',104,'close',105,'volume',0,'trade_count',0,'source','synthetic'
+  ));
+  PERFORM public.save_analysis('[]','[]',v_candles);
+  SELECT source,close INTO v_source,v_close FROM public.candles WHERE pair_id='savetest';
+  IF v_source <> 'trades' OR v_close <> 120 THEN RAISE EXCEPTION 'synthetic overwrote trades in save_analysis'; END IF;
 END;
 $assert$;
 
