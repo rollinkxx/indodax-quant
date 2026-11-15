@@ -36,13 +36,13 @@ describe('higher-timeframe aggregation', () => {
   });
 
   it('marks all-synthetic buckets synthetic and history-backed ones history', () => {
-    const s = [c(0, 1, 1, 0, 'synthetic'), c(300, 1, 1, 0, 'synthetic'), c(600, 1, 1, 0, 'synthetic'), c(900, 2, 2, 1, 'history'), c(1200, 2), c(1500, 2)];
+    const s = [c(0, 10, 10, 0, 'synthetic'), c(300, 10, 10, 0, 'synthetic'), c(600, 10, 10, 0, 'synthetic'), c(900, 20, 20, 1, 'history'), c(1200, 20), c(1500, 20)];
     const m15 = aggregateComplete(s, 900);
     expect(m15.map((k) => k.source)).toEqual(['synthetic', 'history']);
   });
 
   it('marks a bucket synthetic when any 5m input is synthetic', () => {
-    const s = [c(0, 1, 1, 1, 'history'), c(300, 1, 1, 0, 'synthetic'), c(600, 1, 1, 1, 'history')];
+    const s = [c(0, 10, 10, 1, 'history'), c(300, 10, 10, 0, 'synthetic'), c(600, 10, 10, 1, 'history')];
     expect(aggregateComplete(s, 900)[0].source).toBe('synthetic');
   });
 
