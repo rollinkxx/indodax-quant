@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -61,7 +61,16 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
         const t = (id: string, vol: number) => [id.replace('idr', '_idr'), { last: '1000', buy: opts.wideSpread ? '998.9' : '999', sell: '1000', high: '1', low: '1', vol_idr: String(vol), server_time: NOW - 5 }];
         return json({ tickers: Object.fromEntries([t('btcidr', 9e10), t('pepeidr', 5e10), t('usdtidr', 8e10), t('dogeidr', 2e10)]), prices_24h: {} });
       }
-      if (u.pathname.startsWith('/api/trades/')) return json([{ tid: '1000', date: String(NOW - 20), price: '1000', amount: '1', type: 'buy' }]);
+      if (u.pathname.startsWith('/api/trades/')) {
+        const pairId = u.pathname.split('/').at(-1);
+        if (opts.failedTradePair === pairId) {
+          return new Response(JSON.stringify({
+            code: 'SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED',
+            message: 'Service is temporarily unavailable',
+          }), { status: 503, headers: { 'content-type': 'application/json' } });
+        }
+        return json([{ tid: '1000', date: String(NOW - 20), price: '1000', amount: '1', type: 'buy' }]);
+      }
       if (u.pathname === '/tradingview/history_v2') {
         const tf = Number(u.searchParams.get('tf')) * 60;
         const end = Math.floor(NOW / tf) * tf; // includes the still-forming bucket, which must be dropped
@@ -147,6 +156,9 @@ describe('pipeline: MTF + dynamic universe', () => {
       pair_id: 'btcidr', signal_id: 99, stage: 'economics_gate', reason: 'net_reward_risk_below_minimum',
     }));
     expect(paperInfo.entry_rejection_counts.net_reward_risk_below_minimum).toBe(1);
+    expect(paperInfo.entry_rejections[0].metrics.net_reward_risk_ratio).toBeGreaterThan(0);
+    expect(paperInfo.entry_rejections[0].metrics.net_reward_per_unit).toBeDefined();
+    expect(paperInfo.entry_rejections[0].metrics.net_risk_per_unit).toBeDefined();
   });
 
 
@@ -165,6 +177,29 @@ describe('pipeline: MTF + dynamic universe', () => {
     }));
     expect(info.entry_rejections[0].metrics.spread_pct).toBeGreaterThan(0);
     expect(info.entry_rejections[0].metrics.stop_distance_pct).toBeGreaterThan(0);
+    expect(info.entry_rejections[0].metrics.entry_price).toBeGreaterThan(0);
+    expect(info.entry_rejections[0].metrics.bid_price).toBeGreaterThan(0);
+    expect(info.entry_rejections[0].metrics.ask_price).toBeGreaterThan(0);
+    expect(info.entry_rejections[0].metrics.spread_to_stop_pct).toBeGreaterThan(0);
+    expect(info.entry_rejections[0].metrics.target_distance_pct).toBeGreaterThan(0);
+  });
+
+  it('records exhausted upstream 503 failures and keeps that pair fail-closed', async () => {
+    const { f, rpcs } = setup({ failedTradePair: 'btcidr' });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('PARTIAL');
+    const fetchInfo = (r.steps as any).fetch_trades.info;
+    expect(fetchInfo.failures.btcidr).toMatchObject({
+      http_status: 503,
+      failure_class: 'upstream_service_degraded',
+      retryable: true,
+      attempts: 3,
+    });
+    expect((r.steps as any).build_candles.info.btcidr).toBe('no_trades_fetch');
+    const ingest = rpcs.find((x) => x.fn === 'ingest_market')!.body;
+    expect(ingest.p_trades).toEqual([]);
+    expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
   });
 
   it('repairs legacy 5m holes although the old covered_until cursor is already current', async () => {
