@@ -60,3 +60,34 @@ export function finalizeEndOfDataTrade(
     exitTime: candle.t,
   };
 }
+
+
+export interface ProtectiveExit {
+  price: number;
+  reason: 'STOP_LOSS' | 'TAKE_PROFIT';
+}
+
+/**
+ * Resolve stop/target touches using conservative OHLC ordering.
+ * A gap beyond a level fills at the candle open; if both levels are touched,
+ * stop-loss wins because candle data cannot reveal the intrabar path.
+ */
+export function resolveProtectiveExit(
+  stopLoss: number,
+  takeProfit: number,
+  candle: Candle,
+): ProtectiveExit | null {
+  if (
+    !Number.isFinite(stopLoss) || stopLoss <= 0 ||
+    !Number.isFinite(takeProfit) || takeProfit <= 0 || stopLoss >= takeProfit ||
+    candle.source === 'synthetic' || !isValidCandle(candle)
+  ) throw new Error('Invalid protective exit inputs');
+
+  if (candle.l <= stopLoss) {
+    return { price: candle.o < stopLoss ? candle.o : stopLoss, reason: 'STOP_LOSS' };
+  }
+  if (candle.h >= takeProfit) {
+    return { price: candle.o > takeProfit ? candle.o : takeProfit, reason: 'TAKE_PROFIT' };
+  }
+  return null;
+}
