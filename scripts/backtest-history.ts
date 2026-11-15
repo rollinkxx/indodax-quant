@@ -63,3 +63,27 @@ export function mergeBacktestCandles(history: Candle[], stored: Candle[]): Candl
   }
   return [...merged.values()].sort((a, b) => a.t - b.t);
 }
+
+
+/**
+ * Keep persisted trade/history bars inside the exact requested half-open interval.
+ * This prevents a database tail candle before/after the official history window
+ * from changing the test duration or chronological train/holdout boundary.
+ */
+export function filterBacktestCandlesToRange(
+  candles: Candle[],
+  fromSec: number,
+  toSec: number,
+): Candle[] {
+  if (!Number.isFinite(fromSec) || !Number.isFinite(toSec) || fromSec >= toSec) {
+    throw new Error('Invalid backtest candle range');
+  }
+  return candles
+    .filter((candle) =>
+      candle.t >= fromSec &&
+      candle.t < toSec &&
+      candle.source !== 'synthetic' &&
+      isValidCandle(candle),
+    )
+    .sort((a, b) => a.t - b.t);
+}
