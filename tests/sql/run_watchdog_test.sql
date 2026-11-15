@@ -1,6 +1,19 @@
 \set ON_ERROR_STOP on
 BEGIN;
 
+-- Previous SQL security tests created small public-schema fixtures. Replace them only
+-- inside this transaction; ROLLBACK at the end restores the original CI fixture.
+DROP TABLE IF EXISTS public.paper_orders CASCADE;
+DROP TABLE IF EXISTS public.paper_positions CASCADE;
+DROP TABLE IF EXISTS public.portfolio_snapshots CASCADE;
+DROP TABLE IF EXISTS public.execution_logs CASCADE;
+DROP TABLE IF EXISTS public.system_locks CASCADE;
+DROP TABLE IF EXISTS public.pair_sync_state CASCADE;
+DROP TABLE IF EXISTS public.market_pairs CASCADE;
+DROP TABLE IF EXISTS public.paper_accounts CASCADE;
+DROP TABLE IF EXISTS public.strategy_configs CASCADE;
+DROP TABLE IF EXISTS public.trading_signals CASCADE;
+
 CREATE TABLE public.execution_logs (
   id bigserial PRIMARY KEY,
   scheduled_time timestamptz NOT NULL UNIQUE,
