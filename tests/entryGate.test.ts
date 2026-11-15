@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buyFillPrice, computeStops, entryGate, netRewardRiskGate, positionSize } from '../shared/paper';
+import { buyFillPrice, computeStops, entryGate, netRewardRiskDiagnostics, netRewardRiskGate, positionSize } from '../shared/paper';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../shared/strategy';
 
 const P = DEFAULT_PARAMS;
@@ -30,6 +30,25 @@ describe('entryGate', () => {
 });
 
 describe('net reward/risk gate', () => {
+  it('returns auditable net reward/risk values while preserving the exact gate decision', () => {
+    const input = {
+      entry: 100,
+      stopLoss: 99.57,
+      takeProfit: 100.86,
+      feePct: 0.3,
+      exitSlippageBps: 15,
+    };
+    const diagnostics = netRewardRiskDiagnostics(input);
+    expect(diagnostics.reason).toBe('net_reward_risk_below_minimum');
+    expect(netRewardRiskGate(input)).toBe(diagnostics.reason);
+    expect(diagnostics.metrics.entry_cost_per_unit).toBeCloseTo(100.3, 8);
+    expect(diagnostics.metrics.stop_exit_fill).toBeCloseTo(99.420645, 8);
+    expect(diagnostics.metrics.target_exit_fill).toBeCloseTo(100.70871, 8);
+    expect(diagnostics.metrics.net_risk_per_unit).toBeGreaterThan(0);
+    expect(diagnostics.metrics.net_reward_per_unit).toBeGreaterThan(0);
+    expect(diagnostics.metrics.net_reward_risk_ratio).toBeLessThan(1);
+  });
+
   it('blocks a low-ATR setup whose take-profit barely covers costs but stop risk is much larger', () => {
     expect(netRewardRiskGate({
       entry: 100,
