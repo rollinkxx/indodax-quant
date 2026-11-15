@@ -14,7 +14,7 @@ import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
-import { aggregateCompleteMinuteHistory, filterBacktestCandlesToRange, mergeBacktestCandles } from './backtest-history';
+import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, type BacktestHistoryRange } from './backtest-history';
 import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 
 const URL_ = process.env.SUPABASE_URL;
@@ -81,10 +81,8 @@ async function loadStoredCandles(pair: string): Promise<Candle[]> {
 }
 
 /** Pulls official 1m OHLC in 12h windows and aggregates only complete 5m buckets. */
-async function loadOfficialHistory(symbol: string, days: number): Promise<OfficialHistoryResult> {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const toSec = Math.floor(nowSec / 300) * 300; // exclude the currently forming 5m candle
-  const fromSec = Math.floor((toSec - days * 86_400) / 300) * 300;
+async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange): Promise<OfficialHistoryResult> {
+  const { days, fromSec, toSec } = range;
   const oneMinute: Candle[] = [];
   let apiChunks = 0;
 
@@ -338,13 +336,16 @@ async function main() {
 
   // Pull history outside the loop with a bounded pair concurrency; each pair is chunked
   // into 12h calls to remain below the public history endpoint's likely response cap.
+  // Anchor one identical historical interval before any network calls. Every pair
+  // in every concurrency batch then uses exactly the same from/to boundaries.
+  const historyRange = historyDays > 0 ? createBacktestHistoryRange(historyDays, Date.now()) : null;
   const officialHistory = new Map<string, OfficialHistoryResult>();
-  if (historyDays > 0) {
+  if (historyRange) {
     const pairConcurrency = 3;
     for (let offset = 0; offset < selectedPairs.length; offset += pairConcurrency) {
       const batch = selectedPairs.slice(offset, offset + pairConcurrency);
       const fetched = await Promise.all(batch.map(async (pair) => {
-        const result = await loadOfficialHistory(pair.symbol, historyDays);
+        const result = await loadOfficialHistory(pair.symbol, historyRange);
         console.error(
           `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% coverage)`,
         );
@@ -427,6 +428,10 @@ async function main() {
       pairSelection: cliPairs.length ? 'explicit CLI pairs' : 'active tracked + dynamic universe (maintenance excluded)',
       officialHistorySource: historyDays > 0 ? 'INDODAX public tradingview/history_v2 tf=1, aggregated to complete 5m buckets; in-memory only' : 'stored 5m candles only',
       officialHistoryDaysRequested: historyDays,
+      officialHistoryRange: historyRange ? {
+        from: new Date(historyRange.fromSec * 1000).toISOString(),
+        to: new Date(historyRange.toSec * 1000).toISOString(),
+      } : null,
       officialHistoryPairsWithBars: [...officialHistory.values()].filter((h) => h.metrics.complete5mBars > 0).length,
       officialHistoryMinuteBarsReceived: [...officialHistory.values()].reduce((sum, h) => sum + h.metrics.minuteBarsReceived, 0),
       officialHistoryComplete5mBars: officialComplete5mBars,
