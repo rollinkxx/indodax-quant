@@ -9,9 +9,7 @@ declare
   v_definition text;
   v_updated text;
   -- Match only the old source-rank comparison, allowing PostgreSQL to normalize whitespace.
-  v_pattern constant text := $pattern$
-candles[.]source[[:space:]]*<>[[:space:]]*'trades'[[:space:]]+and[[:space:]]+excluded[.]source[[:space:]]*=[[:space:]]*'trades'
-$pattern$;
+  v_pattern constant text := $pattern$candles[.]source[[:space:]]*<>[[:space:]]*'trades'[[:space:]]+and[[:space:]]+excluded[.]source[[:space:]]*=[[:space:]]*'trades'$pattern$;
   v_new_condition constant text := $replacement$
 case excluded.source
   when 'trades' then 3
