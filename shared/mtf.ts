@@ -105,11 +105,10 @@ export function contiguousObservedSuffix(series: Candle[], tfSec: number, lastOp
   if (tfSec <= 0 || lastOpenTime % tfSec !== 0) return 0;
   const rows = series.filter((c) => c.t <= lastOpenTime && c.t % tfSec === 0).slice().sort((a, b) => a.t - b.t);
   if (rows.length === 0) return 0;
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i].t === rows[i - 1].t) return 0;
-  }
   const last = rows[rows.length - 1];
-  if (last.t !== lastOpenTime || last.source === 'synthetic' || !isValidCandle(last)) return 0;
+  // A duplicate at the latest timestamp makes the signal candle ambiguous.
+  if (last.t !== lastOpenTime || last.source === 'synthetic' || !isValidCandle(last) ||
+      rows.at(-2)?.t === last.t) return 0;
 
   let count = 1;
   for (let i = rows.length - 2; i >= 0; i--) {
