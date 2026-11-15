@@ -153,7 +153,7 @@ describe('pipeline: MTF + dynamic universe', () => {
   it('records spread-versus-stop rejection metrics without opening a paper position', async () => {
     const signal = {
       id: 100, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
-      indicators: { atr14: 0.1 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+      indicators: { atr14: 1.335 }, candle_time: new Date(expectedLast * 1000).toISOString(),
     };
     const { f, rpcs } = setup({ mtfMode: 'off', newSignals: [signal] });
     const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });

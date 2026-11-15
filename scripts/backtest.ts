@@ -3,7 +3,7 @@
 // plus a separately labelled EMA21 pullback-reclaim continuation shadow variant.
 // Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run backtest [pairId ...]
 import {
-  computeIndicators, DEFAULT_PARAMS, diagnoseTrendContinuationWindow, evaluateSignalWindow,
+  computeIndicators, diagnoseTrendContinuationWindow, evaluateSignalWindow,
   mergeParams, type StrategyParams,
 } from '../shared/strategy';
 import {
