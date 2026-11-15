@@ -50,6 +50,23 @@ describe('INDODAX public client', () => {
     expect(await c.getTicker('btcidr')).toEqual({ last: 1, bid: 1, ask: 2, server_time: 5, vol_idr: null });
     expect(n).toBe(2);
   });
+  it('exposes the exhausted retry count for a persistent upstream 503', async () => {
+    let n = 0;
+    const c = new IndodaxClient(async () => {
+      n++;
+      return new Response(JSON.stringify({
+        code: 'SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED',
+        message: 'Service is temporarily unavailable',
+      }), { status: 503 });
+    }, { timeoutMs: 1000, retries: 2 });
+
+    const error = await c.getTrades('btcidr').catch((e: unknown) => e as Error & { status?: number; attempts?: number });
+    expect(error).toBeInstanceOf(Error);
+    expect(error.status).toBe(503);
+    expect(error.attempts).toBe(3);
+    expect(n).toBe(3);
+  });
+
   it('does not retry on 404 and rejects invalid payloads', async () => {
     let n = 0;
     const c = new IndodaxClient(async () => { n++; return new Response('no', { status: 404 }); }, { timeoutMs: 1000, retries: 2 });
