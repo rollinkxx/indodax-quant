@@ -315,12 +315,12 @@ async function main() {
     const candles = await loadCandles(pair.id, history);
     const observed = candles.filter((c) => c.source !== 'synthetic');
     if (candles.length < live.minCandles + 20) {
-      console.warn(`[SKIP] ${pair}: only ${candles.length} timeline bars / ${observed.length} observed bars`);
+      console.warn(`[SKIP] ${pair.id}: only ${candles.length} timeline bars / ${observed.length} observed bars`);
       continue;
     }
     const splitIndex = Math.floor(candles.length * 0.7);
     if (candles.length - splitIndex < live.minCandles + 5) {
-      console.warn(`[SKIP] ${pair}: holdout too short after 70/30 split`);
+      console.warn(`[SKIP] ${pair.id}: holdout too short after 70/30 split`);
       continue;
     }
     usablePairs++;
@@ -341,14 +341,14 @@ async function main() {
     };
     const variantResults = pairResult.variants as Record<string, unknown>;
     for (const variant of variants) {
-      const full = simulate(pair, candles, variant.params, 10_000_000, vols[pair] ?? null, variant.mode, 0);
+      const full = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, 0);
       const holdout = simulate(pair, candles, variant.params, 10_000_000, vols[pair] ?? null, variant.mode, splitIndex);
       variantResults[variant.key] = {
         fullPeriod: measure(full),
         outOfSampleLast30Pct: measure(holdout),
       };
     }
-    summary[pair] = pairResult;
+    summary[pair.id] = pairResult;
   }
 
   if (usablePairs === 0) {
@@ -365,10 +365,10 @@ async function main() {
       pairSelection: cliPairs.length ? 'explicit CLI pairs' : 'active tracked + dynamic universe (maintenance excluded)',
       officialHistorySource: historyDays > 0 ? 'INDODAX public tradingview/history_v2 tf=1, aggregated to complete 5m buckets; in-memory only' : 'stored 5m candles only',
       officialHistoryDaysRequested: historyDays,
-      officialHistoryPairsWithBars: officialHistory.size,
+      officialHistoryPairsWithBars: [...officialHistory.values()].filter((h) => h.metrics.complete5mBars > 0).length,
       officialHistoryMinuteBarsReceived: [...officialHistory.values()].reduce((sum, h) => sum + h.metrics.minuteBarsReceived, 0),
       officialHistoryComplete5mBars: [...officialHistory.values()].reduce((sum, h) => sum + h.metrics.complete5mBars, 0),
-      pairsRequested: pairs.length,
+      pairsRequested: selectedPairs.length,
       pairsEvaluated: usablePairs,
       initialEquityPerPairIdr: 10_000_000,
       sharedPortfolio: false,
