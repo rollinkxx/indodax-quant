@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateComplete, applyMtf, buildHigherSeries, lastCompleteBucket, trendState, type TfState } from '../shared/mtf';
+import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, lastCompleteBucket, trendState, type TfState } from '../shared/mtf';
 import { DEFAULT_PARAMS, type SignalDecision } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
@@ -46,6 +46,11 @@ describe('higher-timeframe aggregation', () => {
     expect(aggregateComplete(s, 900)[0].source).toBe('synthetic');
   });
 
+  it('rejects HTF aggregation when duplicate 5m timestamps hide a missing slot', () => {
+    const duplicate = [c(0, 10), c(300, 11), c(300, 12), c(900, 13), c(1200, 14), c(1500, 15)];
+    expect(aggregateComplete(duplicate, 900).map((x) => x.t)).toEqual([900]);
+  });
+
   it('buildHigherSeries merges stored history with aggregates (aggregates win) and drops forming candles', () => {
     const stored = [c(0, 10), c(3600, 11), c(7200, 12), c(10800, 99)];
     const agg = [c(7200, 13)];
@@ -62,10 +67,32 @@ describe('higher-timeframe aggregation', () => {
     expect(out.at(-1)).toMatchObject({ t: 7200, c: 120, source: 'history' });
   });
 
+  it('lets history replace synthetic but never replace stored trades', () => {
+    const synthetic = c(7200, 100, 100, 0, 'synthetic');
+    const history = c(7200, 110, 110, 0, 'history');
+    const trades = c(7200, 120, 120, 1, 'trades');
+    expect(buildHigherSeries([synthetic], [history], 3600, 7200).at(-1)).toMatchObject({ c: 110, source: 'history' });
+    expect(buildHigherSeries([trades], [history], 3600, 7200).at(-1)).toMatchObject({ c: 120, source: 'trades' });
+    expect(buildHigherSeries([history], [trades], 3600, 7200).at(-1)).toMatchObject({ c: 120, source: 'trades' });
+  });
+
   it('buildHigherSeries fills gaps up to the last complete bucket', () => {
     const out = buildHigherSeries([c(0, 10)], [], 3600, 3 * 3600);
     expect(out).toHaveLength(4);
     expect(out[3]).toMatchObject({ t: 3 * 3600, c: 10, source: 'synthetic' });
+  });
+});
+
+describe('contiguousObservedSuffix', () => {
+  it('requires a fresh, valid, unique, uninterrupted observed suffix', () => {
+    const good = Array.from({ length: 12 }, (_, i) => c(i * 900, 100 + i));
+    expect(contiguousObservedSuffix(good, 900, 11 * 900)).toBe(12);
+    expect(contiguousObservedSuffix(good, 900, 12 * 900)).toBe(0);
+    const gap = [...good.slice(0, 5), ...good.slice(6)];
+    expect(contiguousObservedSuffix(gap, 900, 11 * 900)).toBe(6);
+    expect(contiguousObservedSuffix([...good, good[11]], 900, 11 * 900)).toBe(0);
+    const syntheticTail = [...good.slice(0, -1), c(11 * 900, 111, 111, 0, 'synthetic')];
+    expect(contiguousObservedSuffix(syntheticTail, 900, 11 * 900)).toBe(0);
   });
 });
 
@@ -126,6 +153,13 @@ describe('applyMtf', () => {
     expect(applyMtf(buy, [st('15m', 'bull'), st('1h', 'neutral')], 'filter')).toMatchObject({ decision: null, blocked: 'mtf_anchor_not_bullish' });
     expect(applyMtf(buy, [st('15m', 'bear'), st('1h', 'bull')], 'filter')).toMatchObject({ decision: null, blocked: 'mtf_against_trend' });
     expect(applyMtf(buy, [st('15m', 'bull'), st('1h', 'unknown')], 'filter')).toMatchObject({ decision: null, blocked: 'mtf_warming_up' });
+  });
+
+  it('filter: BUY fails closed when either required timeframe is missing or duplicated', () => {
+    expect(applyMtf(buy, [], 'filter')).toMatchObject({ decision: null, blocked: 'mtf_missing_or_duplicate:15m,1h' });
+    expect(applyMtf(buy, [st('15m', 'bull')], 'filter')).toMatchObject({ decision: null, blocked: 'mtf_missing_or_duplicate:1h' });
+    expect(applyMtf(buy, [st('1h', 'bull')], 'filter')).toMatchObject({ decision: null, blocked: 'mtf_missing_or_duplicate:15m' });
+    expect(applyMtf(buy, [st('15m', 'bull'), st('15m', 'bull'), st('1h', 'bull')], 'filter')).toMatchObject({ decision: null, blocked: 'mtf_missing_or_duplicate:15m' });
   });
 
   it('filter: BUY with 15m neutral and 1h bullish passes with +10', () => {
