@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Candle } from '../shared/candles';
-import { aggregateCompleteMinuteHistory, mergeBacktestCandles } from '../scripts/backtest-history';
+import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles } from '../scripts/backtest-history';
 
 const minute = (t: number, patch: Partial<Candle> = {}): Candle => ({
   t, o: 100 + t / 60, h: 102 + t / 60, l: 99 + t / 60,
@@ -94,5 +94,28 @@ describe('filterBacktestCandlesToRange', () => {
   it('rejects invalid time ranges', async () => {
     const { filterBacktestCandlesToRange } = await import('../scripts/backtest-history');
     expect(() => filterBacktestCandlesToRange([], 600, 300)).toThrow('Invalid backtest candle range');
+  });
+});
+
+
+describe('createBacktestHistoryRange', () => {
+  it('anchors an exact, 5-minute-aligned interval once for every pair in the run', () => {
+    const nowMs = Date.parse('2026-11-15T15:22:59.999Z');
+    const range = createBacktestHistoryRange(30, nowMs);
+    const expectedToSec = Math.floor(Math.floor(nowMs / 1000) / 300) * 300;
+
+    expect(range).toEqual({
+      days: 30,
+      fromSec: expectedToSec - 30 * 86_400,
+      toSec: expectedToSec,
+    });
+    expect(range.toSec % 300).toBe(0);
+    expect(range.toSec - range.fromSec).toBe(30 * 86_400);
+  });
+
+  it('rejects invalid day counts and timestamps', () => {
+    expect(() => createBacktestHistoryRange(0, Date.now())).toThrow('Invalid backtest history range inputs');
+    expect(() => createBacktestHistoryRange(181, Date.now())).toThrow('Invalid backtest history range inputs');
+    expect(() => createBacktestHistoryRange(30, Number.NaN)).toThrow('Invalid backtest history range inputs');
   });
 });
