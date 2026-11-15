@@ -87,3 +87,25 @@ export function filterBacktestCandlesToRange(
     )
     .sort((a, b) => a.t - b.t);
 }
+
+
+export interface BacktestHistoryRange {
+  days: number;
+  fromSec: number;
+  toSec: number;
+}
+
+/**
+ * Anchor a historical test to one common, closed 5-minute boundary.
+ * The 5-minute alignment and exact 24h-day duration ensure every market in a
+ * multi-pair experiment is evaluated over the same half-open [from,to) interval.
+ */
+export function createBacktestHistoryRange(days: number, nowMs: number): BacktestHistoryRange {
+  if (!Number.isInteger(days) || days < 1 || days > 180 || !Number.isFinite(nowMs) || nowMs <= 0) {
+    throw new Error('Invalid backtest history range inputs');
+  }
+  const nowSec = Math.floor(nowMs / 1000);
+  const toSec = Math.floor(nowSec / 300) * 300;
+  const fromSec = toSec - days * 86_400;
+  return { days, fromSec, toSec };
+}
