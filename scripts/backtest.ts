@@ -14,7 +14,7 @@ import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
-import { aggregateCompleteMinuteHistory, mergeBacktestCandles } from './backtest-history';
+import { aggregateCompleteMinuteHistory, filterBacktestCandlesToRange, mergeBacktestCandles } from './backtest-history';
 import { finalizeEndOfDataTrade } from './backtest-execution';
 
 const URL_ = process.env.SUPABASE_URL;
@@ -51,6 +51,8 @@ interface OfficialHistoryResult {
     historyCoveragePct: number;
     firstObservedAt: string | null;
     lastObservedAt: string | null;
+    fromSec: number;
+    toSec: number;
     from: string;
     to: string;
   };
@@ -111,6 +113,8 @@ async function loadOfficialHistory(symbol: string, days: number): Promise<Offici
       historyCoveragePct,
       firstObservedAt: complete5m.length ? new Date(complete5m[0].t * 1000).toISOString() : null,
       lastObservedAt: complete5m.length ? new Date(complete5m[complete5m.length - 1].t * 1000).toISOString() : null,
+      fromSec,
+      toSec,
       from: new Date(fromSec * 1000).toISOString(),
       to: new Date(toSec * 1000).toISOString(),
     },
@@ -120,7 +124,13 @@ async function loadOfficialHistory(symbol: string, days: number): Promise<Offici
 async function loadCandles(pair: string, officialHistory?: OfficialHistoryResult): Promise<Candle[]> {
   const stored = await loadStoredCandles(pair);
   const history = officialHistory?.candles ?? [];
-  return fillGaps(mergeBacktestCandles(history, stored), 300);
+  const merged = mergeBacktestCandles(history, stored);
+  // The requested evaluation window is a hard boundary. Persisted tail candles
+  // outside it must not silently lengthen the sample or shift the 70/30 split.
+  const scoped = officialHistory
+    ? filterBacktestCandlesToRange(merged, officialHistory.metrics.fromSec, officialHistory.metrics.toSec)
+    : merged;
+  return fillGaps(scoped, 300);
 }
 
 export type ExperimentMode = 'crossover' | 'trend_continuation';
@@ -255,6 +265,7 @@ interface Metrics {
   avgLossPct: number;
   maxDrawdownPct: number;
   endOfDataExits: number;
+  exitReasons: Record<string, number>;
 }
 
 function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
@@ -285,6 +296,10 @@ function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
     avgLossPct: Number(avgLossPct.toFixed(3)),
     maxDrawdownPct: Number(maxDrawdownPct.toFixed(3)),
     endOfDataExits: trades.filter((trade) => trade.reason === 'END_OF_DATA').length,
+    exitReasons: trades.reduce<Record<string, number>>((counts, trade) => {
+      counts[trade.reason] = (counts[trade.reason] ?? 0) + 1;
+      return counts;
+    }, {}),
   };
 }
 
