@@ -20,7 +20,7 @@ export function hasBacktestDataQuality(
   for (let i = index - 1; i >= 0; i--) {
     const previous = candles[i];
     const current = candles[i + 1];
-    if (current.t - previous.t !== intervalSec || previous.source === 'synthetic' || !isValidCandle(previous)) break;
+    if (current.t - previous.t !== intervalSec || previous.source === 'synthetic' || previous.v <= 0 || !isValidCandle(previous)) break;
     contiguous++;
   }
   return contiguous >= minCandles;
