@@ -12,9 +12,10 @@ import {
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
+import { evaluateStrategyEvidence } from '../shared/strategyEvidence';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
-import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, type BacktestHistoryRange } from './backtest-history';
+import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
 import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 
 const URL_ = process.env.SUPABASE_URL;
@@ -49,6 +50,15 @@ interface OfficialHistoryResult {
     complete5mBars: number;
     expected5mBars: number;
     historyCoveragePct: number;
+    receivedMinuteBars: number;
+    expectedMinuteBars: number;
+    uniqueValidMinuteBars: number;
+    duplicateMinuteBars: number;
+    missingMinuteBars: number;
+    zeroVolumeMinuteBars: number;
+    zeroVolume5mBars: number;
+    activeVolume5mBars: number;
+    activeVolumeCoveragePct: number;
     firstObservedAt: string | null;
     lastObservedAt: string | null;
     fromSec: number;
@@ -97,7 +107,8 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
   }
 
   const complete5m = aggregateCompleteMinuteHistory(oneMinute, fromSec, toSec);
-  const expected5mBars = Math.floor((toSec - fromSec) / 300);
+  const quality = summarizeMinuteHistoryQuality(oneMinute, fromSec, toSec, complete5m);
+  const expected5mBars = quality.expected5mBars;
   const historyCoveragePct = expected5mBars > 0
     ? Number((complete5m.length / expected5mBars * 100).toFixed(2)) : 0;
   return {
@@ -109,6 +120,7 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
       complete5mBars: complete5m.length,
       expected5mBars,
       historyCoveragePct,
+      ...quality,
       firstObservedAt: complete5m.length ? new Date(complete5m[0].t * 1000).toISOString() : null,
       lastObservedAt: complete5m.length ? new Date(complete5m[complete5m.length - 1].t * 1000).toISOString() : null,
       fromSec,
@@ -170,7 +182,9 @@ export function simulate(
   const firstIndex = Math.max(p.minCandles, win, Math.floor(startIndex));
   for (let i = firstIndex; i < series.length; i++) {
     const c = series[i];
-    if (c.source === 'synthetic' || !isValidCandle(c)) continue;
+    // A zero-volume OHLC row has a price but no demonstrated executable trade.
+    // It cannot trigger a simulated fill, protective exit, trailing stop or timer exit.
+    if (c.source === 'synthetic' || c.v <= 0 || !isValidCandle(c)) continue;
 
     if (pos) {
       // The entry candle is deliberately processed on the next loop iteration;
@@ -240,7 +254,7 @@ export function simulate(
     let lastObserved: Candle | null = null;
     for (let index = series.length - 1; index >= pos.openedIdx; index--) {
       const candidate = series[index];
-      if (candidate.source !== 'synthetic' && isValidCandle(candidate)) {
+      if (candidate.source !== 'synthetic' && candidate.v > 0 && isValidCandle(candidate)) {
         lastObserved = candidate;
         break;
       }
@@ -384,6 +398,8 @@ async function main() {
     const pairResult: Record<string, unknown> = {
       candles: candles.length,
       observedCandles: observed.length,
+      activeVolumeCandles: observed.filter((c) => c.v > 0).length,
+      zeroVolumeCandles: observed.filter((c) => c.v <= 0).length,
       syntheticGapBars: candles.length - observed.length,
       officialHistory: history?.metrics ?? null,
       from: new Date(candles[0].t * 1000).toISOString(),
@@ -411,11 +427,20 @@ async function main() {
   const officialMetrics = [...officialHistory.values()].map((item) => item.metrics);
   const officialExpected5mBars = officialMetrics.reduce((sum, item) => sum + item.expected5mBars, 0);
   const officialComplete5mBars = officialMetrics.reduce((sum, item) => sum + item.complete5mBars, 0);
+  const officialZeroVolume5mBars = officialMetrics.reduce((sum, item) => sum + item.zeroVolume5mBars, 0);
+  const officialActiveVolume5mBars = officialMetrics.reduce((sum, item) => sum + item.activeVolume5mBars, 0);
+  const officialZeroVolumeMinuteBars = officialMetrics.reduce((sum, item) => sum + item.zeroVolumeMinuteBars, 0);
+  const officialActiveVolumeCoveragePct = officialExpected5mBars > 0
+    ? Number((officialActiveVolume5mBars / officialExpected5mBars * 100).toFixed(2)) : 0;
   const aggregateOutOfSample = Object.fromEntries(
     Object.entries(holdoutTradesByVariant).map(([key, trades]) => [
       key,
       measure(trades, 10_000_000 * usablePairs),
     ]),
+  );
+  // This is a release gate for manual review only. It never changes active strategy settings.
+  const evidenceGateByVariant = Object.fromEntries(
+    Object.entries(aggregateOutOfSample).map(([key, metrics]) => [key, evaluateStrategyEvidence(metrics)]),
   );
 
   console.log(JSON.stringify({
@@ -438,6 +463,10 @@ async function main() {
       officialHistoryExpected5mBars: officialExpected5mBars,
       officialHistoryCoveragePct: officialExpected5mBars > 0
         ? Number((officialComplete5mBars / officialExpected5mBars * 100).toFixed(2)) : 0,
+      officialHistoryZeroVolume5mBars: officialZeroVolume5mBars,
+      officialHistoryActiveVolume5mBars: officialActiveVolume5mBars,
+      officialHistoryZeroVolume1mBars: officialZeroVolumeMinuteBars,
+      officialHistoryActiveVolumeCoveragePct: officialActiveVolumeCoveragePct,
       pairsRequested: selectedPairs.length,
       pairsEvaluated: usablePairs,
       initialEquityPerPairIdr: 10_000_000,
@@ -445,6 +474,8 @@ async function main() {
     },
     scopeWarnings: backtestScopeWarnings(live),
     aggregateOutOfSampleIndependentPairAccounts: aggregateOutOfSample,
+    evidenceGateByVariant,
+    evidenceGatePolicy: 'NO_GO unless holdout has >=100 trades, Wilson 95% lower win-rate bound >=70%, profit factor >1 and net expectancy >0; eligible results require human review and are never auto-promoted',
     aggregateAccountMeaning: 'sum of independent per-pair simulations; each evaluated pair starts with its own IDR 10,000,000; not a shared-cash portfolio',
     results: summary,
   }, null, 2));
