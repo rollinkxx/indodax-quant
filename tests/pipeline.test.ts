@@ -103,7 +103,7 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(indodax.filter((p) => p.startsWith('/tradingview/history_v2')).map((p) => new URLSearchParams(p.split('?')[1]).get('tf')).filter((tf) => tf !== '1')).toEqual(['15', '60']);
     const ingest = rpcs.find((x) => x.fn === 'ingest_market')!.body;
     const htf = ingest.p_candles.filter((c: any) => c.timeframe === '15m' || c.timeframe === '1h');
-    expect(htf.length).toBe(80);
+    expect(htf.length).toBe(78); // one forming 15m and one forming 1h bar are discarded
     expect(htf.every((c: any) => c.source === 'history' && Date.parse(c.open_time) / 1000 + (c.timeframe === '1h' ? 3600 : 900) <= NOW)).toBe(true);
     expect(ingest.p_sync).toHaveLength(1);
     expect(ingest.p_sync[0].htf_backfilled_at).toBeTruthy();
@@ -162,7 +162,7 @@ describe('pipeline: MTF + dynamic universe', () => {
     const ingest = rpcs.find((x) => x.fn === 'ingest_market')!.body;
     expect(ingest.p_sync[0].htf_backfilled_at).toBeNull();
     expect((r.steps as any).backfill_htf.info.btcidr.ready).toBe(false);
-    expect((r.steps as any).backfill_htf.info.btcidr.timeframes['1h'].contiguous).toBe(5);
+    expect((r.steps as any).backfill_htf.info.btcidr.timeframes['1h'].contiguous).toBe(4); // final 1h candle is still forming
   });
 
   it('skips the backfill once done and skips higher timeframes when MTF is off', async () => {
