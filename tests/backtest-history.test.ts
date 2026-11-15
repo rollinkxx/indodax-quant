@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Candle } from '../shared/candles';
-import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality } from '../scripts/backtest-history';
+import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, createRequestStartLimiter } from '../scripts/backtest-history';
 
 const minute = (t: number, patch: Partial<Candle> = {}): Candle => ({
   t, o: 100 + t / 60, h: 102 + t / 60, l: 99 + t / 60,
@@ -149,5 +149,47 @@ describe('summarizeMinuteHistoryQuality', () => {
 
   it('rejects invalid ranges', () => {
     expect(() => summarizeMinuteHistoryQuality([], 600, 300, [])).toThrow('Invalid minute history quality range');
+  });
+});
+
+
+describe('createRequestStartLimiter', () => {
+  it('spaces concurrent request starts using one shared clock', async () => {
+    let clock = 1_000;
+    const limiter = createRequestStartLimiter(
+      500,
+      () => clock,
+      async (ms) => { clock += ms; },
+    );
+
+    const starts = await Promise.all(
+      Array.from({ length: 4 }, () => limiter()),
+    );
+    expect(starts.sort((a, b) => a - b)).toEqual([1_000, 1_500, 2_000, 2_500]);
+  });
+
+  it('rejects invalid intervals', () => {
+    expect(() => createRequestStartLimiter(0)).toThrow('positive finite number');
+    expect(() => createRequestStartLimiter(Number.NaN)).toThrow('positive finite number');
+  });
+
+  it('releases the queue if the injected sleep fails', async () => {
+    let fail = true;
+    let clock = 1_000;
+    const limiter = createRequestStartLimiter(
+      500,
+      () => clock,
+      async (ms) => {
+        if (fail) {
+          fail = false;
+          throw new Error('simulated sleep failure');
+        }
+        clock += ms;
+      },
+    );
+
+    await limiter();
+    await expect(limiter()).rejects.toThrow('simulated sleep failure');
+    await expect(limiter()).resolves.toBe(1_500);
   });
 });

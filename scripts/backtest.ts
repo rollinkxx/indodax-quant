@@ -15,7 +15,7 @@ import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtes
 import { evaluateStrategyEvidence } from '../shared/strategyEvidence';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
-import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
+import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, createRequestStartLimiter, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
 import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 
 const URL_ = process.env.SUPABASE_URL;
@@ -35,9 +35,15 @@ if (!Number.isInteger(historyDays) || historyDays < 0 || historyDays > 180) {
   throw new Error('BACKTEST_HISTORY_DAYS must be an integer from 0 to 180');
 }
 const proxyUrl = process.env.INDODAX_PROXY_URL?.trim() || `${URL_}/functions/v1/indodax-proxy`;
-const indodax = new IndodaxClient(withIndodaxRelay(fetch, proxyUrl), { timeoutMs: 8_000, retries: 2 });
+// INDODAX public endpoints document a 180 requests/minute quota. Share one
+// 500ms start interval across every pair and retry, leaving headroom for the Worker.
+const acquireHistoryRequestSlot = createRequestStartLimiter(500);
+const rateLimitedFetch: typeof fetch = async (input, init) => {
+  await acquireHistoryRequestSlot();
+  return fetch(input, init);
+};
+const indodax = new IndodaxClient(withIndodaxRelay(rateLimitedFetch, proxyUrl), { timeoutMs: 8_000, retries: 2 });
 const HISTORY_CHUNK_SECONDS = 12 * 60 * 60;
-const HISTORY_REQUEST_DELAY_MS = 120;
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
 interface StoredPair { id: string; symbol: string; is_tracked: boolean; in_universe: boolean }
@@ -67,8 +73,6 @@ interface OfficialHistoryResult {
     to: string;
   };
 }
-
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function loadStoredCandles(pair: string): Promise<Candle[]> {
   const rows: Row[] = [];
@@ -103,7 +107,6 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
     const rows = await indodax.getHistory(symbol.toUpperCase(), '1', from, lastClosedMinute);
     oneMinute.push(...rows);
     apiChunks++;
-    await delay(HISTORY_REQUEST_DELAY_MS);
   }
 
   const complete5m = aggregateCompleteMinuteHistory(oneMinute, fromSec, toSec);

@@ -168,3 +168,49 @@ export function summarizeMinuteHistoryQuality(
       ? Number((activeVolume5mBars / expected5mBars * 100).toFixed(2)) : 0,
   };
 }
+
+
+export type RequestStartLimiter = () => Promise<number>;
+
+/**
+ * Create a process-wide minimum-start-interval gate for concurrent HTTP requests.
+ * The queue controls request start times, not response completion, so slow requests
+ * may remain in flight concurrently while their starts stay within the API quota.
+ */
+export function createRequestStartLimiter(
+  intervalMs: number,
+  now: () => number = () => Date.now(),
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): RequestStartLimiter {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new Error('Request start interval must be a positive finite number');
+  }
+
+  let nextAllowedAt = 0;
+  let queue: Promise<void> = Promise.resolve();
+
+  return async () => {
+    const previous = queue;
+    let release!: () => void;
+    queue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+
+    try {
+      while (true) {
+        const current = now();
+        if (!Number.isFinite(current)) throw new Error('Request limiter clock must be finite');
+        const remaining = nextAllowedAt - current;
+        if (remaining <= 0) break;
+        await sleep(remaining);
+      }
+
+      const startedAt = now();
+      if (!Number.isFinite(startedAt)) throw new Error('Request limiter clock must be finite');
+      nextAllowedAt = startedAt + intervalMs;
+      return startedAt;
+    } finally {
+      // Always release the queue, including when the clock or injected sleep fails.
+      release();
+    }
+  };
+}
