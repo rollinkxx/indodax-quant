@@ -32,7 +32,8 @@ async function loadCandles(pair: string): Promise<Candle[]> {
     };
     return isValidCandle(candle) ? candle : { ...candle, source: 'synthetic', v: 0, n: 0 };
   });
-  return fillGaps(parsed, 300);
+  const aligned = parsed.filter((c) => Number.isFinite(c.t) && c.t % 300 === 0);
+  return fillGaps(aligned, 300);
 }
 
 export interface SimTrade { pair: string; entry: number; exit: number; pnl: number; cost: number; reason: string }
