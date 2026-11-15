@@ -360,7 +360,7 @@ async function main() {
       const fetched = await Promise.all(batch.map(async (pair) => {
         const result = await loadOfficialHistory(pair.symbol, historyRange);
         console.error(
-          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% coverage)`,
+          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% OHLC), active 5m=${result.metrics.activeVolume5mBars} (${result.metrics.activeVolumeCoveragePct}%), zero-volume 1m=${result.metrics.zeroVolumeMinuteBars}`,
         );
         return [pair.id, result] as const;
       }));
