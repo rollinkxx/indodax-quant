@@ -21,7 +21,7 @@ async function get<T>(path: string): Promise<T> {
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
 
 async function loadCandles(pair: string): Promise<Candle[]> {
-  const rows = await get<Row[]>(`candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&order=open_time.asc&limit=5000`);
+  const rows = await get<Row[]>(`candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc&limit=5000`);
   const parsed = rows.map((r): Candle => {
     const source: Candle['source'] = r.source === 'trades' || r.source === 'history' || r.source === 'synthetic'
       ? r.source
