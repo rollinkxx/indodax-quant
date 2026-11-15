@@ -7,9 +7,11 @@ do $$
 declare
   v_sig regprocedure;
   v_definition text;
-  v_old_condition constant text := $old$
-candles.source <> 'trades' and excluded.source = 'trades'
-$old$;
+  v_updated text;
+  -- Match only the old source-rank comparison, allowing PostgreSQL to normalize whitespace.
+  v_pattern constant text := $pattern$
+candles[.]source[[:space:]]*<>[[:space:]]*'trades'[[:space:]]+and[[:space:]]+excluded[.]source[[:space:]]*=[[:space:]]*'trades'
+$pattern$;
   v_new_condition constant text := $replacement$
 case excluded.source
   when 'trades' then 3
@@ -29,11 +31,11 @@ begin
     'public.save_analysis(jsonb,jsonb,jsonb)'::regprocedure
   ] loop
     v_definition := pg_get_functiondef(v_sig);
-    if position(v_old_condition in lower(v_definition)) = 0 then
+    v_updated := regexp_replace(v_definition, v_pattern, v_new_condition, 'gi');
+    if v_updated = v_definition then
       raise exception 'Expected candle source precedence condition not found in %', v_sig;
     end if;
-    v_definition := replace(v_definition, v_old_condition, v_new_condition);
-    execute v_definition;
+    execute v_updated;
   end loop;
 end
 $$;
