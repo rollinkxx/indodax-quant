@@ -115,6 +115,12 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(save.p_candles.filter((c: any) => c.timeframe === '1h')).toHaveLength(2);
     const steps = r.steps as any;
     expect(steps.analyze.info.mtf.btcidr).toMatch(/15m:\w+ 1h:\w+/);
+    expect(steps.analyze.info.buy_diagnostics.btcidr).toMatchObject({
+      stage: 'no_recent_cross',
+      candidate_5m: false,
+      data_quality: 'ok',
+      outcome: 'no_recent_cross',
+    });
     expect(steps.universe.info.members).toEqual(['pepeidr', 'dogeidr']);
   });
 
