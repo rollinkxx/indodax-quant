@@ -5,12 +5,12 @@ import { IndodaxClient, type PairInfo, type ParsedTicker } from './indodax';
 import { buildPairCandles, findCoverageRecoveryStart, newestTrade, newTradesSince, planCoverage } from './ingest';
 import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
-import { errorMessage } from './http';
+import { errorMessage, HttpError } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignalWindow, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskGate, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -270,6 +270,12 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       db.rpc<Record<string, CandleRow[]>>('get_recent_candles', { p_pairs: tracked, p_timeframe: '5m', p_limit: 250 }),
     (r) => Object.fromEntries(Object.entries(r ?? {}).map(([id, rows]) => [id, rows.length])));
 
+    const tradeFetchFailures: Record<string, {
+      http_status: number;
+      failure_class: string;
+      retryable: boolean;
+      attempts: number;
+    }> = {};
     const tradeResults = await step('fetch_trades', async () => {
       const out = new Map<string, Trade[] | null>();
       await Promise.all(pairs.map(async (p) => {
@@ -277,11 +283,28 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           out.set(p.id, await dx.getTrades(p.id));
         } catch (e) {
           out.set(p.id, null);
+          const status = e instanceof HttpError ? e.status : 0;
+          const body = e instanceof HttpError ? (e.body ?? '') : '';
+          tradeFetchFailures[p.id] = {
+            http_status: status,
+            failure_class: status === 503 && body.includes('SUPABASE_EDGE_RUNTIME_SERVICE_DEGRADED')
+              ? 'upstream_service_degraded'
+              : status >= 500
+                ? 'upstream_http_error'
+                : status === 408
+                  ? 'upstream_timeout'
+                  : 'request_error',
+            retryable: status === 429 || status === 408 || status >= 500,
+            attempts: e instanceof HttpError ? e.attempts : 1,
+          };
           errors.push(`fetch_trades ${p.id}: ${errorMessage(e)}`);
         }
       }));
       return out;
-    }, (r) => Object.fromEntries([...r].map(([k, v]) => [k, v?.length ?? 'error'])));
+    }, (r) => ({
+      ...Object.fromEntries([...r].map(([k, v]) => [k, v?.length ?? 'error'])),
+      ...(Object.keys(tradeFetchFailures).length ? { failures: tradeFetchFailures } : {}),
+    }));
 
     // 2+3. Build candles (1m from trades, gap backfill from official OHLC history, 5m aggregation)
     const coverage = new Map<string, number | null>();
@@ -657,17 +680,44 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, params);
           if (gate) {
             const mid = (t.ask + t.bid) / 2;
+            const stopDistance = fill - stops.stopLoss;
+            const spread = t.ask - t.bid;
             rejectEntry(s, 'entry_gate', gate, {
-              spread_pct: mid > 0 ? (t.ask - t.bid) / mid * 100 : 0,
-              stop_distance_pct: fill > 0 ? (fill - stops.stopLoss) / fill * 100 : 0,
+              bid_price: t.bid,
+              ask_price: t.ask,
+              signal_price: Number(s.price),
+              entry_price: fill,
+              stop_price: stops.stopLoss,
+              target_price: stops.takeProfit,
+              spread_pct: mid > 0 ? spread / mid * 100 : 0,
+              stop_distance_pct: fill > 0 ? stopDistance / fill * 100 : 0,
+              target_distance_pct: fill > 0 ? (stops.takeProfit - fill) / fill * 100 : 0,
+              spread_to_stop_pct: stopDistance > 0 ? spread / stopDistance * 100 : 0,
+              ask_drift_pct: Number(s.price) > 0 ? (t.ask - Number(s.price)) / Number(s.price) * 100 : 0,
+              slippage_bps: slip,
+              fee_pct: params.feePct,
             });
             continue;
           }
-          const economicsGate = netRewardRiskGate({
+          const economics = netRewardRiskDiagnostics({
             entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
             feePct: params.feePct, exitSlippageBps: slip,
           });
-          if (economicsGate) { rejectEntry(s, 'economics_gate', economicsGate); continue; }
+          if (economics.reason) {
+            rejectEntry(s, 'economics_gate', economics.reason, {
+              bid_price: t.bid,
+              ask_price: t.ask,
+              signal_price: Number(s.price),
+              entry_price: fill,
+              stop_price: stops.stopLoss,
+              target_price: stops.takeProfit,
+              spread_pct: (t.ask + t.bid) > 0 ? (t.ask - t.bid) / ((t.ask + t.bid) / 2) * 100 : 0,
+              spread_to_stop_pct: fill > stops.stopLoss ? (t.ask - t.bid) / (fill - stops.stopLoss) * 100 : 0,
+              slippage_bps: slip,
+              ...economics.metrics,
+            });
+            continue;
+          }
           const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
           if (size.qty <= 0) { rejectEntry(s, 'sizing_gate', size.reason ?? 'sizing_rejected'); continue; }
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
