@@ -126,7 +126,7 @@ describe('summarizeMinuteHistoryQuality', () => {
     );
     const complete5m = aggregateCompleteMinuteHistory(oneMinute, 0, 600);
     const report = summarizeMinuteHistoryQuality(
-      [...oneMinute, minute(0)], // duplicate timestamp is counted, never double-counted
+      [...oneMinute, oneMinute[0]], // exact duplicate timestamp is counted, never double-counted
       0,
       600,
       complete5m,
