@@ -42,6 +42,7 @@ jobs:
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f supabase/migrations/20261114171017_optimize_app_users_self_rls_initplan.sql
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/is_app_user_security_assert.sql
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/mtf_source_precedence_test.sql
+          psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/run_watchdog_test.sql
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
@@ -114,3 +115,78 @@ jobs:
           grep -q '"liveTrading":false' health.json
           curl -fsS -o /dev/null "${{ steps.deploy.outputs.url }}/"
           echo "Deployed: ${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+
+  strategy-evaluation:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --no-audit --no-fund
+      - name: Verify the read-only evaluation credential is available
+        run: |
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for historical evaluation."
+            exit 1
+          fi
+      - name: Run controlled crossLookback 2 vs 4 backtest
+        run: |
+          mkdir -p artifacts
+          npm run backtest > artifacts/backtest.json
+      - name: Generate read-only paper account report
+        run: npm run paper:report -- 1 > artifacts/paper-report.json
+      - name: Write evaluation summary
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const backtest = JSON.parse(fs.readFileSync('artifacts/backtest.json', 'utf8'));
+          const paper = JSON.parse(fs.readFileSync('artifacts/paper-report.json', 'utf8'));
+          const lines = [
+            '## Strategy evaluation (read-only)',
+            '',
+            '- Control: crossLookback=2.',
+            '- Variant: crossLookback=4 (only changed parameter).',
+            '- Holdout: chronological final 30% per pair.',
+            '- No order or paper-account mutation is performed by either script.',
+            '',
+            '| Pair | Bars | Holdout starts | 2: trades / win rate / PF / net PnL | 4: trades / win rate / PF / net PnL |',
+            '|---|---:|---|---:|---:|',
+          ];
+          for (const [pair, result] of Object.entries(backtest.results || {})) {
+            const two = (result.variants || {}).cross_lookback_2?.outOfSampleLast30Pct || {};
+            const four = (result.variants || {}).cross_lookback_4?.outOfSampleLast30Pct || {};
+            const fmt = (m) => String(m.trades || 0) + ' / ' + String(m.winRatePct || 0) + '% / ' + String(m.profitFactor ?? 'n/a') + ' / Rp ' + Number(m.netPnlIdr || 0).toLocaleString('id-ID');
+            lines.push('|' + pair + '|' + result.candles + '|' + result.holdoutFrom + '|' + fmt(two) + '|' + fmt(four) + '|');
+          }
+          lines.push(
+            '',
+            'Pairs evaluated: **' + String((backtest.experiment || {}).pairsEvaluated || 0) + '** of ' + String((backtest.experiment || {}).pairsRequested || 0) + ' requested.',
+            '',
+            '### Paper account since reset',
+            '',
+            '- Status: **' + String((paper.account || {}).status || 'unknown') + '**',
+            '- Equity: Rp ' + Number((paper.account || {}).equityIdr || 0).toLocaleString('id-ID'),
+            '- Closed trades: **' + String((paper.paperPerformanceSinceReset || {}).closedTrades || 0) + '**',
+            '- Open positions: **' + String((paper.paperPerformanceSinceReset || {}).openPositions || 0) + '**',
+            '- Realized PnL: Rp ' + Number((paper.paperPerformanceSinceReset || {}).netPnlIdr || 0).toLocaleString('id-ID'),
+            '',
+            '### Backtest scope limitations',
+            '',
+            ...((backtest.scopeWarnings || []).map((warning) => '- ' + warning)),
+            '- Candle-only per-pair simulation; not production-parity for portfolio-level cash/exposure or MTF execution.',
+            '',
+            'Full JSON outputs are attached as the strategy-evaluation artifact.',
+          );
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy-evaluation
+          path: artifacts/
+          retention-days: 30

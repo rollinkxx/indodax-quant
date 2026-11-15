@@ -75,6 +75,7 @@ async function main() {
 
   const rejectionCounts: Record<string, number> = {};
   const rejectionStages: Record<string, number> = {};
+  const rejectionMetricAccumulators: Record<string, Record<string, { count: number; sum: number; min: number; max: number }>> = {};
   let buySignals = 0;
   let entriesOpened = 0;
   for (const log of logs) {
@@ -87,8 +88,37 @@ async function main() {
       const stage = String(rejection.stage ?? 'unknown');
       rejectionCounts[reason] = (rejectionCounts[reason] ?? 0) + 1;
       rejectionStages[stage] = (rejectionStages[stage] ?? 0) + 1;
+
+      const metrics = rejection.metrics && typeof rejection.metrics === 'object' ? rejection.metrics as Record<string, unknown> : {};
+      const byMetric = rejectionMetricAccumulators[reason] ?? (rejectionMetricAccumulators[reason] = {});
+      for (const [key, raw] of Object.entries(metrics)) {
+        const value = typeof raw === 'number' ? raw : Number.NaN;
+        if (!Number.isFinite(value)) continue;
+        const acc = byMetric[key] ?? (byMetric[key] = { count: 0, sum: 0, min: value, max: value });
+        acc.count++;
+        acc.sum += value;
+        acc.min = Math.min(acc.min, value);
+        acc.max = Math.max(acc.max, value);
+      }
     }
   }
+  const rejectionDiagnosticsByReason = Object.fromEntries(
+    Object.entries(rejectionMetricAccumulators).map(([reason, metrics]) => [
+      reason,
+      {
+        count: rejectionCounts[reason] ?? 0,
+        metrics: Object.fromEntries(Object.entries(metrics).map(([key, value]) => [
+          key,
+          {
+            samples: value.count,
+            average: value.count ? value.sum / value.count : 0,
+            min: value.min,
+            max: value.max,
+          },
+        ])),
+      },
+    ]),
+  );
 
   const avgWin = wins.length ? grossProfit / wins.length : 0;
   const avgLoss = losses.length ? -grossLoss / losses.length : 0;
@@ -124,6 +154,7 @@ async function main() {
       rejectionCount: Object.values(rejectionCounts).reduce((a, b) => a + b, 0),
       rejectionCountsByReason: rejectionCounts,
       rejectionCountsByStage: rejectionStages,
+      rejectionDiagnosticsByReason,
       sourceRuns: logs.length,
     },
     limitations: [
