@@ -136,6 +136,8 @@ jobs:
             echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for historical evaluation."
             exit 1
           fi
+      - name: Validate evaluation summary generator syntax
+        run: node --check scripts/write-evaluation-summary.mjs
       - name: Run controlled crossLookback 2 vs 4 backtest
         run: |
           mkdir -p artifacts
@@ -143,71 +145,7 @@ jobs:
       - name: Generate read-only paper account report
         run: ./node_modules/.bin/tsx scripts/paper-report.ts 1 > artifacts/paper-report.json
       - name: Write evaluation summary
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const backtest = JSON.parse(fs.readFileSync('artifacts/backtest.json', 'utf8'));
-          const paper = JSON.parse(fs.readFileSync('artifacts/paper-report.json', 'utf8'));
-          const lines = [
-            '## Strategy evaluation (read-only)',
-            '',
-            '- Control: crossLookback=2.',
-            '- Variant: crossLookback=4 (only changed parameter).',
-            '- Holdout: chronological final 30% per pair.',
-            '- No order or paper-account mutation is performed by either script.',
-            '',
-            '### Aggregated holdout (independent per-pair accounts, not a shared portfolio)',
-            '',
-            '| Variant | Trades | Win rate | Profit factor | Net PnL | Expectancy | Max drawdown | End-of-data exits |',
-            '|---|---:|---:|---:|---:|---:|---:|---:|',
-            ...Object.entries(backtest.aggregateOutOfSampleIndependentPairAccounts || {}).map(([key, m]) =>
-              '|' + key + '|' + String(m.trades || 0) + '|' + String(m.winRatePct || 0) + '%|' + String(m.profitFactor ?? 'n/a') + '|Rp ' + Number(m.netPnlIdr || 0).toLocaleString('id-ID') + '|Rp ' + Number(m.expectancyIdr || 0).toLocaleString('id-ID') + '|' + String(m.maxDrawdownPct || 0) + '%|' + String(m.endOfDataExits || 0) + '|'
-            ),
-            '',
-            '### Evidence gate (never auto-promotes a strategy)',
-            '',
-            '| Variant | Decision | Wilson 95% win-rate lower bound | Rejection reasons |',
-            '|---|---|---:|---|',
-            ...Object.entries(backtest.evidenceGateByVariant || {}).map(([key, decision]) =>
-              '|' + key + '|' + String(decision.status || 'NO_GO') + '|' + String(decision.lower95WinRatePct || 0) + '%|' + (decision.reasons || []).join(', ') + '|'
-            ),
-            '',
-            '| Pair | Bars | Official OHLC coverage | Holdout starts | 2: trades / win rate / PF / net PnL | 4: trades / win rate / PF / net PnL |',
-            '|---|---:|---:|---|---:|---:|',
-          ];
-          for (const [pair, result] of Object.entries(backtest.results || {})) {
-            const two = (result.variants || {}).cross_lookback_2?.outOfSampleLast30Pct || {};
-            const four = (result.variants || {}).cross_lookback_4?.outOfSampleLast30Pct || {};
-            const fmt = (m) => String(m.trades || 0) + ' / ' + String(m.winRatePct || 0) + '% / ' + String(m.profitFactor ?? 'n/a') + ' / Rp ' + Number(m.netPnlIdr || 0).toLocaleString('id-ID');
-            const history = result.officialHistory || {};
-            const coverage = history.historyCoveragePct == null ? 'n/a' : String(history.historyCoveragePct) + '% (' + String(history.complete5mBars || 0) + '/' + String(history.expected5mBars || 0) + ')';
-            lines.push('|' + pair + '|' + result.candles + '|' + coverage + '|' + result.holdoutFrom + '|' + fmt(two) + '|' + fmt(four) + '|');
-          }
-          lines.push(
-            '',
-            'Pairs evaluated: **' + String((backtest.experiment || {}).pairsEvaluated || 0) + '** of ' + String((backtest.experiment || {}).pairsRequested || 0) + ' requested.',
-            'Official history window: **' + String((backtest.experiment || {}).officialHistoryDaysRequested || 0) + ' days**; complete OHLC 5m bars: **' + String((backtest.experiment || {}).officialHistoryComplete5mBars || 0) + '/' + String((backtest.experiment || {}).officialHistoryExpected5mBars || 0) + '** (**' + String((backtest.experiment || {}).officialHistoryCoveragePct || 0) + '% structural coverage**).',
-            'Positive-volume 5m bars: **' + String((backtest.experiment || {}).officialHistoryActiveVolume5mBars || 0) + '** (**' + String((backtest.experiment || {}).officialHistoryActiveVolumeCoveragePct || 0) + '% of expected bars**); zero-volume 5m bars: **' + String((backtest.experiment || {}).officialHistoryZeroVolume5mBars || 0) + '**; zero-volume 1m bars: **' + String((backtest.experiment || {}).officialHistoryZeroVolume1mBars || 0) + '**.'
-            '',
-            '### Paper account since reset',
-            '',
-            '- Status: **' + String((paper.account || {}).status || 'unknown') + '**',
-            '- Equity: Rp ' + Number((paper.account || {}).equityIdr || 0).toLocaleString('id-ID'),
-            '- Closed trades: **' + String((paper.paperPerformanceSinceReset || {}).closedTrades || 0) + '**',
-            '- Open positions: **' + String((paper.paperPerformanceSinceReset || {}).openPositions || 0) + '**',
-            '- Realized PnL: Rp ' + Number((paper.paperPerformanceSinceReset || {}).netPnlIdr || 0).toLocaleString('id-ID'),
-            '',
-            '### Backtest scope limitations',
-            '',
-            ...((backtest.scopeWarnings || []).map((warning) => '- ' + warning)),
-            '- Unclosed positions are closed at the final observed candle close with exit slippage and fee; see END_OF_DATA exits in the JSON.',
-            '- Aggregated holdout figures combine independent per-pair accounts; they are not a shared-cash portfolio.',
-            '- Candle-only per-pair simulation; not production-parity for portfolio-level cash/exposure or MTF execution.',
-            '',
-            'Full JSON outputs are attached as the strategy-evaluation artifact.',
-          );
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n') + '\n');
-          NODE
+        run: node scripts/write-evaluation-summary.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: strategy-evaluation
