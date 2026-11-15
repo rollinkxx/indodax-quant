@@ -41,6 +41,7 @@ jobs:
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f supabase/migrations/20261114170619_improve_paper_trade_fk_indexes.sql
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f supabase/migrations/20261114171017_optimize_app_users_self_rls_initplan.sql
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/is_app_user_security_assert.sql
+          psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/mtf_source_precedence_test.sql
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
