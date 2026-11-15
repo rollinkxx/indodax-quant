@@ -54,7 +54,7 @@ CREATE TABLE public.pair_sync_state (
   pair_id text PRIMARY KEY, covered_until timestamptz,
   last_trade_time timestamptz, last_trade_tid text, htf_backfilled_at timestamptz
 );
-CREATE TABLE public.paper_positions (id bigint PRIMARY KEY, account_id bigint NOT NULL, status text NOT NULL);
+CREATE TABLE public.paper_positions (id bigint PRIMARY KEY, account_id bigint NOT NULL, pair_id text NOT NULL, status text NOT NULL);
 CREATE TABLE public.portfolio_snapshots (
   account_id bigint NOT NULL, snapshot_time timestamptz NOT NULL, equity numeric NOT NULL
 );
@@ -71,7 +71,7 @@ VALUES
   ('adaidr','ADAIDR','ada_idr',false,10000,false,true,1),
   ('ethidr','ETHIDR','eth_idr',false,10000,false,false,NULL);
 INSERT INTO public.pair_sync_state(pair_id) VALUES ('btcidr'),('adaidr'),('ethidr');
-INSERT INTO public.paper_positions(id,account_id,status) VALUES (1,1,'OPEN');
+INSERT INTO public.paper_positions(id,account_id,pair_id,status) VALUES (1,1,'ethidr','OPEN');
 INSERT INTO public.portfolio_snapshots(account_id,snapshot_time,equity) VALUES (1,now()-interval '1 day',10000000);
 INSERT INTO public.execution_logs(scheduled_time,status,started_at)
 VALUES (now()-interval '10 minutes','RUNNING',now()-interval '10 minutes');
