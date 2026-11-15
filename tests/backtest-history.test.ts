@@ -57,6 +57,14 @@ describe('mergeBacktestCandles', () => {
     expect(result[0].o).toBe(102);
   });
 
+  it('prefers newly validated complete history over older persisted history', () => {
+    const current: Candle = { ...minute(0), o: 100, c: 101, source: 'history' };
+    const older: Candle = { ...minute(0), o: 110, c: 111, source: 'history' };
+    const result = mergeBacktestCandles([current], [older]);
+    expect(result[0].o).toBe(100);
+    expect(result[0].c).toBe(101);
+  });
+
   it('uses history for missing timestamps and ignores synthetic rows', () => {
     const old = minute(0);
     const synthetic: Candle = { ...minute(300), source: 'synthetic', v: 0 };
