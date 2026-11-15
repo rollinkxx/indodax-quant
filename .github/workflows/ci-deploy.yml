@@ -164,7 +164,15 @@ jobs:
               '|' + key + '|' + String(m.trades || 0) + '|' + String(m.winRatePct || 0) + '%|' + String(m.profitFactor ?? 'n/a') + '|Rp ' + Number(m.netPnlIdr || 0).toLocaleString('id-ID') + '|Rp ' + Number(m.expectancyIdr || 0).toLocaleString('id-ID') + '|' + String(m.maxDrawdownPct || 0) + '%|' + String(m.endOfDataExits || 0) + '|'
             ),
             '',
-            '| Pair | Bars | Official history coverage | Holdout starts | 2: trades / win rate / PF / net PnL | 4: trades / win rate / PF / net PnL |',
+            '### Evidence gate (never auto-promotes a strategy)',
+            '',
+            '| Variant | Decision | Wilson 95% win-rate lower bound | Rejection reasons |',
+            '|---|---|---:|---|',
+            ...Object.entries(backtest.evidenceGateByVariant || {}).map(([key, decision]) =>
+              '|' + key + '|' + String(decision.status || 'NO_GO') + '|' + String(decision.lower95WinRatePct || 0) + '%|' + (decision.reasons || []).join(', ') + '|'
+            ),
+            '',
+            '| Pair | Bars | Official OHLC coverage | Holdout starts | 2: trades / win rate / PF / net PnL | 4: trades / win rate / PF / net PnL |',
             '|---|---:|---:|---|---:|---:|',
           ];
           for (const [pair, result] of Object.entries(backtest.results || {})) {
@@ -178,7 +186,8 @@ jobs:
           lines.push(
             '',
             'Pairs evaluated: **' + String((backtest.experiment || {}).pairsEvaluated || 0) + '** of ' + String((backtest.experiment || {}).pairsRequested || 0) + ' requested.',
-            'Official history window: **' + String((backtest.experiment || {}).officialHistoryDaysRequested || 0) + ' days**; complete 5m bars from official source: **' + String((backtest.experiment || {}).officialHistoryComplete5mBars || 0) + '/' + String((backtest.experiment || {}).officialHistoryExpected5mBars || 0) + '** (**' + String((backtest.experiment || {}).officialHistoryCoveragePct || 0) + '% aggregate coverage**).',
+            'Official history window: **' + String((backtest.experiment || {}).officialHistoryDaysRequested || 0) + ' days**; complete OHLC 5m bars: **' + String((backtest.experiment || {}).officialHistoryComplete5mBars || 0) + '/' + String((backtest.experiment || {}).officialHistoryExpected5mBars || 0) + '** (**' + String((backtest.experiment || {}).officialHistoryCoveragePct || 0) + '% structural coverage**).',
+            'Positive-volume 5m bars: **' + String((backtest.experiment || {}).officialHistoryActiveVolume5mBars || 0) + '** (**' + String((backtest.experiment || {}).officialHistoryActiveVolumeCoveragePct || 0) + '% of expected bars**); zero-volume 5m bars: **' + String((backtest.experiment || {}).officialHistoryZeroVolume5mBars || 0) + '**; zero-volume 1m bars: **' + String((backtest.experiment || {}).officialHistoryZeroVolume1mBars || 0) + '**.'
             '',
             '### Paper account since reset',
             '',
