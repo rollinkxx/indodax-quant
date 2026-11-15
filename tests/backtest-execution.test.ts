@@ -31,6 +31,13 @@ describe('finalizeEndOfDataTrade', () => {
     expect(trade.pnl).toBeCloseTo(15.58, 8);
   });
 
+  it('rejects zero-volume candles for end-of-data execution marks', () => {
+    const position = { qty: 1, entry: 100, cost: 101, entryTime: 300 };
+    expect(() => finalizeEndOfDataTrade(
+      'btcidr', position, finalCandle({ v: 0 }), 0, 0.1,
+    )).toThrow('Invalid end-of-data trade inputs');
+  });
+
   it('rejects synthetic or pre-entry final candles rather than fabricating an exit', () => {
     const position = { qty: 1, entry: 100, cost: 101, entryTime: 300 };
     expect(() => finalizeEndOfDataTrade(
@@ -56,6 +63,11 @@ describe('resolveProtectiveExit', () => {
   it('fills at target when target is touched and stop is not', () => {
     const result = resolveProtectiveExit(95, 105, finalCandle({ o: 100, h: 108, l: 99, c: 107 }));
     expect(result).toEqual({ price: 105, reason: 'TAKE_PROFIT' });
+  });
+
+  it('rejects zero-volume candles as executable protective exits', () => {
+    expect(() => resolveProtectiveExit(95, 105, finalCandle({ v: 0 })))
+      .toThrow('Invalid protective exit inputs');
   });
 
   it('rejects synthetic candles', () => {
