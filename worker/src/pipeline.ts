@@ -548,6 +548,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       return { newSignals: saved?.new_signals ?? [], quality, mtf: mtfInfo, mtfBlocked, buyDiagnostics, continuationDiagnostics };
     }, (r) => ({
       new_signals: r.newSignals.length,
+      new_signal_details: r.newSignals.map((s) => ({
+        signal_id: s.id, pair_id: s.pair_id, side: s.side, strength: Number(s.strength),
+      })),
       quality: r.quality,
       ...(Object.keys(r.mtf).length ? { mtf: r.mtf } : {}),
       ...(Object.keys(r.mtfBlocked).length ? { mtf_blocked: r.mtfBlocked } : {}),
@@ -568,6 +571,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // 6+7. Paper trading (simulation only) + portfolio
     await step('paper_trading', async () => {
       const actions: string[] = [];
+      const openedEntries: { pair_id: string; signal_id: number; position_id: number; qty: number; fill_price: number; notional: number; fee: number }[] = [];
       const entryRejections: { pair_id: string; signal_id: number; stage: string; reason: string; metrics?: Record<string, number> }[] = [];
       const rejectEntry = (signal: SignalRow, stage: string, reason: string, metrics?: Record<string, number>) => {
         entryRejections.push({
@@ -730,6 +734,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             entries++;
             cash = Number(r.cash_after);
             open.set(s.pair_id, { id: r.position_id!, pair_id: s.pair_id, qty: size.qty, entry_price: fill, cost_basis: size.cost, stop_loss: stops.stopLoss, take_profit: stops.takeProfit });
+            openedEntries.push({ pair_id: s.pair_id, signal_id: s.id, position_id: r.position_id!, qty: size.qty, fill_price: fill, notional: size.notional, fee: size.fee });
             actions.push(`open ${s.pair_id}`);
             notes.push({ event_type: 'paper_buy', dedupe_key: `open:${r.position_id}`, message: messages.paperBuy({ pair_id: s.pair_id, qty: size.qty, fill, fee: size.fee, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, cashAfter: cash }) });
           } else {
@@ -763,6 +768,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         actions,
         buy_signals_received: buys.length,
         entries_opened: entries,
+        opened_entries: openedEntries,
         entry_rejections: entryRejections,
         entry_rejection_counts: entryRejectionCounts,
         risk_block_reasons: risk.blockEntries ? risk.reasons : [],
