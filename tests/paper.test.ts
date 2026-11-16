@@ -9,8 +9,9 @@ describe('fills, fees, slippage', () => {
     expect(buyFillPrice(1_000_000, 10)).toBeCloseTo(1_001_000, 6);
     expect(sellFillPrice(1_000_000, 10)).toBeCloseTo(999_000, 6);
   });
-  it('fee is rounded to 2 decimals', () => {
-    expect(feeFor(1_234_567, 0.3)).toBe(3703.7);
+  it('uses the requested maker/taker fee assumption as a percentage and rounds to 2 decimals', () => {
+    expect(P.feePct).toBe(0.00555);
+    expect(feeFor(1_234_567, P.feePct)).toBe(68.52);
   });
   it('roundDown never rounds up', () => {
     expect(roundDown(0.123456789)).toBe(0.12345678);
@@ -35,12 +36,12 @@ describe('position sizing', () => {
     // risk 100k / (15k + 6k fees) = 4.76 units -> capped by 25% (2.5M) = 2.5 units
     expect(r.qty).toBe(2.5);
     expect(r.notional).toBe(2_500_000);
-    expect(r.fee).toBe(7500);
-    expect(r.cost).toBe(2_507_500);
+    expect(r.fee).toBe(138.75);
+    expect(r.cost).toBe(2_500_138.75);
   });
   it('risk-limited when the stop is wide', () => {
     const r = positionSize({ equity: 10_000_000, cash: 10_000_000, entry: 100, stopLoss: 80, params: P });
-    const expectedQty = roundDown(100_000 / (20 + 0.6));
+    const expectedQty = roundDown(100_000 / (20 + 0.0111));
     expect(r.qty).toBe(expectedQty);
     expect(r.cost).toBeLessThanOrEqual(10_000_000);
   });

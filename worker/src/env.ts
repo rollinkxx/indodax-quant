@@ -9,6 +9,12 @@ export interface Env {
   SUPABASE_SERVICE_ROLE_KEY: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
+  /** Optional PostHog project token for server-side strategy telemetry. */
+  POSTHOG_PROJECT_TOKEN?: string;
+  /** PostHog ingestion host; defaults to the US cloud host. */
+  POSTHOG_HOST?: string;
+  /** Set to production in deployed environments to avoid dev-only configuration warnings. */
+  ENVIRONMENT?: string;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;

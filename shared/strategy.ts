@@ -108,7 +108,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   timeStopMinutes: 720,
   closeOnDailyLoss: true,
   dynamicSlippage: true,
-  feePct: 0.3,
+  feePct: 0.00555,
   slippageBps: 10,
   dailyLossLimitPct: 3,
   maxDrawdownPct: 15,
