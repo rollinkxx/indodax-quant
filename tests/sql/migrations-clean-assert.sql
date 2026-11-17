@@ -20,9 +20,11 @@ BEGIN
     IF has_table_privilege('anon', format('public.%I', v_table.relname), 'INSERT')
       OR has_table_privilege('anon', format('public.%I', v_table.relname), 'UPDATE')
       OR has_table_privilege('anon', format('public.%I', v_table.relname), 'DELETE')
+      OR has_table_privilege('anon', format('public.%I', v_table.relname), 'TRUNCATE')
       OR has_table_privilege('authenticated', format('public.%I', v_table.relname), 'INSERT')
       OR has_table_privilege('authenticated', format('public.%I', v_table.relname), 'UPDATE')
-      OR has_table_privilege('authenticated', format('public.%I', v_table.relname), 'DELETE') THEN
+      OR has_table_privilege('authenticated', format('public.%I', v_table.relname), 'DELETE')
+      OR has_table_privilege('authenticated', format('public.%I', v_table.relname), 'TRUNCATE') THEN
       RAISE EXCEPTION 'Client write privilege found on public.%', v_table.relname;
     END IF;
   END LOOP;
