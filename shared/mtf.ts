@@ -3,7 +3,7 @@
 // for older history, from stored 15m / 1h candles (official INDODAX OHLC backfill).
 import { ema, rsi } from './indicators';
 import { fillGaps, floorTo, isValidCandle, type Candle } from './candles';
-import type { SignalDecision, StrategyParams } from './strategy';
+import type { MarketActionDecision, SignalDecision, StrategyParams } from './strategy';
 
 export type HigherTf = '15m' | '1h';
 export const HIGHER_TFS: { tf: HigherTf; sec: number; historyTf: '15' | '60' }[] = [
@@ -203,4 +203,37 @@ export function applyMtf(decision: SignalDecision | null, states: TfState[], mod
     },
     summary,
   };
+}
+
+
+/**
+ * Apply MTF gating to the user-facing three-state decision.
+ * A raw BUY rejected by a higher-timeframe filter is a final HOLD, not a BUY.
+ * SELL remains an exit and is never blocked by MTF.
+ */
+export interface MtfMarketActionOutcome {
+  action: MarketActionDecision;
+  mtf: MtfOutcome;
+}
+
+export function applyMtfToMarketAction(
+  action: MarketActionDecision,
+  states: TfState[],
+  mode: StrategyParams['mtfMode'],
+): MtfMarketActionOutcome {
+  const mtf = applyMtf(action.signal, states, mode);
+  if (action.action === 'HOLD') return { action, mtf };
+
+  if (!mtf.decision) {
+    return {
+      action: {
+        action: 'HOLD',
+        signal: null,
+        reason: mtf.blocked ? `mtf_blocked_${mtf.blocked}` : 'mtf_decision_unavailable',
+      },
+      mtf,
+    };
+  }
+
+  return { action: { ...action, signal: mtf.decision }, mtf };
 }

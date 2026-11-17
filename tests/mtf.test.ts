@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, lastCompleteBucket, trendState, type TfState } from '../shared/mtf';
-import { DEFAULT_PARAMS, type SignalDecision } from '../shared/strategy';
+import { aggregateComplete, applyMtf, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, lastCompleteBucket, trendState, type TfState } from '../shared/mtf';
+import { DEFAULT_PARAMS, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const c = (t: number, close: number, o = close, v = 1, source: Candle['source'] = 'trades'): Candle =>
@@ -180,5 +180,50 @@ describe('applyMtf', () => {
 
   it('no decision stays null', () => {
     expect(applyMtf(null, [st('1h', 'bull')], 'filter').decision).toBeNull();
+  });
+});
+
+
+describe('applyMtfToMarketAction', () => {
+  const rawBuy: MarketActionDecision = { action: 'BUY', signal: buy, reason: 'buy_setup_confirmed' };
+  const rawSell: MarketActionDecision = { action: 'SELL', signal: sell, reason: 'sell_cross_confirmed' };
+  const rawHold: MarketActionDecision = { action: 'HOLD', signal: null, reason: 'no_fresh_setup' };
+
+  it('converts a BUY rejected by the MTF filter into an auditable HOLD', () => {
+    const result = applyMtfToMarketAction(rawBuy, [st('15m', 'bull'), st('1h', 'neutral')], 'filter');
+    expect(result.mtf).toMatchObject({ decision: null, blocked: 'mtf_anchor_not_bullish' });
+    expect(result.action).toEqual({
+      action: 'HOLD',
+      signal: null,
+      reason: 'mtf_blocked_mtf_anchor_not_bullish',
+    });
+  });
+
+  it('keeps a BUY when the MTF filter passes and returns the adjusted signal', () => {
+    const result = applyMtfToMarketAction(rawBuy, [st('15m', 'bull'), st('1h', 'bull')], 'filter');
+    expect(result.action.action).toBe('BUY');
+    expect(result.action.signal?.strength).toBe(80);
+    expect(result.action.signal?.reasons.at(-1)).toContain('searah');
+  });
+
+  it('never converts a SELL exit into HOLD because of opposing MTF context', () => {
+    const result = applyMtfToMarketAction(rawSell, [st('15m', 'bull'), st('1h', 'bull')], 'filter');
+    expect(result.action.action).toBe('SELL');
+    expect(result.action.signal?.side).toBe('SELL');
+  });
+
+  it('preserves an existing HOLD reason without manufacturing an MTF signal', () => {
+    const result = applyMtfToMarketAction(rawHold, [st('15m', 'bear'), st('1h', 'bear')], 'filter');
+    expect(result.action).toEqual(rawHold);
+    expect(result.mtf.decision).toBeNull();
+  });
+
+  it('fails closed when an executable action has no executable MTF decision', () => {
+    const malformed: MarketActionDecision = { action: 'BUY', signal: null, reason: 'buy_setup_confirmed' };
+    expect(applyMtfToMarketAction(malformed, [], 'filter').action).toEqual({
+      action: 'HOLD',
+      signal: null,
+      reason: 'mtf_decision_unavailable',
+    });
   });
 });

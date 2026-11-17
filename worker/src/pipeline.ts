@@ -8,7 +8,7 @@ import { messages, type NotificationItem } from './telegram';
 import { errorMessage, HttpError } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
-import { aggregateComplete, applyMtf, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
+import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
@@ -521,13 +521,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         continuationDiagnostics[p.id] = { ...continuationBase, data_quality: 'ok', outcome: continuationDiag.ready ? 'shadow_candidate' : continuationDiag.stage };
         const rawAction = evaluateMarketAction(rows, rowVolumes, params);
         const raw5m = rawAction.signal;
-        const mtf = applyMtf(raw5m, states, params.mtfMode);
+        const { action: finalAction, mtf } = applyMtfToMarketAction(rawAction, states, params.mtfMode);
         if (raw5m && mtf.blocked) mtfBlocked[p.id] = `${raw5m.side} ${mtf.blocked}`;
         buyDiagnostics[p.id] = {
           ...diagnosticBase,
           raw_signal_side: raw5m?.side ?? null,
-          market_action: rawAction.action,
-          hold_reason: rawAction.action === 'HOLD' ? rawAction.reason : null,
+          raw_market_action: rawAction.action,
+          market_action: finalAction.action,
+          hold_reason: finalAction.action === 'HOLD' ? finalAction.reason : null,
           outcome: (raw5m?.side === 'BUY') !== buyDiag.ready
             ? 'diagnostic_mismatch'
             : buyDiag.ready
