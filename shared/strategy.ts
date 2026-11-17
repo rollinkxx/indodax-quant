@@ -578,6 +578,58 @@ export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p:
   return null;
 }
 
+/**
+ * Explicit three-state decision for consumers that must distinguish HOLD from missing data.
+ * HOLD is deliberately not persisted as a trading signal or sent to paper execution.
+ */
+export type MarketAction = 'BUY' | 'SELL' | 'HOLD';
+
+export interface MarketActionDecision {
+  action: MarketAction;
+  signal: SignalDecision | null;
+  reason: string;
+}
+
+export function evaluateMarketAction(
+  rows: IndicatorRow[],
+  volumes: number[],
+  p: StrategyParams = DEFAULT_PARAMS,
+): MarketActionDecision {
+  const n = rows.length;
+  if (n < 2 || volumes.length !== n) {
+    return { action: 'HOLD', signal: null, reason: 'insufficient_aligned_rows' };
+  }
+  const last = rows[n - 1];
+  const prev = rows[n - 2];
+  if (!warm(last) || prev.ema9 === null || prev.ema21 === null) {
+    return { action: 'HOLD', signal: null, reason: 'indicators_not_ready' };
+  }
+  const signal = evaluateSignalWindow(rows, volumes, p);
+  if (signal) {
+    return {
+      action: signal.side,
+      signal,
+      reason: signal.side === 'BUY' ? 'buy_setup_confirmed' : 'sell_cross_confirmed',
+    };
+  }
+
+  const buy = diagnoseBuySignalWindow(rows, volumes, p);
+  if (buy.stage !== 'no_recent_cross' && buy.stage !== 'ema_fast_not_above_slow') {
+    return { action: 'HOLD', signal: null, reason: `buy_blocked_${buy.stage}` };
+  }
+  const crossedDown = prev.ema9 >= prev.ema21 && last.ema9 < last.ema21;
+  if (crossedDown && p.sellRequireConfirm) {
+    const volume = volumes[n - 1];
+    const rsiOk = last.rsi14 <= p.rsiSellMax;
+    const volumeOk = last.volMa20 > 0 && volume >= last.volMa20 * p.volumeMultiplier;
+    return {
+      action: 'HOLD', signal: null,
+      reason: !rsiOk ? 'sell_blocked_rsi_confirmation' : !volumeOk ? 'sell_blocked_volume_confirmation' : 'sell_blocked',
+    };
+  }
+  return { action: 'HOLD', signal: null, reason: crossedDown ? 'sell_not_confirmed' : 'no_fresh_setup' };
+}
+
 /** Evaluate the LAST row against only the previous row (fresh cross only, legacy behaviour). */
 export function evaluateSignal(last: IndicatorRow, prev: IndicatorRow, volume: number, p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
   return evaluateSignalWindow([prev, last], [0, volume], { ...p, crossLookback: 1 });
