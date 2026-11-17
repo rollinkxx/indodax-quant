@@ -1,3 +1,5 @@
+export {};
+
 const workerUrl = process.env.WORKER_URL?.replace(/\/$/, '');
 const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, '');
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
