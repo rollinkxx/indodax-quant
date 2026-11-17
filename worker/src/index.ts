@@ -18,7 +18,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/api/')) {
-      const res = await handleApi(request, env, withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL, env.INDODAX_RELAY_HMAC_SECRET));
+      const res = await handleApi(request, env, withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL, env.SUPABASE_SERVICE_ROLE_KEY));
       for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.headers.set(k, v);
       return res;
     }
@@ -32,7 +32,7 @@ export default {
         const result = await runPipeline(env, {
           scheduledTime: controller.scheduledTime,
           trigger: 'cron',
-          fetchImpl: withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL, env.INDODAX_RELAY_HMAC_SECRET),
+          fetchImpl: withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL, env.SUPABASE_SERVICE_ROLE_KEY),
         });
         console.log(`[cron] ${result.status}${result.reason ? ` (${result.reason})` : ''} run=${result.runId ?? '-'}`);
         await sendPostHogBatch(env, buildPipelinePostHogEvents(result, 'cron', Date.now() - startedAt));
