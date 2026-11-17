@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -33,7 +33,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
               covered_until: new Date((Math.floor(NOW / 60) * 60 - 60) * 1000).toISOString(), last_trade_time: null, last_trade_tid: null,
               htf_backfilled_at: opts.htfBackfilled ? '2026-01-01T00:00:00Z' : null }],
             catalog: { btcidr: false, pepeidr: false, usdtidr: false, dogeidr: false },
-            open_positions: [], day_start_equity: 1e7, pair_catalog_age_seconds: 60,
+            open_positions: opts.openPositions ?? [], day_start_equity: 1e7, pair_catalog_age_seconds: 60,
           });
         case 'get_recent_candles': {
           const rows = candleRows(250, expectedLast, 300, (i) => 1000 + i);
@@ -49,6 +49,8 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
           });
         }
         case 'save_analysis': return json({ new_signals: opts.newSignals ?? [] });
+        case 'get_pending_sell_signals': return json(opts.pendingSells ?? []);
+        case 'paper_close_position': return json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
         case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
         case 'claim_notifications': return json(body.p_items.map((x: any) => x.dedupe_key));
         default: return json({ ok: true });
@@ -58,7 +60,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
       if (u.hostname !== 'indodax.com') return;
       indodax.push(u.pathname + u.search);
       if (u.pathname === '/api/summaries') {
-        const t = (id: string, vol: number) => [id.replace('idr', '_idr'), { last: '1000', buy: opts.wideSpread ? '998.9' : '999', sell: '1000', high: '1', low: '1', vol_idr: String(vol), server_time: NOW - 5 }];
+        const t = (id: string, vol: number) => [id.replace('idr', '_idr'), { last: '1000', buy: opts.wideSpread ? '998.9' : '999', sell: '1000', high: '1', low: '1', vol_idr: String(vol), server_time: opts.staleTicker ? NOW - 3600 : NOW - 5 }];
         return json({ tickers: Object.fromEntries([t('btcidr', 9e10), t('pepeidr', 5e10), t('usdtidr', 8e10), t('dogeidr', 2e10)]), prices_24h: {} });
       }
       if (u.pathname.startsWith('/api/trades/')) {
@@ -246,5 +248,57 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(htfCalls(off.indodax)).toEqual([]);
     const save = off.rpcs.find((x) => x.fn === 'save_analysis')!.body;
     expect(save.p_candles).toEqual([]);
+  });
+});
+
+describe('pipeline: persisted SELL exits (F3)', () => {
+  const run = (o: ReturnType<typeof setup>) => runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+  const position = { id: 5, pair_id: 'btcidr', qty: 1, entry_price: 1000, cost_basis: 1000, stop_loss: 500, take_profit: 5000, opened_at: new Date((NOW - 600) * 1000).toISOString() };
+  const sell = { id: 41, pair_id: 'btcidr', side: 'SELL', price: 1000, strength: 60, reasons: ['test'], indicators: {}, candle_time: new Date(expectedLast * 1000).toISOString() };
+  const closes = (o: ReturnType<typeof setup>) => o.rpcs.filter((x) => x.fn === 'paper_close_position');
+
+  it('closes with SIGNAL on a later run even though save_analysis returns no new signals', async () => {
+    // Run 1: SELL is saved as new, but the ticker is stale so the exit check is skipped.
+    const run1 = setup({ mtfMode: 'off', openPositions: [position], newSignals: [sell], staleTicker: true });
+    await run(run1);
+    expect(closes(run1)).toHaveLength(0);
+
+    // Run 2: ticker fresh, ON CONFLICT DO NOTHING means no new signals, the stored SELL is still pending.
+    const run2 = setup({ mtfMode: 'off', openPositions: [position], newSignals: [], pendingSells: [sell] });
+    const r = await run(run2);
+    expect(r.status).toBe('SUCCESS');
+    expect(run2.rpcs.find((x) => x.fn === 'get_pending_sell_signals')!.body).toEqual({ p_pairs: ['btcidr'] });
+    expect(closes(run2)).toHaveLength(1);
+    expect(closes(run2)[0].body).toMatchObject({ p_position_id: 5, p_reason: 'SIGNAL' });
+  });
+
+  it('closes once when the SELL is both new and pending', async () => {
+    const o = setup({ mtfMode: 'off', openPositions: [position], newSignals: [sell], pendingSells: [sell] });
+    await run(o);
+    expect(closes(o)).toHaveLength(1);
+  });
+
+  it('a repeated pending SELL after the position is gone is rejected by the RPC without error', async () => {
+    const o = setup({ mtfMode: 'off', openPositions: [position], pendingSells: [sell], closeResult: { ok: false, reason: 'not_open' } });
+    const r = await run(o);
+    expect(r.status).toBe('SUCCESS');
+    expect(closes(o)).toHaveLength(1);
+  });
+
+  it('does not look up pending SELLs for a pair that is flat or fails data quality', async () => {
+    const flat = setup({ mtfMode: 'off', pendingSells: [sell] });
+    await run(flat);
+    expect(flat.rpcs.some((x) => x.fn === 'get_pending_sell_signals')).toBe(false);
+    const stale = setup({ mtfMode: 'off', openPositions: [position], pendingSells: [sell], staleTicker: true });
+    await run(stale);
+    expect(stale.rpcs.some((x) => x.fn === 'get_pending_sell_signals')).toBe(false);
+    expect(closes(stale)).toHaveLength(0);
+  });
+
+  it('keeps running when the pending SELL lookup fails', async () => {
+    const o = setup({ mtfMode: 'off', openPositions: [position], pendingSells: 'boom' as any });
+    const r = await run(o);
+    expect(r.status).toBe('SUCCESS');
+    expect(closes(o)).toHaveLength(0);
   });
 });
