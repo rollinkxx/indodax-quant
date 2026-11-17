@@ -24,7 +24,7 @@ _Last verified: 17 November 2026 (WIB). Source of truth: production Supabase, Cl
 | PostHog | US project 688639, host `https://us.i.posthog.com` |
 | Operations dashboard | https://us.posthog.com/project/688639/dashboard/2365869 |
 
-The CI deployment job deploys the Edge Function and Worker, syncs configured Worker secrets, and smoke-tests `/api/health`. `POSTHOG_PROJECT_TOKEN` is present as a GitHub Actions secret and is synced to the Worker. Do not print or request its value.
+The CI deployment job deploys the Worker, syncs configured Worker secrets, and smoke-tests `/api/health`. `POSTHOG_PROJECT_TOKEN` is present as a GitHub Actions secret and is synced to the Worker. Do not print or request its value. The 17 Nov main deployment skipped redeployment of the Supabase Edge Function because `SUPABASE_ACCESS_TOKEN` is not configured in GitHub; the existing `indodax-proxy` remained operational and the Worker continued ingesting market data. Future Edge Function source changes need that deployment secret.
 
 Cloudflare Billing Read permission was not available through the connected account, so the effective plan/CPU entitlement could not be verified. Do not claim a plan tier or make billing changes. Observed Worker telemetry over the audited 24-hour window: approximately 1,448 Worker invocations; average CPU 124.8 ms, p95 211 ms, maximum 345 ms. In the same window, Supabase recorded 1,440 completed execution-log runs, all `SUCCESS`.
 
@@ -35,9 +35,9 @@ Cloudflare Billing Read permission was not available through the connected accou
 - Since the paper account reset at 14 Nov 2026 10:16:15 UTC, 0 positions have been opened. Three older CLOSED position rows exist outside the current reset window and are not current-period performance.
 - Last 24 hours: 1,440 execution-log runs, all with status `SUCCESS`.
 - The market catalog currently has 438 pairs; 8 are manually tracked and 5 currently qualify for the dynamic universe. `universeSize:25` is a configured maximum including manually tracked pairs, not a guarantee that 25 pairs pass the liquidity/spread screen.
-- Since reset, the database contains 42 BUY signals and 204 SELL signals. BUY attempts were blocked by the execution/economics gates; no entry was forced.
-- After the active fee configuration was updated at 16 Nov 2026 16:31:34 UTC, 495 pipeline runs recorded 7 BUY entry attempts, 0 positions opened, and 7 rejections: `stop_inside_spread` 5, `price_drift` 1, `net_reward_risk_below_minimum` 1. The gates are behaving as designed.
-- Since the PostHog secret was synced, 90 `trading_pipeline_run` events and 5 `trading_signal_generated` events were observed. The five emitted signal events were SELL. There were no BUY attempts/rejections after telemetry activation in the observed period, so the absence of detailed rejection/open-position events is not evidence of a broken sender.
+- Since reset, the database contains 42 BUY signal records and 204 SELL signal records. The latest paper report counts 39 actual BUY entry attempts, 0 positions opened and 39 rejections: `stop_inside_spread` 19, `net_reward_risk_below_minimum` 7, `wide_spread` 6, `net_reward_non_positive` 6 and `price_drift` 1. Signal records and actual entry attempts are different counts.
+- The paper report has 0 open positions and 0 closed trades since the current reset; paper profitability metrics are therefore not established. Historic rejection entries retain their original `fee_pct` values (including entries before the 16 Nov fee change); they are not recalculated.
+- PostHog ingestion is active. The post-deployment dashboard counts pipeline status, signal direction and actual BUY-attempt / paper-entry / rejection counters. The event-level rejection/open-position events are emitted only when those real actions occur; zero events do not indicate a sender failure.
 
 ## Active paper strategy configuration
 
@@ -58,37 +58,36 @@ The code defaults intentionally differ from production settings for MTF mode, un
 
 ## Strategy release decision — NO-GO
 
-The 30-day historical evaluation (17 Oct–16 Nov 2026, 13 pairs) tested the production baseline, crossLookback=4, and an EMA21 pullback-reclaim shadow variant. All three had negative net expectancy, profit factor below 1, and fewer than the minimum 100 holdout trades. None met the release gate (at least 100 holdout trades, Wilson 95% lower win-rate bound ≥70%, PF>1, positive net expectancy).
+Latest main evaluation artifact: GitHub Actions run [#43991484904](https://github.com/rollinkxx/indodax-quant/actions/runs/43991484904), generated 17 Nov 2026 01:03 UTC. It loaded the active database config snapshot (`feePct:0.00555`, MTF `score`, dynamic slippage, 1% risk, 0.6% spread cap, and 10 open-position maximum) and used 30 days of INDODAX minute OHLC aggregated to 5m for 12 active pairs. Structural coverage was 100%; active-volume coverage was 83.8%. The last-30% chronological holdout started 8 Nov 2026 00:55 UTC.
 
-| Variant | Holdout trades | Win rate | Profit factor | Net P/L |
-|---|---:|---:|---:|---:|
-| CrossLookback 2 | 40 | 25.00% | 0.441 | -Rp249,798.37 |
-| CrossLookback 4 | 66 | 27.27% | 0.462 | -Rp430,393.60 |
-| EMA21 continuation shadow | 19 | 26.32% | 0.318 | -Rp226,540.87 |
+| Variant | Holdout trades | Win rate | Profit factor | Net P/L | Expectancy / trade |
+|---|---:|---:|---:|---:|---:|
+| CrossLookback 2 (control) | 35 | 22.86% | 0.151 | -Rp312,087.31 | -Rp8,916.78 |
+| CrossLookback 4 | 58 | 25.86% | 0.325 | -Rp439,005.81 | -Rp7,569.07 |
+| EMA21 continuation shadow | 17 | 23.53% | 0.243 | -Rp179,878.39 | -Rp10,581.08 |
 
-This was a 5m candle-only approximation, not production-parity: no historical bid/ask/tick fills, MTF score, or shared portfolio controls; dynamic slippage used current volume tiers as a proxy. Structural OHLC history coverage was 100%, but active-volume coverage was 82.54%. Read the full dated assessment: [docs/strategy-readiness-2026-11-17.md](docs/strategy-readiness-2026-11-17.md).
+Wilson 95% lower win-rate bounds were 12.07%, 16.35%, and 9.55%. All three variants failed all four release criteria: at least 100 holdout trades, Wilson lower bound at least 70%, PF>1, and positive net expectancy. Read [the latest dated assessment](docs/strategy-readiness-2026-11-17.md) for the captured config and full limitations. This is a 5m candle-only approximation: no historical bid/ask/tick fills, MTF score, shared portfolio controls or historical slippage tiers; it is not a production P&L forecast.
 
 **Do not represent the strategy as profitable or ready for real-money use.** Keep the current engine in paper mode and collect fresh, untouched forward data. Do not tune against the same holdout. A candidate must be retested with quote/spread/fee/slippage and portfolio-cost parity before a manual release review.
 
 ## Current maintenance branch
 
-Branch: `chore/engine-readiness-20261117` (based on main commit `5d503cd140822c40bbf1b00bc1ef30c804d3c5c7`).
+PR #20 was merged into `main` as commit `75e38927deb22a7efe86cf99f2496e20655ac482`. CI passed PostgreSQL 17 assertions, typecheck, tests and build; desktop/mobile light/dark browser smoke passed; production Worker deployment and `/api/health` smoke passed; the main strategy-evaluation job completed and uploaded artifact `strategy-evaluation`.
 
-Changes in progress:
+The report, README and handoff were subsequently found to need a same-day evaluation refresh because the active pair universe changed from 13 to 12 pairs. A documentation-only follow-up branch is now being prepared: `docs/refresh-strategy-evaluation-20261117`.
+
+The merged code changes:
 - Correct stale README statements about production MTF mode, universe cap, fee, open-position cap, runtime measurements, and current paper-account status.
-- Record a dated strategy NO-GO report with the actual holdout statistics and caveats.
-- Add the active strategy configuration snapshot to future backtest output; refuse to run a backtest if no active strategy config exists.
+- Add active strategy configuration snapshot to future backtest output; refuse to run a backtest if no active strategy config exists.
 - Add active config + historical fee-provenance caveat to the paper-account report.
-- Align the local fee migration filename with the already-applied Supabase version `20261116163134`; this is a repository tracking correction only. **Do not re-run the SQL migration against production.**
+- Align the local fee migration filename with the already-applied Supabase version `20261116163134`; repository tracking only. **Do not re-run the SQL migration against production.**
 - Keep the PostHog production operations dashboard separate from the legacy staging dashboard.
 
-## Remaining release validation
+## Remaining validation
 
-1. Run CI typecheck, unit/integration tests, PostgreSQL migration assertions, and build on this branch. Resolve any failures before merge.
-2. Merge only after checks pass; let GitHub Actions deploy production and run the new strategy evaluation.
-3. Inspect the new evaluation artifact's `activeConfigSnapshot` and verify it records feePct 0.00555, MTF score, spread/slippage and risk caps.
-4. Verify production health remains `liveTrading:false`, active Supabase strategy values and fee remain unchanged, cron continues to complete successfully, and new PostHog events are arriving.
-5. Continue forward paper observation. Profitability remains unproven until a sufficiently large, untouched sample closes with realistic costs.
+1. Finish CI for the documentation refresh branch and merge only if checks pass.
+2. Update the PostHog dashboard's NO-GO note to the latest run #43991484904 figures.
+3. Continue forward paper observation. Profitability remains unproven until a sufficiently large, untouched sample closes with realistic quote/spread/fee/slippage and portfolio constraints.
 
 ## Owner-only / unavailable checks
 
