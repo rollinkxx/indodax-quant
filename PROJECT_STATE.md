@@ -24,7 +24,7 @@ _Last verified: 17 November 2026 (WIB). Source of truth: production Supabase, Cl
 | PostHog | US project 688639, host `https://us.i.posthog.com` |
 | Operations dashboard | https://us.posthog.com/project/688639/dashboard/2365869 |
 
-The latest verified main deployment (17 Nov 2026) deployed the Worker and Supabase `indodax-proxy` Edge Function successfully; GitHub Actions run #43991484904 reports both relay and Worker deployment smoke steps successful. `POSTHOG_PROJECT_TOKEN` is present as a GitHub Actions secret and synced to the Worker; do not print or request its value. **Important current security gap:** production Edge Function version 72 still runs the legacy unauthenticated GET-only relay (`verify_jwt:false`, no HMAC signature check). The HMAC-authenticated relay and Worker signer are prepared in PR #22, have passed PR CI, but are not yet deployed to production. Do not assume the relay is protected until PR #22 merges and post-deploy smoke verifies unsigned rejection plus signed INDODAX data retrieval.
+The Worker was deployed from main commit `054ec28e9c458f18992bc4ed2461ecc1a69a3965` by GitHub Actions run [#44020907306](https://github.com/rollinkxx/indodax-quant/actions/runs/44020907306); the deployment step succeeded and `/api/health` returned `ok:true` with `liveTrading:false`. The same run's production smoke failed because the first post-deploy pipeline was `PARTIAL`; the `deploy-relay` job was skipped after the Worker smoke failed. Supabase metadata currently reports `indodax-proxy` version 73 with `verify_jwt:false`, but version metadata does not prove HMAC validation. **HMAC status is NOT VERIFIED in production.** Do not claim the relay is protected until smoke proves unsigned/tampered requests are rejected and a correctly signed public INDODAX request succeeds. `POSTHOG_PROJECT_TOKEN` is present as a GitHub Actions secret and synced to the Worker; do not print or request its value.
 
 Cloudflare Billing Read permission was not available through the connected account, so the effective plan/CPU entitlement could not be verified. Do not claim a plan tier or make billing changes. Observed Worker telemetry over the audited 24-hour window: approximately 1,448 Worker invocations; average CPU 124.8 ms, p95 211 ms, maximum 345 ms. In the same window, Supabase recorded 1,440 completed execution-log runs, all `SUCCESS`.
 
@@ -37,6 +37,32 @@ Cloudflare Billing Read permission was not available through the connected accou
 - Last 24 hours at snapshot: 30 BUY and 99 SELL signal records; 6 paper orders (3 BUY and 3 SELL), all marked simulated. Signal records are not equivalent to executable BUY attempts. The latest cycle had no new signal, which is a normal per-cycle result and does not mean the complete 24-hour signal stream was empty.
 - Current active strategy snapshot: `feePct=0.00555` (percentage points, i.e. 0.00555% per side in the paper model), `mtfMode=score`, `crossLookback=2`, maximum entry spread 0.6%, and maximum ask drift 0.5%. Historical transactions retain the fee assumptions applied at their execution time; they are not rewritten by the current setting.
 - PostHog ingestion is active and the production operations dashboard is available. Event counts must be interpreted from real pipeline actions; do not synthesize missing BUY, entry or rejection events.
+## Fee-model finding (F1) — requires owner verification
+
+A read-only production query on 17 Nov 2026 returned `market_pairs.trade_fee_percent_taker = 0.2` for **438/438 pairs**. The active strategy still has `feePct=0.00555` percentage points per side. Their ratio is `0.00555 / 0.2 = 0.02775` (2.775%), below the proposed non-blocking warning threshold of 0.25. This establishes a material mismatch between the current paper assumption and the pair metadata; it does **not** establish the user's final all-in fee.
+
+The proposed `all_in` model must remain opt-in/shadow until the owner checks the current account's official fee schedule in INDODAX **Profil > Pengaturan > Biaya Trading**. In particular, `sellTaxPct=0.21` is **not verified** and must not be presented as an official tax value. Do not change the active `strategy_configs` row or assume the all-in model is approved.
+
+Read-only verification also found that `trading_signals` does not yet contain `entry_outcome`, `entry_reject_reason`, or `entry_position_id`; outcome distributions cannot be queried until the PR-3 migration is implemented. Existing signal counts by UTC day (not execution outcomes) were:
+| UTC day | BUY | SELL |
+|---|---:|---:|
+| 2026-11-13 | 5 | 43 |
+| 2026-11-14 | 0 | 71 |
+| 2026-11-15 | 13 | 76 |
+| 2026-11-16 | 29 | 105 |
+| 2026-11-17 (partial day) | 5 | 12 |
+
+A rolling 3-day read-only comparison of median spread to `1.5 × median ATR5m%` found these highest ratios among 25 pairs:
+| Pair | Median spread % | Median ATR5m % | Spread / (1.5 × ATR) |
+|---|---:|---:|---:|
+| RENDERIDR | 0.610424 | 0.134640 | 3.022507 |
+| VELVETIDR | 0.779944 | 0.189675 | 2.741339 |
+| PENGUIDR | 0.641681 | 0.372880 | 1.147251 |
+| SKYAIIDR | 0.546448 | 0.343900 | 1.059315 |
+| PIPPINIDR | 0.374968 | 0.240768 | 1.038256 |
+| HYPEIDR | 0.173370 | 0.297101 | 0.389025 |
+
+This is a diagnostic, not an enabled universe gate. No production configuration was changed by these queries.
 ## Active paper strategy configuration
 
 The active row in `public.strategy_configs` is the production source of truth. Important current values:
@@ -53,6 +79,13 @@ The active row in `public.strategy_configs` is the production source of truth. I
 - The fee update was applied prospectively. Historical execution logs retain their original `fee_pct`; old paper rejection metrics are not recalculated.
 
 The code defaults intentionally differ from production settings for MTF mode, universe size, and open-position cap. Do not infer active production parameters from defaults.
+
+## Live verification after PR #22 merge
+
+- Read-only Supabase query confirms paper account #1 remains `RUNNING`; cash/equity Rp9,977,128.19, realized P/L -Rp22,871.81, unrealized P/L Rp0, total fees Rp829.97, reset timestamp unchanged. No account reset/stop or production strategy-config write was performed in this work.
+- Active production config remains `feePct=0.00555` and `mtfMode=score`.
+- The three latest execution-log runs observed during verification were `PARTIAL`. Their market fetch failed with HTTP 401 `unauthorized`; trade requests for the tracked pairs also returned HTTP 401. The resulting analyze step marked data coverage incomplete and MTF states unknown. This is an operational ingestion/authentication blocker, not evidence of a trading signal or of profitability.
+- The latest CI run's full test job passed, but the evaluation and production smoke jobs failed as described above. Do not mark the post-merge release as green.
 
 ## Strategy release decision — NO-GO
 
@@ -72,18 +105,25 @@ Wilson 95% lower win-rate bounds were 12.07%, 16.35%, and 9.55%. All three varia
 
 PR #20 was merged into `main` as commit `75e38927deb22a7efe86cf99f2496e20655ac482`. It delivered the preceding production hardening and the historical strategy-evaluation report.
 
-PR #22, `ci: skip production deploy and backtest for doc-only changes`, is the active hardening branch: https://github.com/rollinkxx/indodax-quant/pull/22. Its scope is **not documentation-only**. It adds an HMAC-authenticated bounded read-only INDODAX relay, Worker request signing, a lockfile with `npm ci`, changed-file release classification, fail-closed release credentials, full PostgreSQL 17 migration replay assertions, and production/relay smoke scripts.
+PR #22, [security: authenticate INDODAX relay and harden production releases](https://github.com/rollinkxx/indodax-quant/pull/22), was merged on 17 Nov 2026 as merge commit `b2ad833f8738762fee6e719296583a46e68a6731`. It adds an HMAC-authenticated bounded read-only INDODAX relay, Worker request signing, `npm ci`, changed-file release classification, fail-closed release credentials, PostgreSQL 17 migration replay assertions, and production/relay smoke scripts.
 
-Latest PR head `290f871fc6f8cd7afa65ebb5936aa8ff48e320ef` passed GitHub Actions run `#44016094428`: `detect-changes`, complete test job (PostgreSQL 17 targeted checks + clean full migration replay, typecheck, full Vitest suite, build) all succeeded. Live public UI smoke run `#44016094432` also succeeded. Production deploy/evaluation jobs were correctly skipped for the pull-request event. A Worker-first deployment ordering fix is included: the signing-capable Worker deploy and smoke test happen before the relay is switched to HMAC enforcement, preventing a failed Worker rollout from locking out the old relay.
+The merged PR's earlier PR checks passed, including PostgreSQL 17 replay, typecheck, Vitest, build, and public UI smoke. However, the first main deployment after the merge, [run #44020907306](https://github.com/rollinkxx/indodax-quant/actions/runs/44020907306), is **FAILED** overall:
+- `detect-changes` and the full `test` job succeeded (PostgreSQL 17 security checks + clean full migration replay, typecheck, full Vitest suite, build).
+- The `strategy-evaluation` job failed at `scripts/backtest.ts` with exit code 1. The artifact's stderr/root cause has not yet been independently reviewed; do not infer a reason.
+- The Worker deployment step succeeded and `/api/health` returned `ok:true`, `liveTrading:false`.
+- `scripts/smoke-production.ts` then observed the newest pipeline run as `PARTIAL` and failed. The database shows repeated HTTP 401 `unauthorized` responses for public INDODAX summaries/trades, so market ingestion and MTF backfill were not healthy in the observed runs.
+- Because the Worker smoke failed, the `deploy-relay` job was skipped. The HMAC production handshake is therefore unverified.
 
-**Not yet complete:** PR #22 remains open and its HMAC changes have not been deployed. Production `indodax-proxy` version 72 remains unauthenticated as described above. Merge and post-deploy checks are still required before marking relay hardening complete.
+The production relay version reported by Supabase metadata is 73 (`verify_jwt:false`); this metadata alone does not prove that HMAC is enforced or that signed requests succeed. Keep relay security status **NOT VERIFIED** until a post-deploy smoke passes for unsigned rejection, tampered-target rejection, signed-private-path rejection, and signed public ticker retrieval.
 
 ## Remaining validation
 
-1. Merge PR #22 only after the latest checks remain green and the release diff has been reviewed.
-2. Verify Worker-first deploy followed by relay deployment; run smoke tests that prove unsigned and tampered requests are rejected and a valid signed request receives a valid INDODAX payload.
-3. Verify production Worker `/api/health`, static dashboard, cron schedule, market ingestion, PostHog event freshness, and Supabase paper account/config snapshots after deployment.
-4. Keep the strategy release decision **NO-GO**. Continue forward paper observation; profitability remains unproven until there is a sufficiently large untouched sample with realistic quote, spread, fee, slippage and portfolio constraints.
+1. Diagnose and restore the read-only relay authentication path. The post-merge production run returned HTTP 401 for public market endpoints; do not bypass HMAC or weaken relay allow-lists. Re-run the Worker-first/relay-second deployment sequence only after the failure is understood.
+2. Run `scripts/smoke-production.ts` again and require a successful post-deploy pipeline, signed public ticker retrieval, unsigned/tampered rejection, and signed private-path rejection before marking HMAC hardening complete.
+3. Review the failure artifact from strategy-evaluation run #44020907306; identify why `scripts/backtest.ts` exited 1 and rerun the controlled evaluation.
+4. Implement PR-1 through PR-6 as separate, reviewable PRs. Keep new decision/economic parameters at legacy defaults; run typecheck, full Vitest, build, and PostgreSQL 17 full migration replay for each.
+5. Implement PR-7 documentation reconciliation (this update) and keep production `strategy_configs` unchanged.
+6. Keep the strategy release decision **NO-GO**. Continue forward paper observation; profitability is unproven until the v2 evidence gate and untouched holdout requirements are met.
 
 ## Owner-only / unavailable checks
 
@@ -92,3 +132,6 @@ Latest PR head `290f871fc6f8cd7afa65ebb5936aa8ff48e320ef` passed GitHub Actions 
 - The performance advisor's `app_users_self` warning should be rechecked after migration/replay: the live policy already contains the recommended `(select auth.jwt())` pattern, so it may be a stale/heuristic lint result. Four unused-index notices are informational; do not drop them without query-plan and index-usage review.
 - A final visual review of authenticated pages requires the owner's own browser session. No private user login or password was accessed.
 - Cloudflare billing/plan entitlement is not verifiable with the connected permissions; no billing or plan change was attempted.
+- Owner must verify the actual INDODAX account maker/taker fee and sell-side tax in **Profil > Pengaturan > Biaya Trading** before approving `feeModel='all_in'`; the proposed `sellTaxPct=0.21` remains unverified.
+- Owner approval is required before enabling any new production entry/exit gate or changing `mtfMode`; no such gate or mode change is approved by this audit.
+- Owner/authorized operator must resolve the production relay HTTP 401/HMAC deployment issue. Do not expose or rotate secrets as part of an unapproved workaround.
