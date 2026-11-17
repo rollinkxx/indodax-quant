@@ -24,21 +24,19 @@ _Last verified: 17 November 2026 (WIB). Source of truth: production Supabase, Cl
 | PostHog | US project 688639, host `https://us.i.posthog.com` |
 | Operations dashboard | https://us.posthog.com/project/688639/dashboard/2365869 |
 
-The CI deployment job deploys the Worker, syncs configured Worker secrets, and smoke-tests `/api/health`. `POSTHOG_PROJECT_TOKEN` is present as a GitHub Actions secret and is synced to the Worker. Do not print or request its value. The 17 Nov main deployment skipped redeployment of the Supabase Edge Function because `SUPABASE_ACCESS_TOKEN` is not configured in GitHub; the existing `indodax-proxy` remained operational and the Worker continued ingesting market data. Future Edge Function source changes need that deployment secret.
+The latest verified main deployment (17 Nov 2026) deployed the Worker and Supabase `indodax-proxy` Edge Function successfully; GitHub Actions run #43991484904 reports both relay and Worker deployment smoke steps successful. `POSTHOG_PROJECT_TOKEN` is present as a GitHub Actions secret and synced to the Worker; do not print or request its value. **Important current security gap:** production Edge Function version 72 still runs the legacy unauthenticated GET-only relay (`verify_jwt:false`, no HMAC signature check). The HMAC-authenticated relay and Worker signer are prepared in PR #22, have passed PR CI, but are not yet deployed to production. Do not assume the relay is protected until PR #22 merges and post-deploy smoke verifies unsigned rejection plus signed INDODAX data retrieval.
 
 Cloudflare Billing Read permission was not available through the connected account, so the effective plan/CPU entitlement could not be verified. Do not claim a plan tier or make billing changes. Observed Worker telemetry over the audited 24-hour window: approximately 1,448 Worker invocations; average CPU 124.8 ms, p95 211 ms, maximum 345 ms. In the same window, Supabase recorded 1,440 completed execution-log runs, all `SUCCESS`.
 
-## Production state (verified 17 Nov 2026)
+## Production state (database snapshot: 17 Nov 2026 04:10:13 UTC / 11:10:13 WIB)
 
-- `GET /api/health` returned `ok:true` and `liveTrading:false`. No live trading path is enabled.
-- Paper account #1 is `RUNNING`, kill switch off, cash and equity Rp10,000,000. The account has not been reset or stopped during this work.
-- Since the paper account reset at 14 Nov 2026 10:16:15 UTC, 0 positions have been opened. Three older CLOSED position rows exist outside the current reset window and are not current-period performance.
-- Last 24 hours: 1,440 execution-log runs, all with status `SUCCESS`.
-- The market catalog currently has 438 pairs; 8 are manually tracked and 5 currently qualify for the dynamic universe. `universeSize:25` is a configured maximum including manually tracked pairs, not a guarantee that 25 pairs pass the liquidity/spread screen.
-- Since reset, the database contains 42 BUY signal records and 204 SELL signal records. The latest paper report counts 39 actual BUY entry attempts, 0 positions opened and 39 rejections: `stop_inside_spread` 19, `net_reward_risk_below_minimum` 7, `wide_spread` 6, `net_reward_non_positive` 6 and `price_drift` 1. Signal records and actual entry attempts are different counts.
-- The paper report has 0 open positions and 0 closed trades since the current reset; paper profitability metrics are therefore not established. Historic rejection entries retain their original `fee_pct` values (including entries before the 16 Nov fee change); they are not recalculated.
-- PostHog ingestion is active. The post-deployment dashboard counts pipeline status, signal direction and actual BUY-attempt / paper-entry / rejection counters. The event-level rejection/open-position events are emitted only when those real actions occur; zero events do not indicate a sender failure.
-
+- The latest Worker health check previously returned `ok:true` and `liveTrading:false`. The source repository and production Worker remain paper-only; no live trading API path is enabled.
+- Paper account #1 is `RUNNING`, kill switch off. At the database snapshot: cash **Rp9,977,128.19**, equity **Rp9,977,128.19**, realized P/L **-Rp22,871.81**, unrealized P/L **Rp0**, and cumulative fees **Rp829.97** since account reset. The account reset timestamp is 14 Nov 2026 10:16:15 UTC. Do not reset or stop this account as part of maintenance.
+- There are 6 paper positions in the database, all CLOSED, and 0 currently open. Three positions closed after the current reset: BTCIDR TAKE_PROFIT (+Rp10,465.40), FARTCOINIDR STOP_LOSS (-Rp19,481.45), and HYPEIDR STOP_LOSS (-Rp13,855.76). The net matches the account realized P/L snapshot (-Rp22,871.81). Three earlier closed positions predate the reset and are not part of current-period P/L.
+- Last 24 hours at snapshot: 1,440 execution-log runs, all `SUCCESS`; 0 `PARTIAL` and 0 `FAILED`. Latest logged run was 17 Nov 2026 04:10 UTC. This proves pipeline uptime over that window, not profitability.
+- Last 24 hours at snapshot: 30 BUY and 99 SELL signal records; 6 paper orders (3 BUY and 3 SELL), all marked simulated. Signal records are not equivalent to executable BUY attempts. The latest cycle had no new signal, which is a normal per-cycle result and does not mean the complete 24-hour signal stream was empty.
+- Current active strategy snapshot: `feePct=0.00555` (percentage points, i.e. 0.00555% per side in the paper model), `mtfMode=score`, `crossLookback=2`, maximum entry spread 0.6%, and maximum ask drift 0.5%. Historical transactions retain the fee assumptions applied at their execution time; they are not rewritten by the current setting.
+- PostHog ingestion is active and the production operations dashboard is available. Event counts must be interpreted from real pipeline actions; do not synthesize missing BUY, entry or rejection events.
 ## Active paper strategy configuration
 
 The active row in `public.strategy_configs` is the production source of truth. Important current values:
@@ -70,27 +68,27 @@ Wilson 95% lower win-rate bounds were 12.07%, 16.35%, and 9.55%. All three varia
 
 **Do not represent the strategy as profitable or ready for real-money use.** Keep the current engine in paper mode and collect fresh, untouched forward data. Do not tune against the same holdout. A candidate must be retested with quote/spread/fee/slippage and portfolio-cost parity before a manual release review.
 
-## Current maintenance branch
+## Current maintenance branch and release status
 
-PR #20 was merged into `main` as commit `75e38927deb22a7efe86cf99f2496e20655ac482`. CI passed PostgreSQL 17 assertions, typecheck, tests and build; desktop/mobile light/dark browser smoke passed; production Worker deployment and `/api/health` smoke passed; the main strategy-evaluation job completed and uploaded artifact `strategy-evaluation`.
+PR #20 was merged into `main` as commit `75e38927deb22a7efe86cf99f2496e20655ac482`. It delivered the preceding production hardening and the historical strategy-evaluation report.
 
-The same-day refresh is now prepared on documentation-only branch `docs/refresh-strategy-evaluation-20261117`: the strategy report and handoff show the latest 12-pair evaluation artifact (run #43991484904), and the PostHog NO-GO dashboard tile has been refreshed to the same figures.
+PR #22, `ci: skip production deploy and backtest for doc-only changes`, is the active hardening branch: https://github.com/rollinkxx/indodax-quant/pull/22. Its scope is **not documentation-only**. It adds an HMAC-authenticated bounded read-only INDODAX relay, Worker request signing, a lockfile with `npm ci`, changed-file release classification, fail-closed release credentials, full PostgreSQL 17 migration replay assertions, and production/relay smoke scripts.
 
-The merged code changes:
-- Correct stale README statements about production MTF mode, universe cap, fee, open-position cap, runtime measurements, and current paper-account status.
-- Add active strategy configuration snapshot to future backtest output; refuse to run a backtest if no active strategy config exists.
-- Add active config + historical fee-provenance caveat to the paper-account report.
-- Align the local fee migration filename with the already-applied Supabase version `20261116163134`; repository tracking only. **Do not re-run the SQL migration against production.**
-- Keep the PostHog production operations dashboard separate from the legacy staging dashboard.
+Latest PR head `290f871fc6f8cd7afa65ebb5936aa8ff48e320ef` passed GitHub Actions run `#44016094428`: `detect-changes`, complete test job (PostgreSQL 17 targeted checks + clean full migration replay, typecheck, full Vitest suite, build) all succeeded. Live public UI smoke run `#44016094432` also succeeded. Production deploy/evaluation jobs were correctly skipped for the pull-request event. A Worker-first deployment ordering fix is included: the signing-capable Worker deploy and smoke test happen before the relay is switched to HMAC enforcement, preventing a failed Worker rollout from locking out the old relay.
+
+**Not yet complete:** PR #22 remains open and its HMAC changes have not been deployed. Production `indodax-proxy` version 72 remains unauthenticated as described above. Merge and post-deploy checks are still required before marking relay hardening complete.
 
 ## Remaining validation
 
-1. Finish CI for the documentation refresh branch and merge only if checks pass.
-2. Verify the final saved documentation and PostHog dashboard note remain aligned with run #43991484904.
-3. Continue forward paper observation. Profitability remains unproven until a sufficiently large, untouched sample closes with realistic quote/spread/fee/slippage and portfolio constraints.
+1. Merge PR #22 only after the latest checks remain green and the release diff has been reviewed.
+2. Verify Worker-first deploy followed by relay deployment; run smoke tests that prove unsigned and tampered requests are rejected and a valid signed request receives a valid INDODAX payload.
+3. Verify production Worker `/api/health`, static dashboard, cron schedule, market ingestion, PostHog event freshness, and Supabase paper account/config snapshots after deployment.
+4. Keep the strategy release decision **NO-GO**. Continue forward paper observation; profitability remains unproven until there is a sufficiently large untouched sample with realistic quote, spread, fee, slippage and portfolio constraints.
 
 ## Owner-only / unavailable checks
 
-- Supabase Security Advisor previously reported leaked-password protection disabled and `system_locks` without client RLS policy (backend-only). No Auth policy or billing change was made during this work. Review the Auth setting in the owner's Supabase console.
+- Supabase Security Advisor reports leaked-password protection disabled. Enable it in Supabase Auth settings after verifying the app's sign-in policy; this is an account-level security setting and has not been changed automatically.
+- `system_locks` has RLS enabled and intentionally has no client policy; it is backend-only, not a missing public access rule.
+- The performance advisor's `app_users_self` warning should be rechecked after migration/replay: the live policy already contains the recommended `(select auth.jwt())` pattern, so it may be a stale/heuristic lint result. Four unused-index notices are informational; do not drop them without query-plan and index-usage review.
 - A final visual review of authenticated pages requires the owner's own browser session. No private user login or password was accessed.
-- Current Cloudflare plan/entitlement is not verifiable through the connected API permissions; no plan upgrade or billing change was attempted.
+- Cloudflare billing/plan entitlement is not verifiable with the connected permissions; no billing or plan change was attempted.
