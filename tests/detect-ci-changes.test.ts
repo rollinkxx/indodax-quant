@@ -7,16 +7,16 @@ describe('CI changed-file release policy', () => {
       .toEqual({ deploy: false, relay: false, strategy: false });
   });
 
-  it('deploys UI-only changes but does not run strategy evaluation', () => {
+  it('deploys UI-only changes and synchronizes the relay signing secret without running strategy evaluation', () => {
     expect(classifyCiChanges('push', 'abc', ['src/pages/Market.tsx']))
-      .toEqual({ deploy: true, relay: false, strategy: false });
+      .toEqual({ deploy: true, relay: true, strategy: false });
   });
 
-  it('deploys and evaluates when Worker or shared strategy code changes', () => {
+  it('deploys, synchronizes the relay, and evaluates when Worker or shared strategy code changes', () => {
     expect(classifyCiChanges('push', 'abc', ['worker/src/pipeline.ts']))
-      .toEqual({ deploy: true, relay: false, strategy: true });
+      .toEqual({ deploy: true, relay: true, strategy: true });
     expect(classifyCiChanges('push', 'abc', ['shared/strategy.ts']))
-      .toEqual({ deploy: true, relay: false, strategy: true });
+      .toEqual({ deploy: true, relay: true, strategy: true });
   });
 
   it('marks relay source changes as relay deployments and strategy-relevant changes', () => {
@@ -38,9 +38,9 @@ describe('CI changed-file release policy', () => {
       .toEqual({ deploy: false, relay: false, strategy: true });
   });
 
-  it('treats dependency lock changes as release and strategy relevant', () => {
+  it('treats dependency lock changes as release, relay, and strategy relevant', () => {
     expect(classifyCiChanges('push', 'abc', ['package-lock.json']))
-      .toEqual({ deploy: true, relay: false, strategy: true });
+      .toEqual({ deploy: true, relay: true, strategy: true });
   });
 
   it('forces all release paths for workflow_dispatch and unknown/zero bases', () => {
@@ -58,8 +58,13 @@ describe('CI changed-file release policy', () => {
     ])).toEqual({ deploy: false, relay: false, strategy: false });
   });
 
-  it('does not classify CI-only edits as app, relay, or strategy changes', () => {
-    expect(classifyCiChanges('push', 'abc', ['.github/workflows/ci-deploy.yml', 'tests/relay.test.ts']))
+  it('re-synchronizes the relay when production deployment orchestration changes', () => {
+    expect(classifyCiChanges('push', 'abc', ['.github/workflows/ci-deploy.yml']))
+      .toEqual({ deploy: false, relay: true, strategy: false });
+  });
+
+  it('does not classify unrelated workflow and test edits as app, relay, or strategy changes', () => {
+    expect(classifyCiChanges('push', 'abc', ['.github/workflows/live-public-ui-smoke.yml', 'tests/relay.test.ts']))
       .toEqual({ deploy: false, relay: false, strategy: false });
   });
 });
