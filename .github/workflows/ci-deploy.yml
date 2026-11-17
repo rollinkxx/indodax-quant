@@ -11,6 +11,66 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy: ${{ steps.detect.outputs.deploy }}
+      strategy: ${{ steps.detect.outputs.strategy }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.before }}
+        run: |
+          # A manually dispatched run is an explicit request to deploy and evaluate.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "strategy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Pull requests are validated by CI and browser smoke; they never deploy
+          # or run the production historical evaluation.
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "strategy=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Treat a new branch/ref without a usable base as a full change.
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "strategy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          changed_files="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
+          echo "Changed files:"
+          printf '%s
+' "$changed_files"
+
+          # Rebuild/deploy only when application, runtime, relay, or dependency
+          # files change. Documentation and CI-only edits must not redeploy prod.
+          if printf '%s
+' "$changed_files" | grep -Eq '^(worker/|shared/|src/|public/|index\.html$|wrangler\.jsonc$|package\.json$|package-lock\.json$|supabase/functions/)'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Historical strategy evaluation is needed only when strategy/data
+          # execution code, schema, or its evaluator changes.
+          if printf '%s
+' "$changed_files" | grep -Eq '^(worker/|shared/|supabase/(functions|migrations)/|scripts/(backtest\.ts|backtest-history\.ts|backtest-execution\.ts|paper-report\.ts|write-evaluation-summary\.mjs)$|package\.json$|package-lock\.json$)'; then
+            echo "strategy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "strategy=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     runs-on: ubuntu-latest
     services:
@@ -52,8 +112,8 @@ jobs:
           path: dist
 
   deploy:
-    needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [test, detect-changes]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -118,8 +178,8 @@ jobs:
           echo "Deployed: ${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
 
   strategy-evaluation:
-    needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [test, detect-changes]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.strategy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
