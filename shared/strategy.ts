@@ -481,6 +481,7 @@ export function diagnoseBuySignalWindow(
 
 export type TrendContinuationStage =
   | 'indicators_not_ready'
+  | 'invalid_market_data'
   | 'ema_fast_not_above_slow'
   | 'ema_slow_not_above_trend'
   | 'price_not_above_trend'
@@ -521,6 +522,8 @@ export function diagnoseTrendContinuationWindow(
   };
   const n = rows.length;
   if (n < 2 || volumes.length !== n) return unavailable;
+  // Fail closed on malformed market inputs, exactly like the BUY diagnostic and evaluateSignalWindow.
+  if (!validSignalInputs(rows, volumes)) return { ...unavailable, stage: 'invalid_market_data' };
   const last = rows[n - 1];
   const prev = rows[n - 2];
   if (!warm(last) || !warm(prev) || last.ema50 === null || prev.ema21 === null || prev.ema50 === null) return unavailable;

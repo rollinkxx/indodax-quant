@@ -325,3 +325,31 @@ describe('explicit BUY / SELL / HOLD decisions', () => {
     expect(result).toMatchObject({ action: 'HOLD', signal: null, reason: 'indicators_not_ready' });
   });
 });
+
+describe('diagnoseTrendContinuationWindow input validation (parity with BUY gate)', () => {
+  const prev = row({ close: 99, ema9: 102, ema21: 100, ema50: 95, rsi14: 58, volMa20: 10 });
+  const reclaimed = row({ close: 101, ema9: 103, ema21: 100, ema50: 96, rsi14: 60, volMa20: 10 });
+
+  it('is ready on a valid pullback reclaim (baseline)', () => {
+    expect(diagnoseTrendContinuationWindow([prev, reclaimed], [12, 15]).ready).toBe(true);
+  });
+
+  it('fails closed with invalid_market_data on non-finite / invalid inputs, never a ready candidate', () => {
+    const cases: [IndicatorRow[], number[]][] = [
+      [[prev, { ...reclaimed, ema9: Number.POSITIVE_INFINITY }], [12, 15]],
+      [[prev, { ...reclaimed, ema21: Number.POSITIVE_INFINITY }], [12, 15]],
+      [[prev, { ...reclaimed, ema50: Number.POSITIVE_INFINITY }], [12, 15]],
+      [[prev, { ...reclaimed, close: Number.NaN }], [12, 15]],
+      [[prev, { ...reclaimed, rsi14: 101 }], [12, 15]],
+      [[prev, { ...reclaimed, volMa20: Number.NaN }], [12, 15]],
+      [[prev, reclaimed], [12, Number.POSITIVE_INFINITY]],
+      [[prev, reclaimed], [12, -1]],
+    ];
+    for (const [rows, volumes] of cases) {
+      const d = diagnoseTrendContinuationWindow(rows, volumes);
+      expect(d.ready).toBe(false);
+      expect(d.stage).toBe('invalid_market_data');
+      expect(diagnoseBuySignalWindow(rows, volumes).ready).toBe(false);
+    }
+  });
+});
