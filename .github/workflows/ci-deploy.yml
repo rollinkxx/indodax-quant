@@ -82,8 +82,8 @@ jobs:
             dist/
             package-lock.json
 
-  # Worker-first rollout avoids locking out the old Worker if the relay update fails.
-  # For a relay-only follow-up, the already-deployed Worker must be HMAC-capable.
+  # Every Worker deployment refreshes the signing secret; sync and deploy the Supabase relay afterwards.
+  # Pipeline ingestion is smoke-tested in deploy-relay, only after both sides share the same HMAC secret.
   deploy-relay:
     needs: [test, detect-changes, deploy]
     if: >-
@@ -186,18 +186,14 @@ jobs:
               echo "::notice::$NAME is optional and not configured."
             fi
           done
-      - name: Smoke test paper-only runtime, configuration, and cron
+      - name: Smoke test Worker paper-only health and static assets
         env:
           WORKER_URL: ${{ steps.deploy.outputs.url }}
-          SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          MIN_PIPELINE_START_AT: ${{ steps.deploy.outputs.deployed_at }}
         run: |
           sleep 10
           curl -fsS "$WORKER_URL/api/health" | tee health.json
           grep -q '"liveTrading":false' health.json
           curl -fsS -o /dev/null "$WORKER_URL/"
-          npx tsx scripts/smoke-production.ts
 
   strategy-evaluation:
     needs: [test, detect-changes]
