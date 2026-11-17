@@ -1,96 +1,97 @@
 # PROJECT STATE — INDODAX QUANT
 
-_Last updated: 2026-11-15 01:10 WIB (PR #4 merged, production deploy and DB verification complete)_
+_Last verified: 17 November 2026 (WIB). Source of truth: production Supabase, Cloudflare Worker, PostHog, and GitHub Actions._
 
-This is the **only working note** in the repo. `README.md` explains the system and how to set it up.
-Keep this file short: update the current state, remove finished tasks (do not tick and keep them),
-and put session details in commit messages. Earlier session logs live in git history (`git log -- HANDOFF.md TASKS.md`).
+## Non-negotiable operating rules
 
-## Rules (do not break)
+- **Paper trading only.** Never add INDODAX private/trade API credentials, order submission, withdrawals, or live execution.
+- Never expose Supabase service-role credentials in the frontend or browser.
+- Preserve trading history and account state. Use non-destructive migrations; never reset or stop the production paper account without an explicit owner request.
+- Do not relax spread, stop-distance, net reward/risk, exposure, or account-risk gates merely to increase the number of trades.
+- Do not promote a strategy from a backtest automatically. Require a fresh untouched holdout and human review.
+- Keep the existing GitHub, Cloudflare, and Supabase infrastructure. The production system has no n8n runtime dependency.
 
-- Paper trading only. Never add INDODAX private/trade API calls or keys.
-- Never expose the service role key to the frontend (only `SUPABASE_PUBLISHABLE_KEY` is public).
-- Non-destructive migrations only; keep existing data.
-- No n8n runtime dependency (the Worker only calls INDODAX via the relay, Supabase and Telegram).
-- Do not recreate infrastructure.
-- Do not stop or reset the paper account unless the admin (`gsdrxx@gmail.com`) asks.
+## Infrastructure
 
-## Infrastructure (existing)
-
-| Item | Value |
+| Component | Current resource |
 |---|---|
-| GitHub repo | `rollinkxx/indodax-quant` (public), branch `main` — push to `main` runs *CI & Deploy* (GitHub Actions) |
-| Production URL | `https://indodax-quant.sinyalku.workers.dev` (old `*.rollinkxx.workers.dev` URL is dead, Cloudflare 1042) |
-| Cloudflare Worker | `indodax-quant`, Workers **Free** plan (10 ms CPU per invocation), cron `* * * * *` (UTC) |
-| Supabase | project `sinyalku`, ref `znikuooxiqfcicyuhqsx`, region ap-southeast-2 |
-| INDODAX relay | Supabase Edge Function `indodax-proxy` (GET-only, public allow-list; INDODAX returns 403 to Cloudflare IPs), deployed by CI |
-| Migrations applied | `init`, `functions`, `fix_lock_release`, `mtf_universe`, `strategy_hardening`, `entry_gate`, `is_app_user_security_invoker`, `improve_paper_trade_fk_indexes`, `optimize_app_users_self_rls_initplan` |
-| Admin user | `gsdrxx@gmail.com` (Supabase Auth + `app_users.role = admin`) |
+| GitHub | `rollinkxx/indodax-quant`, default branch `main`; GitHub Actions workflow **CI & Deploy** |
+| Production Worker | `indodax-quant` |
+| Production URL | https://indodax-quant.sinyalku.workers.dev |
+| Cron | Every minute: `* * * * *` (UTC) |
+| Supabase | Project `sinyalku`, ref `znikuooxiqfcicyuhqsx`, region `ap-southeast-2` |
+| INDODAX relay | Supabase Edge Function `indodax-proxy`, read-only public endpoint allow-list |
+| PostHog | US project 688639, host `https://us.i.posthog.com` |
+| Operations dashboard | https://us.posthog.com/project/688639/dashboard/2365869 |
 
-Notes: the "Workers Builds: indodax-quant" check (Cloudflare Git integration) fails intermittently; the production deploy is the
-GitHub Actions job. New migrations in `supabase/migrations/` were applied automatically by the Supabase integration (entry_gate).
+The CI deployment job deploys the Edge Function and Worker, syncs configured Worker secrets, and smoke-tests `/api/health`. `POSTHOG_PROJECT_TOKEN` is present as a GitHub Actions secret and is synced to the Worker. Do not print or request its value.
 
-## Current state (verified 2026-11-15 01:09 WIB, after PR #4 production deploy)
+Cloudflare Billing Read permission was not available through the connected account, so the effective plan/CPU entitlement could not be verified. Do not claim a plan tier or make billing changes. Observed Worker telemetry over the audited 24-hour window: approximately 1,448 Worker invocations; average CPU 124.8 ms, p95 211 ms, maximum 345 ms. In the same window, Supabase recorded 1,440 completed execution-log runs, all `SUCCESS`.
 
-- Production `GET /api/health`: HTTP 200, `liveTrading:false`; production homepage smoke passed.
-- Cloudflare Worker `indodax-quant` deployed from main commit `6e1b3dfc9b5fe622cd260461910d09eec14324c8` at 2026-11-14 18:08:14Z. Worker version `ba6b5f07-1901-4748-b611-4f0ba9b04084`. GitHub Actions CI & Deploy run #162 succeeded, including relay deployment, Worker/static assets/cron deployment, Worker secret sync and smoke test.
-- Cron: latest 8 executions (18:02Z–18:09Z) all SUCCESS, no logged errors.
-- Paper account 1: **RUNNING**, kill switch false; initial balance / cash / equity / peak equity Rp10.000.000; max drawdown 0%; 0 open positions, 3 closed positions and 6 paper orders. Current `reset_at` is 2026-11-14 10:16:15Z; the previous Rp9.939.100 snapshot is superseded. This session did not stop or reset the account.
-- Supabase production now has all 9 migrations, including `is_app_user_security_invoker`, `improve_paper_trade_fk_indexes`, and `optimize_app_users_self_rls_initplan`. The three new migrations were applied automatically after merge.
-- Database verification: `is_app_user()` is SECURITY INVOKER with `search_path=pg_catalog, public`; anon cannot execute it, authenticated and service_role can. All five new FK indexes exist. `app_users_self` uses the scalar-subquery form.
-- Supabase Security Advisor no longer reports the SECURITY DEFINER helper finding. Remaining findings: INFO for `system_locks` having no client policy (backend-only table) and WARN for leaked-password protection (disabled). The project organization is on Free.
-- Supabase Performance Advisor still reports `auth_rls_initplan`, but an EXPLAIN under the authenticated role shows `InitPlan 1` and a one-time filter for the JWT claim; the actual query plan is using the intended init-plan. The five new FK indexes are currently reported as unused (INFO), expected until those FK lookup/delete paths occur.
-- CI on the merged commit: TypeScript typecheck passed, 171 tests / 20 files passed, PostgreSQL 17 migration assertions passed, production build passed. Initial JS 510.40 kB (budget 520 kB), CSS 54.88 kB, Charts 184.42 kB.
-- Live public login Playwright smoke passed 4/4: desktop 1440 px / mobile 375 px, dark and light. Authenticated dashboard pages still need an owner browser session for a final visual/console review.
+## Production state (verified 17 Nov 2026)
 
-## Open tasks
+- `GET /api/health` returned `ok:true` and `liveTrading:false`. No live trading path is enabled.
+- Paper account #1 is `RUNNING`, kill switch off, cash and equity Rp10,000,000. The account has not been reset or stopped during this work.
+- Since the paper account reset at 14 Nov 2026 10:16:15 UTC, 0 positions have been opened. Three older CLOSED position rows exist outside the current reset window and are not current-period performance.
+- Last 24 hours: 1,440 execution-log runs, all with status `SUCCESS`.
+- The market catalog currently has 438 pairs; 8 are manually tracked and 5 currently qualify for the dynamic universe. `universeSize:25` is a configured maximum including manually tracked pairs, not a guarantee that 25 pairs pass the liquidity/spread screen.
+- Since reset, the database contains 42 BUY signals and 204 SELL signals. BUY attempts were blocked by the execution/economics gates; no entry was forced.
+- After the active fee configuration was updated at 16 Nov 2026 16:31:34 UTC, 495 pipeline runs recorded 7 BUY entry attempts, 0 positions opened, and 7 rejections: `stop_inside_spread` 5, `price_drift` 1, `net_reward_risk_below_minimum` 1. The gates are behaving as designed.
+- Since the PostHog secret was synced, 90 `trading_pipeline_run` events and 5 `trading_signal_generated` events were observed. The five emitted signal events were SELL. There were no BUY attempts/rejections after telemetry activation in the observed period, so the absence of detailed rejection/open-position events is not evidence of a broken sender.
 
-- Owner: decide whether to upgrade Supabase from Free to Pro or above to enable leaked-password protection. This is an Auth project setting, not a database migration; no paid upgrade was made.
-- Owner: inspect the authenticated dashboard in a real browser using the owner's own session (desktop 1440 px and mobile 375 px, light/dark, browser console). Public login is already smoke-tested without admin credentials.
+## Active paper strategy configuration
 
+The active row in `public.strategy_configs` is the production source of truth. Important current values:
 
-New features, libraries or pages: propose them to the owner first, do not build them.
+- 5m completed-candle engine; EMA 9/21/50, RSI 14, volume MA20 × 1.2.
+- BUY RSI band 50–65; EMA cross lookback 2; anti-chasing extension 1.5%.
+- MTF mode `score` (code default is `filter`).
+- ATR stop 1.5× and target 3×; fallback stop/target 2%/4%.
+- Risk 1% per trade; max position 25% of equity; max 10 open positions; total exposure cap 60%; daily loss limit 3%; max drawdown 15%.
+- Maximum entry spread 0.6%; maximum ask drift 0.5%.
+- Dynamic slippage enabled; base slippage 10 bps.
+- Dynamic universe target cap 25 including pinned pairs; minimum 24h IDR volume Rp1 billion; maximum spread 0.6%; maximum 3 newly selected pairs per update.
+- `feePct = 0.00555` in **percentage points**, i.e. 0.00555% per side in the paper model. This is the explicit user-selected modelling assumption, not independently verified as the all-in maker/taker fee for every market/account. Spread and slippage are separate costs.
+- The fee update was applied prospectively. Historical execution logs retain their original `fee_pct`; old paper rejection metrics are not recalculated.
 
-## Frontend notes (UI redesign finished 2026-11-14)
+The code defaults intentionally differ from production settings for MTF mode, universe size, and open-position cap. Do not infer active production parameters from defaults.
 
-- Rules that still apply to UI work: no new runtime dependencies (Tailwind v4 CSS-first, inline SVG icons); animations only
-  `transform`/`opacity`, 150–300 ms, respect `prefers-reduced-motion`, never re-animate on a poll; fixed app shell (`<main>` is the
-  scroll container); no layout shift; keep Indonesian texts, WIB times, the PAPER TRADING notice and code-split routes.
-  Budget: initial `index-*.js` ≤ 520 kB.
-- Where things live: tokens and both themes in `src/index.css` (`:root` dark, `:root:not(.dark)` light, which also remaps the status palette
-  shades components use directly); shared components in `src/components/ui.tsx` + `Icon.tsx`; shell in `Layout.tsx`; theme in
-  `src/lib/theme.ts` + inline script in `index.html`; PWA in `public/` + `src/lib/pwa.ts`; PnL calendar in `PnlCalendar.tsx` / `src/lib/pnlCalendar.ts`.
-- Contrast: every text token is ≥ 4.5:1 on `bg-app`/`bg-surface`/`bg-elevated` in both themes. Primary buttons are white on
-  `bg-accent-strong` (hover `bg-accent-hover`); do not put white text on `bg-accent`. A global `:focus-visible` outline is the fallback for
-  elements without their own `focus-visible:ring-*`.
+## Strategy release decision — NO-GO
 
-## Known strategy limitations (watch, not changed)
+The 30-day historical evaluation (17 Oct–16 Nov 2026, 13 pairs) tested the production baseline, crossLookback=4, and an EMA21 pullback-reclaim shadow variant. All three had negative net expectancy, profit factor below 1, and fewer than the minimum 100 holdout trades. None met the release gate (at least 100 holdout trades, Wilson 95% lower win-rate bound ≥70%, PF>1, positive net expectancy).
 
-- 5m EMA cross-down exits can whip out of winners early.
-- MTF `filter` blocks every BUY while any higher timeframe is still warming up.
-- Pinned pairs `xautidr` / `paxgidr` still emit signals although they are excluded from the dynamic universe.
-- SELL signals without an open position are stored but not sent to Telegram (by design).
-- Stop-loss execution is still exposed to gaps between one-minute checks: the HYPE incident filled 0.35 % below the stop
-  when the bid dropped quickly. The net reward/risk gate prices the configured exit slippage, but cannot guarantee a stop fill during a gap.
-- Only 3 closed trades: no meaningful win rate yet.
+| Variant | Holdout trades | Win rate | Profit factor | Net P/L |
+|---|---:|---:|---:|---:|
+| CrossLookback 2 | 40 | 25.00% | 0.441 | -Rp249,798.37 |
+| CrossLookback 4 | 66 | 27.27% | 0.462 | -Rp430,393.60 |
+| EMA21 continuation shadow | 19 | 26.32% | 0.318 | -Rp226,540.87 |
 
-## Agent notes
+This was a 5m candle-only approximation, not production-parity: no historical bid/ask/tick fills, MTF score, or shared portfolio controls; dynamic slippage used current volume tiers as a proxy. Structural OHLC history coverage was 100%, but active-volume coverage was 82.54%. Read the full dated assessment: [docs/strategy-readiness-2026-11-17.md](docs/strategy-readiness-2026-11-17.md).
 
-- Read-only public login browser check: `scripts/browser-smoke/live-public-ui.mjs`, runs on PRs and can also be manually dispatched via
-  `Live public UI smoke`. It checks 1440 px / 375 px in light/dark, login controls, theme-color, overflow and browser errors.
+**Do not represent the strategy as profitable or ready for real-money use.** Keep the current engine in paper mode and collect fresh, untouched forward data. Do not tune against the same holdout. A candidate must be retested with quote/spread/fee/slippage and portfolio-cost parity before a manual release review.
 
-- **"Session approvals are not available for this tool"** on GitHub/Supabase MCP calls: the connector is fine. Reconnect the server
-  (`mcp-servers` → `connect`, slug `git-hub` or `supabase`) and retry. The approval is per tool: each write tool
-  (`create_or_update_file`, `push_files`, `merge_pull_request`, `execute_sql`) may need its own reconnect.
-- GitHub MCP writes are text-only: binary files (PNG etc.) cannot be committed by the agent. PWA icons are SVG for that reason
-  (no iOS `apple-touch-icon` PNG yet; the owner can add one by hand).
-- `create_or_update_file` on an existing file needs its blob SHA (`get_file_contents` first). `push_files` needs the FULL file content.
-  Verify a push by downloading the repo tarball in the sandbox and `cmp` against the locally tested copy.
-- Local build/test needs `npm install` first (no `package-lock.json`).
-- The n8n agent sandbox has an empty `/proc`: `tsc` 7 (Go) panics there (`readlink /proc/self/exe`) and headless Chromium cannot start.
-  Typecheck with `npx -p typescript@5 tsc --noEmit -p tsconfig.app.json` (and `tsconfig.worker.json`); CI uses the real `tsc` 7.
-  The sandbox has no git and ~2 GB disk: download the repo as a tarball from codeload.github.com and clear `~/.npm/_cacache` after `npm install`.
-- Supabase via the n8n HTTP node does not work (OAuth credential not allowed there); use the Supabase MCP.
-- Column names: `execution_logs` uses `started_at` (not `created_at`); `trading_signals` / `paper_orders` / `paper_positions` use `pair_id`
-  (not `pair`); the signal direction column is `side`. When unsure, check `information_schema.columns`.
-- Entry-gate skips appear in `execution_logs.steps.paper_trading.info.actions` as `skip <pair>: wide_spread|price_drift|stop_inside_spread|bad_quote`.
+## Current maintenance branch
+
+Branch: `chore/engine-readiness-20261117` (based on main commit `5d503cd140822c40bbf1b00bc1ef30c804d3c5c7`).
+
+Changes in progress:
+- Correct stale README statements about production MTF mode, universe cap, fee, open-position cap, runtime measurements, and current paper-account status.
+- Record a dated strategy NO-GO report with the actual holdout statistics and caveats.
+- Add the active strategy configuration snapshot to future backtest output; refuse to run a backtest if no active strategy config exists.
+- Add active config + historical fee-provenance caveat to the paper-account report.
+- Align the local fee migration filename with the already-applied Supabase version `20261116163134`; this is a repository tracking correction only. **Do not re-run the SQL migration against production.**
+- Keep the PostHog production operations dashboard separate from the legacy staging dashboard.
+
+## Remaining release validation
+
+1. Run CI typecheck, unit/integration tests, PostgreSQL migration assertions, and build on this branch. Resolve any failures before merge.
+2. Merge only after checks pass; let GitHub Actions deploy production and run the new strategy evaluation.
+3. Inspect the new evaluation artifact's `activeConfigSnapshot` and verify it records feePct 0.00555, MTF score, spread/slippage and risk caps.
+4. Verify production health remains `liveTrading:false`, active Supabase strategy values and fee remain unchanged, cron continues to complete successfully, and new PostHog events are arriving.
+5. Continue forward paper observation. Profitability remains unproven until a sufficiently large, untouched sample closes with realistic costs.
+
+## Owner-only / unavailable checks
+
+- Supabase Security Advisor previously reported leaked-password protection disabled and `system_locks` without client RLS policy (backend-only). No Auth policy or billing change was made during this work. Review the Auth setting in the owner's Supabase console.
+- A final visual review of authenticated pages requires the owner's own browser session. No private user login or password was accessed.
+- Current Cloudflare plan/entitlement is not verifiable through the connected API permissions; no plan upgrade or billing change was attempted.

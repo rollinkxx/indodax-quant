@@ -41,12 +41,18 @@ interface Snapshot { snapshot_time: string; drawdown_pct: number | string; equit
 interface ExecutionLog { scheduled_time: string; steps: Record<string, any> }
 
 async function main() {
-  const accounts = await get<Account[]>('paper_accounts', {
-    select: 'id,name,status,reset_at,equity,cash_balance,realized_pnl,unrealized_pnl,total_fees,max_drawdown_pct',
-    id: `eq.${ACCOUNT_ID}`, limit: '1',
-  });
+  const [accounts, strategyConfigs] = await Promise.all([
+    get<Account[]>('paper_accounts', {
+      select: 'id,name,status,reset_at,equity,cash_balance,realized_pnl,unrealized_pnl,total_fees,max_drawdown_pct',
+      id: `eq.${ACCOUNT_ID}`, limit: '1',
+    }),
+    get<{ id: number; name: string; params: Record<string, unknown>; updated_at: string }[]>('strategy_configs', {
+      select: 'id,name,params,updated_at', is_active: 'eq.true', limit: '1',
+    }),
+  ]);
   const account = accounts[0];
   if (!account) throw new Error(`Paper account ${ACCOUNT_ID} not found`);
+  const activeConfig = strategyConfigs[0] ?? null;
 
   const since = account.reset_at;
   const [positions, snapshots, logs] = await Promise.all([
@@ -128,6 +134,26 @@ async function main() {
       equityIdr: n(account.equity), cashIdr: n(account.cash_balance),
       accountRealizedPnlIdr: n(account.realized_pnl), accountUnrealizedPnlIdr: n(account.unrealized_pnl),
     },
+    activeStrategyConfig: activeConfig ? {
+      id: activeConfig.id,
+      name: activeConfig.name,
+      updatedAt: activeConfig.updated_at,
+      parameters: {
+        timeframe: activeConfig.params.timeframe ?? null,
+        feePct: activeConfig.params.feePct ?? null,
+        feeUnit: 'percentage points; 0.00555 means 0.00555% per side',
+        slippageBps: activeConfig.params.slippageBps ?? null,
+        dynamicSlippage: activeConfig.params.dynamicSlippage ?? null,
+        mtfMode: activeConfig.params.mtfMode ?? null,
+        crossLookback: activeConfig.params.crossLookback ?? null,
+        riskPerTradePct: activeConfig.params.riskPerTradePct ?? null,
+        maxPositionPct: activeConfig.params.maxPositionPct ?? null,
+        maxOpenPositions: activeConfig.params.maxOpenPositions ?? null,
+        maxTotalExposurePct: activeConfig.params.maxTotalExposurePct ?? null,
+        maxEntrySpreadPct: activeConfig.params.maxEntrySpreadPct ?? null,
+        maxEntryDriftPct: activeConfig.params.maxEntryDriftPct ?? null,
+      },
+    } : null,
     paperPerformanceSinceReset: {
       closedTrades: closed.length,
       openPositions: positions.filter((p) => p.status === 'OPEN').length,
@@ -160,6 +186,7 @@ async function main() {
     limitations: [
       'Only paper positions opened since the account reset are included.',
       'Profit factor and expectancy are not meaningful until a sufficient closed-trade sample exists.',
+      'Entry rejection diagnostics aggregate historical execution logs since reset; fee_pct records the value used at each run and is not recomputed from the current strategy config.',
       'No live orders are sent by this report.',
     ],
   };

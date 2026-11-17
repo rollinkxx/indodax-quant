@@ -329,8 +329,9 @@ function assertControlledPair(a: StrategyParams, b: StrategyParams): void {
 }
 
 async function main() {
-  const cfg = await get<{ params: unknown }[]>('strategy_configs?select=params&is_active=eq.true&limit=1');
-  const live = mergeParams(cfg[0]?.params);
+  const cfg = await get<{ name: string; params: unknown; updated_at: string }[]>('strategy_configs?select=name,params,updated_at&is_active=eq.true&limit=1');
+  if (!cfg[0]) throw new Error('Active strategy config not found; refusing to backtest with code defaults.');
+  const live = mergeParams(cfg[0].params);
   for (const warning of backtestScopeWarnings(live)) console.warn(`[BACKTEST SCOPE] ${warning}`);
 
   const params2: StrategyParams = { ...live, crossLookback: 2 };
@@ -447,6 +448,33 @@ async function main() {
 
   console.log(JSON.stringify({
     experiment: {
+      activeConfigSnapshot: {
+        source: 'public.strategy_configs (is_active=true)',
+        name: cfg[0].name,
+        updatedAt: cfg[0].updated_at,
+        capturedAt: new Date().toISOString(),
+        parameters: {
+          timeframe: live.timeframe,
+          feePct: live.feePct,
+          feeUnit: 'percentage points; 0.00555 means 0.00555% per side',
+          slippageBps: live.slippageBps,
+          dynamicSlippage: live.dynamicSlippage,
+          mtfMode: live.mtfMode,
+          riskPerTradePct: live.riskPerTradePct,
+          maxPositionPct: live.maxPositionPct,
+          maxOpenPositions: live.maxOpenPositions,
+          maxTotalExposurePct: live.maxTotalExposurePct,
+          maxEntrySpreadPct: live.maxEntrySpreadPct,
+          maxEntryDriftPct: live.maxEntryDriftPct,
+          atrStopMultiplier: live.atrStopMultiplier,
+          atrTakeProfitMultiplier: live.atrTakeProfitMultiplier,
+          crossLookback: live.crossLookback,
+          universeMode: live.universeMode,
+          universeSize: live.universeSize,
+          universeMinVolumeIdr: live.universeMinVolumeIdr,
+          universeMaxSpreadPct: live.universeMaxSpreadPct,
+        },
+      },
       control: 'crossLookback=2',
       variant: 'crossLookback=4',
       controlledParameterDifferences: ['crossLookback'],

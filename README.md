@@ -14,8 +14,8 @@ Cryptocurrency monitoring and **automated paper trading** platform for INDODAX m
 > **No live trading.** The code contains no INDODAX private/trade API client, no API keys, no order
 > submission, no withdrawals. The INDODAX client hard-blocks any non-public endpoint
 > (`worker/src/indodax.ts`, covered by tests). Every order is an internal simulation
-> (`paper_orders.is_simulated` is constrained to `true`). Paper trading is **STOPPED** after installation
-> and only starts when an administrator presses **Start**.
+> (`paper_orders.is_simulated` is constrained to `true`). A fresh installation starts with paper trading **STOPPED**;
+> an administrator must press **Start**. The current production paper account is already **RUNNING** with its kill switch off.
 
 The production system has no dependency on n8n.
 
@@ -46,11 +46,8 @@ or two runs overlap.
 
 Timeframe 5m, completed candles only.
 
-- **Multi-timeframe (MTF)**: 15m and 1h candles are aggregated from 5m (complete buckets only). Trend per timeframe is bull when close > slow EMA and fast EMA (9) > slow EMA (21), bear for the opposite, otherwise neutral (unknown while warming up; needs >= 30 HTF candles). With `mtfMode: 'filter'` (default) a BUY is blocked when MTF is warming up, a timeframe is against the trend, or the 1h anchor is not bullish (`mtf_warming_up`, `mtf_against_trend`, `mtf_anchor_not_bullish`); SELL is never blocked. `score` adds to strength instead, `off` disables it.
-- **Dynamic universe**: besides the pinned (tracked) pairs, up to 12 pairs are picked every 15 min by 24h IDR volume
-  (≥ Rp1.000.000.000) and spread (≤ 0.6%), with a rank buffer of 4,
-  max 3 new pairs per update. Stablecoins and gold-backed tokens (`xautidr`, `paxgidr`) are excluded.
-  Pairs with an open paper position are always analysed. Set `universeMode: 'manual'` to analyse pinned pairs only.
+- **Multi-timeframe (MTF)**: 15m and 1h candles are aggregated from 5m (complete buckets only). Trend per timeframe is bull when close > slow EMA and fast EMA (9) > slow EMA (21), bear for the opposite, otherwise neutral (unknown while warming up; needs >= 30 HTF candles). The code default is `mtfMode: 'filter'`, which blocks BUY when MTF is warming up, a timeframe is against trend, or the 1h anchor is not bullish (`mtf_warming_up`, `mtf_against_trend`, `mtf_anchor_not_bullish`). The active production database configuration is `mtfMode: 'score'`: MTF adds/subtracts strength rather than blocking the BUY solely on MTF state. SELL is never blocked by MTF; `off` disables it.
+- **Dynamic universe**: the active production selector is configured for up to 25 monitored pairs **including** manually tracked pairs. It ranks non-pinned pairs every 15 minutes by 24h IDR volume (≥ Rp1.000.000.000) and spread (≤ 0.6%), with rank buffer 4 and at most 3 new pairs per update. Stablecoins and gold-backed tokens (`xautidr`, `paxgidr`) are excluded. Pairs with an open paper position are always analysed. Set `universeMode: 'manual'` to analyse pinned pairs only. A configured maximum is a cap, not a promise that 25 pairs will qualify.
 
 - **BUY**: EMA9 crosses above EMA21 on the signal candle or the one before (`crossLookback` 2), RSI14 in [50, 65],
   volume ≥ 1.2 × Volume MA20, close > EMA50, and close not more than 1.5% above EMA21 (`maxEntryExtensionPct`, anti-chasing).
@@ -64,8 +61,7 @@ Timeframe 5m, completed candles only.
 - Data gate: ≥ 60 contiguous candles, last candle = the most recently completed bucket, full trade coverage
   for that bucket, real trades in the signal candle, ticker age ≤ 180 s, pair not in maintenance.
 
-The active `strategy_configs` row in the database is the source of truth; the values above are the code defaults
-(`shared/strategy.ts`) unless noted.
+The active `strategy_configs` row in Supabase is the production source of truth. Important production overrides are: `mtfMode: score`, `universeSize: 25`, `maxOpenPositions: 10`, `feePct: 0.00555` (0.00555%), with the other values in the parameter table below. Code defaults in `shared/strategy.ts` intentionally remain distinct (`mtfMode: filter`, `universeSize: 12`, `maxOpenPositions: 4`). Do not infer the live strategy from code defaults alone.
 
 ### Paper trading & risk
 
@@ -73,8 +69,8 @@ The active `strategy_configs` row in the database is the source of truth; the va
 |---|---|
 | Initial virtual balance | Rp10.000.000 |
 | Fill model | BUY at ask + slippage, SELL at bid − slippage; base 10 bps, scaled ×1 / 1.5 / 2.5 / 4 by 24h IDR volume (≥ 1e10 / ≥ 2e9 / ≥ 5e8 / below) |
-| Fee | 0.3 % per side |
-| Position size | risk 1 % of equity to the stop (fees and expected exit slippage included), max 25 % of equity per position, max 4 open positions, max 60 % total exposure |
+| Fee | 0.00555 % per side (active paper-model assumption; see caveat below) |
+| Position size | risk 1 % of equity to the stop (fees and expected exit slippage included), max 25 % of equity per position, max 10 open positions, max 60 % total exposure |
 | Stop loss / take profit | 1.5 × ATR / 3 × ATR (fallback 2 % / 4 %) |
 | Trailing stop | arms at +1.5 × ATR above entry, then trails 1 × ATR below price |
 | Time stop | close after 720 minutes |
@@ -82,8 +78,15 @@ The active `strategy_configs` row in the database is the source of truth; the va
 | Max drawdown | 15 % → automatic kill switch (close all, lock account) |
 | Emergency kill switch | button in the dashboard (admin) |
 
-Stop loss and take profit keep protecting open positions while the account is STOPPED.
+Stop loss and take profit keep protecting open positions while the account is STOPPED. The current production paper account is RUNNING; its current observed cash and equity are each Rp10.000.000, with kill switch off (17 Nov 2026).
+
+**Fee-model caveat:** `feePct` is stored in percentage points, so `0.00555` means `0.00555%` per side. This is the explicit paper-model assumption requested for this project. It must not be represented as independently verified all-in maker/taker fees for every account or market; actual fills can also differ because of spread, slippage, and execution conditions.
+
 All parameters are editable on the *Strategy Configuration* page (validated server-side).
+
+## Current strategy readiness (17 Nov 2026)
+
+The current strategy is **NO-GO for any profitability claim or real-money use**. The latest 30-day historical comparison tested the production baseline and two alternatives; none passed the evidence gate. See [the dated evaluation report](docs/strategy-readiness-2026-11-17.md) for sample sizes, cost assumptions, results, and limitations. Keep the engine in paper mode and do not relax entry/risk gates to increase trade count.
 
 ## Backtest scope and interpretation
 
@@ -155,6 +158,7 @@ The migrations in `supabase/migrations/` are already applied to project `sinyalk
 | `SUPABASE_ACCESS_TOKEN` | Supabase personal access token (deploys the `indodax-proxy` Edge Function) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | Telegram chat id |
+| `POSTHOG_PROJECT_TOKEN` | Optional PostHog Project API Key (`phc_`) used for non-fatal engine telemetry |
 
 Then run the *CI & Deploy* workflow (Actions tab → *Run workflow*) or push to `main`. The workflow runs
 typecheck + tests + build, deploys the Worker with static assets and the cron trigger, deploys the
@@ -169,14 +173,14 @@ npm run deploy                         # build + wrangler deploy (assets + cron)
 npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put TELEGRAM_CHAT_ID
+# Optional: enable PostHog engine telemetry
+npx wrangler secret put POSTHOG_PROJECT_TOKEN
 ```
 
 The app is then live at `https://indodax-quant.<your-subdomain>.workers.dev`
 (production: `https://indodax-quant.sinyalku.workers.dev`).
 
-> **Plan note:** the per-minute job is mostly I/O, but parsing 450 tickers plus indicator maths can exceed
-> the 10 ms CPU limit of the Workers *Free* plan. The *Workers Paid* plan (30 s CPU per invocation)
-> is recommended for reliable cron execution. Each run uses ~20 subrequests.
+> **Worker runtime note:** production telemetry over the most recent audited 24-hour window showed approximately 125 ms average CPU time, 211 ms p95, and 345 ms maximum for the Worker. All 1,440 recorded scheduled runs in the same window completed successfully. CPU time and wall-clock duration are different metrics. The current account plan and its effective limit were not verifiable with the connected Cloudflare permissions, so no plan limit or upgrade is asserted here. Re-check Cloudflare's current usage/limit before changing plan; do not enable trace sampling solely for routine monitoring.
 
 ### 4. First run
 
@@ -200,7 +204,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 
 ```bash
 npm install              # required first (there is no package-lock.json)
-npm test                 # 171 unit + integration tests in 20 files (fake Supabase / INDODAX)
+npm test                 # unit + integration tests (latest exact count is reported by CI)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
 BACKTEST_HISTORY_DAYS=30 npm run backtest  # official 30-day history; see Backtest scope and interpretation
@@ -250,4 +254,4 @@ Telegram messages display Asia/Jakarta (WIB). The daily P/L report is sent short
 
 Current production state and open tasks: see `PROJECT_STATE.md`.
 
-_Last updated: 2026-11-15_
+_Last updated: 2026-11-17_
