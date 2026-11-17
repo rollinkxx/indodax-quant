@@ -196,8 +196,18 @@ jobs:
           curl -fsS -o /dev/null "$WORKER_URL/"
 
   strategy-evaluation:
-    needs: [test, detect-changes]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.strategy == 'true'
+    # A historical evaluation must not race the release that updates its INDODAX relay.
+    # The deploy jobs may be skipped for non-runtime changes; wait for either success or skip.
+    needs: [test, detect-changes, deploy, deploy-relay]
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      needs.test.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.strategy == 'true' &&
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') &&
+      (needs.deploy-relay.result == 'success' || needs.deploy-relay.result == 'skipped')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
