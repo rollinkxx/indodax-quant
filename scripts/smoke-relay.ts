@@ -11,7 +11,38 @@ if (unauthenticated.status !== 401) {
 }
 
 const timestamp = Math.floor(Date.now() / 1000);
-const signature = await signRelayRequest(secret, requestUrl.pathname + requestUrl.search, timestamp);
+const signedTarget = requestUrl.pathname + requestUrl.search;
+const signature = await signRelayRequest(secret, signedTarget, timestamp);
+
+// A captured signature must not authorize a different target.
+const tamperedUrl = new URL(requestUrl);
+tamperedUrl.searchParams.set('path', '/api/ticker/ethidr');
+const tampered = await fetch(tamperedUrl, {
+  method: 'GET',
+  headers: {
+    'x-indodax-relay-timestamp': String(timestamp),
+    'x-indodax-relay-signature': signature,
+  },
+});
+if (tampered.status !== 401) {
+  throw new Error(`Relay accepted a tampered request target: HTTP ${tampered.status}`);
+}
+
+// Even a correctly signed request must not reach private INDODAX endpoints.
+const privateUrl = new URL(requestUrl);
+privateUrl.searchParams.set('path', '/tapi');
+const privateSignature = await signRelayRequest(secret, privateUrl.pathname + privateUrl.search, timestamp);
+const privateResponse = await fetch(privateUrl, {
+  method: 'GET',
+  headers: {
+    'x-indodax-relay-timestamp': String(timestamp),
+    'x-indodax-relay-signature': privateSignature,
+  },
+});
+if (privateResponse.status !== 400) {
+  throw new Error(`Relay did not reject a signed private endpoint: HTTP ${privateResponse.status}`);
+}
+
 const response = await fetch(requestUrl, {
   method: 'GET',
   headers: {
@@ -24,4 +55,4 @@ const payload = await response.json() as { ticker?: { last?: string | number } }
 const last = Number(payload?.ticker?.last);
 if (!Number.isFinite(last) || last <= 0) throw new Error('Authenticated relay returned an invalid INDODAX ticker payload');
 
-console.log('Relay smoke passed: unsigned request rejected; signed read-only ticker request succeeded.');
+console.log('Relay smoke passed: unsigned and tampered requests rejected; signed private endpoint rejected; signed public ticker request succeeded.');
