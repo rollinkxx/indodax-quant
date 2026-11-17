@@ -2,13 +2,6 @@ const encoder = new TextEncoder();
 const MAX_CLOCK_SKEW_SECONDS = 60;
 const INDODAX_ORIGIN = 'https://indodax.com';
 
-/** Derive a dedicated relay key from the backend root key using domain separation. */
-export async function deriveRelayHmacSecret(rootKey: string): Promise<string> {
-  if (!rootKey || rootKey.length < 32) throw new Error('relay root key is missing or too short');
-  const input = encoder.encode(`indodax-quant:relay-hmac:v1:${rootKey}`);
-  return toHex(await crypto.subtle.digest('SHA-256', input));
-}
-
 function payload(target: string, timestamp: number): Uint8Array {
   return encoder.encode(`GET\n${target}\n${timestamp}`);
 }
