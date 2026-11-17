@@ -99,6 +99,7 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      WORKER_URL: ${{ needs.deploy.outputs.url || 'https://indodax-quant.sinyalku.workers.dev' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -113,10 +114,20 @@ jobs:
         run: |
           npx -y supabase@2 functions deploy indodax-proxy --project-ref znikuooxiqfcicyuhqsx --no-verify-jwt --use-api
       - name: Verify unsigned requests are blocked and HMAC requests work
-        run: npx tsx scripts/smoke-relay.ts
+        id: verify-relay
+        run: |
+          npx tsx scripts/smoke-relay.ts
+          echo "verified_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - name: Verify Worker ingests through the HMAC-enforced relay
+        env:
+          MIN_PIPELINE_START_AT: ${{ steps.verify-relay.outputs.verified_at }}
+        run: npx tsx scripts/smoke-production.ts
 
   # Deploy the signing-capable Worker before the relay begins requiring HMAC.
   deploy:
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+      deployed_at: ${{ steps.deploy.outputs.deployed_at }}
     needs: [test, detect-changes]
     if: >-
       always() &&
@@ -149,6 +160,7 @@ jobs:
           URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | head -1)
           test -n "$URL" || { echo "::error::Unable to identify deployed Worker URL."; exit 1; }
           echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "deployed_at=$(date +%s)" >> "$GITHUB_OUTPUT"
           echo "::notice title=Deployed URL::$URL"
       - name: Sync required and optional Worker secrets
         env:
@@ -172,6 +184,7 @@ jobs:
           WORKER_URL: ${{ steps.deploy.outputs.url }}
           SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MIN_PIPELINE_START_AT: ${{ steps.deploy.outputs.deployed_at }}
         run: |
           sleep 10
           curl -fsS "$WORKER_URL/api/health" | tee health.json
