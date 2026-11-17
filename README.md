@@ -8,7 +8,7 @@ Cryptocurrency monitoring and **automated paper trading** platform for INDODAX m
 - **Scheduler**: Cloudflare Cron Trigger `* * * * *` (UTC)
 - **Database / Auth**: Supabase PostgreSQL + Supabase Auth, Row Level Security
 - **Market data**: [INDODAX Official Public API](https://github.com/btcid/indodax-official-api-docs) only,
-  fetched through the read-only Supabase Edge Function relay `indodax-proxy` (INDODAX returns HTTP 403 to Cloudflare Worker IPs). the Worker signs relay requests with its backend-only Supabase service secret; CI copies that exact value into the Edge Function's explicit `INDODAX_RELAY_HMAC_SECRET` variable, and the key is never sent in the request
+  fetched through the read-only Supabase Edge Function relay `indodax-proxy` (INDODAX returns HTTP 403 to Cloudflare Worker IPs). The Worker signs relay requests with its backend-only Supabase service secret; CI copies that exact value into the Edge Function's explicit `INDODAX_RELAY_HMAC_SECRET` variable, and the key is never sent in the request
 - **Notifications**: Telegram Bot API called directly from the Worker
 
 > **No live trading.** The code contains no INDODAX private/trade API client, no API keys, no order
