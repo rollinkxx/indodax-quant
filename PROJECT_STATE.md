@@ -37,6 +37,7 @@ Cloudflare Billing Read permission was not available through the connected accou
 - Last 24 hours at snapshot: 30 BUY and 99 SELL signal records; 6 paper orders (3 BUY and 3 SELL), all marked simulated. Signal records are not equivalent to executable BUY attempts. The latest cycle had no new signal, which is a normal per-cycle result and does not mean the complete 24-hour signal stream was empty.
 - Current active strategy snapshot: `feePct=0.00555` (percentage points, i.e. 0.00555% per side in the paper model), `mtfMode=score`, `crossLookback=2`, maximum entry spread 0.6%, and maximum ask drift 0.5%. Historical transactions retain the fee assumptions applied at their execution time; they are not rewritten by the current setting.
 - PostHog ingestion is active and the production operations dashboard is available. Event counts must be interpreted from real pipeline actions; do not synthesize missing BUY, entry or rejection events.
+
 ## Fee-model finding (F1) — requires owner verification
 
 A read-only production query on 17 Nov 2026 returned `market_pairs.trade_fee_percent_taker = 0.2` for **438/438 pairs**. The active strategy still has `feePct=0.00555` percentage points per side. Their ratio is `0.00555 / 0.2 = 0.02775` (2.775%), below the proposed non-blocking warning threshold of 0.25. This establishes a material mismatch between the current paper assumption and the pair metadata; it does **not** establish the user's final all-in fee.
