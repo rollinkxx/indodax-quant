@@ -5,7 +5,7 @@ const INDODAX_ORIGIN = 'https://indodax.com';
 /** Derive a dedicated relay key from the backend root key using domain separation. */
 export async function deriveRelayHmacSecret(rootKey: string): Promise<string> {
   if (!rootKey || rootKey.length < 32) throw new Error('relay root key is missing or too short');
-  const input = encoder.encode(`indodax-quant:relay-hmac:v1\\0${rootKey}`);
+  const input = encoder.encode(`indodax-quant:relay-hmac:v1:${rootKey}`);
   return toHex(await crypto.subtle.digest('SHA-256', input));
 }
 
