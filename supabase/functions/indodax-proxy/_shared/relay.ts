@@ -63,6 +63,12 @@ function exactParams(query: URLSearchParams, expected: string[]): boolean {
     && actual.every((key) => expected.includes(key));
 }
 
+/** Accept exactly one envelope path parameter; duplicate values are ambiguous and rejected. */
+export function singleRelayPath(query: URLSearchParams): string | null {
+  const values = query.getAll('path');
+  return values.length === 1 && values[0].startsWith('/') ? values[0] : null;
+}
+
 /** Validate only read-only INDODAX public paths and bounded historical ranges. */
 export function validateRelayTarget(
   path: string,
