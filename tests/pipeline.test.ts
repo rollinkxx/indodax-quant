@@ -278,7 +278,7 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
     expect((result.steps as any).paper_trading.info).toMatchObject({
       buy_signals_received: 1, entries_opened: 1, open: 1,
     });
-    expect(o.indodax.every((path) => !/\\/api\\/(private|order|orders)(\\/|$)/i.test(path))).toBe(true);
+    expect(o.indodax.every((path) => !/\/api\/(private|order|orders)(\/|$)/i.test(path))).toBe(true);
   });
 
   it('keeps HOLD cycles idle: no simulated order is opened or closed', async () => {
