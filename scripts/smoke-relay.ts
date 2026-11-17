@@ -28,6 +28,18 @@ if (tampered.status !== 401) {
   throw new Error(`Relay accepted a tampered request target: HTTP ${tampered.status}`);
 }
 
+const response = await fetch(requestUrl, {
+  method: 'GET',
+  headers: {
+    'x-indodax-relay-timestamp': String(timestamp),
+    'x-indodax-relay-signature': signature,
+  },
+});
+if (!response.ok) throw new Error(`Authenticated relay request failed: HTTP ${response.status}`);
+const payload = await response.json() as { ticker?: { last?: string | number } };
+const last = Number(payload?.ticker?.last);
+if (!Number.isFinite(last) || last <= 0) throw new Error('Authenticated relay returned an invalid INDODAX ticker payload');
+
 // Even a correctly signed request must not reach private INDODAX endpoints.
 const privateUrl = new URL(requestUrl);
 privateUrl.searchParams.set('path', '/tapi');
@@ -42,17 +54,5 @@ const privateResponse = await fetch(privateUrl, {
 if (privateResponse.status !== 400) {
   throw new Error(`Relay did not reject a signed private endpoint: HTTP ${privateResponse.status}`);
 }
-
-const response = await fetch(requestUrl, {
-  method: 'GET',
-  headers: {
-    'x-indodax-relay-timestamp': String(timestamp),
-    'x-indodax-relay-signature': signature,
-  },
-});
-if (!response.ok) throw new Error(`Authenticated relay request failed: HTTP ${response.status}`);
-const payload = await response.json() as { ticker?: { last?: string | number } };
-const last = Number(payload?.ticker?.last);
-if (!Number.isFinite(last) || last <= 0) throw new Error('Authenticated relay returned an invalid INDODAX ticker payload');
 
 console.log('Relay smoke passed: unsigned and tampered requests rejected; signed private endpoint rejected; signed public ticker request succeeded.');
