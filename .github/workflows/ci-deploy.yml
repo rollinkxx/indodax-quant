@@ -15,58 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       deploy: ${{ steps.detect.outputs.deploy }}
+      relay: ${{ steps.detect.outputs.relay }}
       strategy: ${{ steps.detect.outputs.strategy }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - id: detect
-        shell: bash
+        name: Classify changed files for release
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.before }}
-        run: |
-          # A manually dispatched run is an explicit request to deploy and evaluate.
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "strategy=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Pull requests are validated by CI and browser smoke; they never deploy
-          # or run the production historical evaluation.
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-            echo "strategy=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Treat a new branch/ref without a usable base as a full change.
-          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-            echo "strategy=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          changed_files="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
-          echo "Changed files:"
-          echo "$changed_files"
-
-          # Rebuild/deploy only when application, runtime, relay, or dependency
-          # files change. Documentation and CI-only edits must not redeploy prod.
-          if grep -Eq '^(worker/|shared/|src/|public/|index[.]html$|wrangler[.]jsonc$|vite[.]config[.]ts$|tsconfig([.][a-z]+)?[.]json$|package[.]json$|package-lock[.]json$|supabase/functions/)' <<< "$changed_files"; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Historical strategy evaluation is needed only when strategy/data
-          # execution code, schema, or its evaluator changes.
-          if grep -Eq '^(worker/|shared/|supabase/(functions|migrations)/|scripts/(backtest[.]ts|backtest-history[.]ts|backtest-execution[.]ts|paper-report[.]ts|write-evaluation-summary[.]mjs)$|package[.]json$|package-lock[.]json$)' <<< "$changed_files"; then
-            echo "strategy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "strategy=false" >> "$GITHUB_OUTPUT"
-          fi
+          HEAD_SHA: ${{ github.sha }}
+        run: node scripts/detect-ci-changes.mjs
 
   test:
     runs-on: ubuntu-latest
@@ -108,9 +69,42 @@ jobs:
           name: dist
           path: dist
 
-  deploy:
+  # Deploy the relay separately and verify both unsigned rejection and valid HMAC traffic.
+  deploy-relay:
     needs: [test, detect-changes]
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.deploy == 'true'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.detect-changes.outputs.relay == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm install --no-audit --no-fund
+      - name: Require relay deployment credentials
+        run: |
+          test -n "$SUPABASE_ACCESS_TOKEN" || { echo "::error::SUPABASE_ACCESS_TOKEN is required when the relay changes."; exit 1; }
+          test -n "$SUPABASE_SERVICE_ROLE_KEY" || { echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for relay verification."; exit 1; }
+      - name: Deploy authenticated INDODAX relay
+        run: |
+          npx -y supabase@2 functions deploy indodax-proxy --project-ref znikuooxiqfcicyuhqsx --no-verify-jwt --use-api
+      - name: Verify unsigned requests are blocked and HMAC requests work
+        run: npx tsx scripts/smoke-relay.ts
+
+  # Worker deployment is blocked if a required relay update failed.
+  deploy:
+    needs: [test, detect-changes, deploy-relay]
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      needs.test.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.deploy == 'true' &&
+      (needs.deploy-relay.result == 'success' || needs.deploy-relay.result == 'skipped')
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -120,59 +114,50 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Deploy Supabase Edge Function (INDODAX read-only relay)
+      - name: Require production deployment credentials
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
-            echo "::warning::SUPABASE_ACCESS_TOKEN not set - skipping indodax-proxy deploy (INDODAX blocks Cloudflare Workers, market data needs this relay)."
-          else
-            npx -y supabase@2 functions deploy indodax-proxy --project-ref znikuooxiqfcicyuhqsx --no-verify-jwt --use-api
-            sleep 3
-            curl -fsS "https://znikuooxiqfcicyuhqsx.supabase.co/functions/v1/indodax-proxy?path=%2Fapi%2Fticker%2Fbtcidr" | tee relay.json
-            grep -q '"last"' relay.json
-          fi
-      - name: Check Cloudflare secrets
-        id: check
-        run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
-            echo "::warning::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set - skipping deploy. See README > Cloudflare deployment."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.check.outputs.skip != 'true'
-        run: npm install --no-audit --no-fund && npm run build
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN is required for a Worker deployment."; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID is required for a Worker deployment."; exit 1; }
+          test -n "$SUPABASE_SERVICE_ROLE_KEY" || { echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for a Worker deployment."; exit 1; }
+      - run: npm install --no-audit --no-fund && npm run build
       - name: Deploy Worker + static assets + cron trigger
-        if: steps.check.outputs.skip != 'true'
         id: deploy
         run: |
           npx wrangler deploy 2>&1 | tee deploy.log
           URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | head -1)
+          test -n "$URL" || { echo "::error::Unable to identify deployed Worker URL."; exit 1; }
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "::notice title=Deployed URL::$URL"
-      - name: Sync Worker secrets
-        if: steps.check.outputs.skip != 'true'
+      - name: Sync required and optional Worker secrets
         env:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           POSTHOG_PROJECT_TOKEN: ${{ secrets.POSTHOG_PROJECT_TOKEN }}
         run: |
-          for NAME in SUPABASE_SERVICE_ROLE_KEY TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID POSTHOG_PROJECT_TOKEN; do
+          printf '%s' "$SUPABASE_SERVICE_ROLE_KEY" | npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY >/dev/null
+          echo "synced SUPABASE_SERVICE_ROLE_KEY"
+          for NAME in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID POSTHOG_PROJECT_TOKEN; do
             VALUE="${!NAME}"
             if [ -n "$VALUE" ]; then
               printf '%s' "$VALUE" | npx wrangler secret put "$NAME" >/dev/null && echo "synced $NAME"
             else
-              echo "::warning::$NAME not set in GitHub secrets"
+              echo "::notice::$NAME is optional and not configured."
             fi
           done
-      - name: Smoke test
-        if: steps.check.outputs.skip != 'true' && steps.deploy.outputs.url != ''
+      - name: Smoke test paper-only runtime, configuration, and cron
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.url }}
+          SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           sleep 10
-          curl -fsS "${{ steps.deploy.outputs.url }}/api/health" | tee health.json
+          curl -fsS "$WORKER_URL/api/health" | tee health.json
           grep -q '"liveTrading":false' health.json
-          curl -fsS -o /dev/null "${{ steps.deploy.outputs.url }}/"
-          echo "Deployed: ${{ steps.deploy.outputs.url }}" >> "$GITHUB_STEP_SUMMARY"
+          curl -fsS -o /dev/null "$WORKER_URL/"
+          npx tsx scripts/smoke-production.ts
 
   strategy-evaluation:
     needs: [test, detect-changes]
