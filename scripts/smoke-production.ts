@@ -26,11 +26,9 @@ async function select<T>(path: string): Promise<T[]> {
   return await response.json() as T[];
 }
 
-const [accounts, configs, logs, tickers] = await Promise.all([
+const [accounts, configs] = await Promise.all([
   select<{ status: string; kill_switch: boolean }>('paper_accounts?select=status,kill_switch&id=eq.1&limit=1'),
   select<{ params: Record<string, unknown> }>('strategy_configs?select=params&is_active=eq.true&limit=1'),
-  select<{ status: string; started_at: string }>('execution_logs?select=status,started_at&order=started_at.desc&limit=1'),
-  select<{ server_time: string; updated_at: string }>('market_tickers_latest?select=server_time,updated_at&order=updated_at.desc&limit=1'),
 ]);
 
 if (!accounts[0] || accounts[0].status !== 'RUNNING' || accounts[0].kill_switch !== false) {
@@ -43,17 +41,51 @@ if (!p || Number(p.feePct) !== 0.00555 || p.mtfMode !== 'score'
   || Number(p.maxTotalExposurePct) !== 60) {
   throw new Error('Active paper strategy configuration does not match the approved production snapshot');
 }
-const latest = logs[0];
+// Cron runs once per minute and a healthy pipeline normally takes several seconds.
+// Do not fail while the newest row is still RUNNING; require a SUCCESS run that began
+// after this deployment/relay activation, and wait through the next scheduled tick.
+const configuredMinStart = Number(process.env.MIN_PIPELINE_START_AT);
+const minPipelineStartMs = Number.isFinite(configuredMinStart) && configuredMinStart > 0
+  ? configuredMinStart * 1000
+  : Date.now() - 5 * 60_000;
+const deadline = Date.now() + 110_000;
+let latest: { status: string; started_at: string } | undefined;
+let freshSuccess = false;
+
+while (Date.now() < deadline) {
+  const rows = await select<{ status: string; started_at: string }>(
+    'execution_logs?select=status,started_at&order=started_at.desc&limit=1',
+  );
+  latest = rows[0];
+  const startedAtMs = latest ? Date.parse(latest.started_at) : Number.NaN;
+  if (latest && Number.isFinite(startedAtMs) && startedAtMs >= minPipelineStartMs - 15_000) {
+    if (latest.status === 'SUCCESS') {
+      freshSuccess = true;
+      break;
+    }
+    if (startedAtMs >= minPipelineStartMs
+      && (latest.status === 'FAILED' || latest.status === 'PARTIAL')) {
+      throw new Error(`Post-deploy pipeline finished with ${latest.status} at ${latest.started_at}`);
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 4_000));
+}
+
+if (!freshSuccess) {
+  throw new Error(
+    `No SUCCESS pipeline execution started after deployment within 110s; latest=${latest?.status ?? 'missing'} at ${latest?.started_at ?? 'n/a'}`,
+  );
+}
+
+const tickers = await select<{ server_time: string; updated_at: string }>(
+  'market_tickers_latest?select=server_time,updated_at&order=updated_at.desc&limit=1',
+);
 const ticker = tickers[0];
-const ageMs = latest ? Date.now() - Date.parse(latest.started_at) : Number.POSITIVE_INFINITY;
 const tickerAgeMs = ticker ? Date.now() - Date.parse(ticker.updated_at) : Number.POSITIVE_INFINITY;
 const marketTimeAgeMs = ticker ? Date.now() - Date.parse(ticker.server_time) : Number.POSITIVE_INFINITY;
-if (!latest || latest.status !== 'SUCCESS' || !Number.isFinite(ageMs) || ageMs < -60_000 || ageMs > 5 * 60_000) {
-  throw new Error('Latest scheduled pipeline execution is missing, not SUCCESS, or older than five minutes');
-}
 if (!ticker || !Number.isFinite(tickerAgeMs) || tickerAgeMs < -60_000 || tickerAgeMs > 5 * 60_000
   || !Number.isFinite(marketTimeAgeMs) || marketTimeAgeMs < -60_000 || marketTimeAgeMs > 5 * 60_000) {
   throw new Error('INDODAX market ticker ingestion is missing, stale, or has a stale upstream server timestamp');
 }
 
-console.log('Production smoke passed: Worker health, paper-only mode, dashboard HTML, paper account, active risk/fee config, recent cron execution and fresh INDODAX market data verified.');
+console.log('Production smoke passed: Worker health, paper-only mode, dashboard HTML, active risk/fee config, post-deploy successful cron execution and fresh INDODAX market data verified.');

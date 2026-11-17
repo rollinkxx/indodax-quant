@@ -17,8 +17,8 @@ export function classifyCiChanges(eventName, baseSha, changedFiles = []) {
   if (!baseSha || /^0+$/.test(baseSha)) return { ...ALL };
 
   const files = changedFiles.filter((file) => typeof file === 'string' && file.length > 0);
-  const deploy = anyMatch(files, /^(worker\/|shared\/|src\/|public\/|index[.]html$|wrangler[.]jsonc$|vite[.]config[.]ts$|tsconfig([.][a-z]+)?[.]json$|package[.]json$|package-lock[.]json$)/);
-  const relay = anyMatch(files, /^supabase\/functions\/indodax-proxy\//);
+  const deploy = anyMatch(files, /^(worker\/|shared\/|src\/|public\/|index[.]html$|wrangler[.]jsonc$|vite[.]config[.]ts$|tsconfig([.][a-z]+)?[.]json$|package[.]json$|package-lock[.]json$|scripts\/smoke-production[.]ts$)/);
+  const relay = anyMatch(files, /^supabase\/functions\/indodax-proxy\//) || files.includes('scripts/smoke-production.ts') || files.includes('scripts/smoke-relay.ts');
   const strategy = anyMatch(files, /^(worker\/|shared\/|supabase\/migrations\/|scripts\/(backtest[.]ts|backtest-history[.]ts|backtest-execution[.]ts|paper-report[.]ts|write-evaluation-summary[.]mjs)$|package[.]json$|package-lock[.]json$)/);
   return { deploy, relay, strategy };
 }
