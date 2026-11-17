@@ -7,6 +7,8 @@ export interface Env {
   INDODAX_PROXY_URL?: string;
   /** Worker secrets (never sent to the browser) */
   SUPABASE_SERVICE_ROLE_KEY: string;
+  /** Dedicated HMAC key for the read-only INDODAX relay; generated in CI with domain separation. */
+  INDODAX_RELAY_HMAC_SECRET?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
   /** Optional PostHog project token for server-side strategy telemetry. */
