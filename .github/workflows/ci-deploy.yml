@@ -192,12 +192,17 @@ jobs:
           SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           MIN_PIPELINE_START_AT: ${{ steps.deploy.outputs.deployed_at }}
+          RELAY_CHANGED: ${{ needs.detect-changes.outputs.relay }}
         run: |
           sleep 10
           curl -fsS "$WORKER_URL/api/health" | tee health.json
           grep -q '"liveTrading":false' health.json
           curl -fsS -o /dev/null "$WORKER_URL/"
-          npx tsx scripts/smoke-production.ts
+          if [ "$RELAY_CHANGED" = "true" ]; then
+            echo "Relay changes are in this release; defer market-data smoke until after HMAC secret configuration and relay deployment."
+          else
+            npx tsx scripts/smoke-production.ts
+          fi
 
   strategy-evaluation:
     needs: [test, detect-changes]
