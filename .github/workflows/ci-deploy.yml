@@ -51,7 +51,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-audit --no-fund
       - name: Generate reproducible lockfile with the CI npm toolchain
         run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
       - name: Commit generated lockfile to the same-repository PR branch
