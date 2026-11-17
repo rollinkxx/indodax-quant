@@ -1,7 +1,7 @@
 // INDODAX QUANT — authenticated read-only relay for official INDODAX public market data.
 // verify_jwt is disabled because this service-to-service endpoint uses a narrow HMAC protocol.
 // No browser/client token is accepted, and no private INDODAX endpoint can pass the path validator.
-import { validateRelayTarget, verifyRelayRequest } from './_shared/relay.ts';
+import { singleRelayPath, validateRelayTarget, verifyRelayRequest } from './_shared/relay.ts';
 
 function configuredRelaySecrets(): string[] {
   const values: string[] = [];
@@ -44,7 +44,8 @@ Deno.serve(async (req: Request) => {
   }
   if (!authenticated) return json({ error: 'unauthorized' }, 401);
 
-  const path = url.searchParams.get('path') ?? '';
+  const path = singleRelayPath(url.searchParams);
+  if (!path) return json({ error: 'invalid_relay_path_parameter' }, 400);
   const upstreamQuery = new URLSearchParams(url.searchParams);
   upstreamQuery.delete('path');
   const validated = validateRelayTarget(path, upstreamQuery);
