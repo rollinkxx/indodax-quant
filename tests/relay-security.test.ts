@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { signRelayRequest, validateRelayTarget, verifyRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
+import { signRelayRequest, singleRelayPath, validateRelayTarget, verifyRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
 
 const secret = 'test-service-secret-never-use-in-production';
 const target = '/functions/v1/indodax-proxy?path=%2Fapi%2Ftrades%2Fbtcidr';
@@ -30,6 +30,14 @@ describe('INDODAX relay request authentication', () => {
     await expect(verifyRelayRequest(secret, target, '1061', signature, 1_000)).resolves.toBe(false);
     await expect(verifyRelayRequest(secret, target, '1.5', signature, 1_000)).resolves.toBe(false);
     await expect(verifyRelayRequest(secret, target, 'NaN', signature, 1_000)).resolves.toBe(false);
+  });
+});
+
+describe('INDODAX relay envelope validation', () => {
+  it('accepts exactly one path parameter and rejects duplicate or missing path values', () => {
+    expect(singleRelayPath(new URLSearchParams('path=%2Fapi%2Fpairs'))).toBe('/api/pairs');
+    expect(singleRelayPath(new URLSearchParams('path=%2Fapi%2Fpairs&path=%2Ftapi')).toBeNull();
+    expect(singleRelayPath(new URLSearchParams())).toBeNull();
   });
 });
 
