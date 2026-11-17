@@ -15,15 +15,15 @@ export function relayUrl(url: string, proxyUrl: string): string {
 }
 
 /**
- * Rewrite only official INDODAX URLs. The Worker signs the exact proxy path/query
- * using a dedicated domain-separated HMAC key; no Supabase API key is sent.
+ * Rewrite only official INDODAX URLs. The Worker signs the exact proxy path/query;
+ * its Supabase service secret is used as an HMAC key and is never transmitted.
  */
 export function withIndodaxRelay(base: FetchLike, proxyUrl?: string, relaySecret?: string): FetchLike {
   const proxy = proxyUrl?.trim();
   if (!proxy) return base;
   return async (input, init) => {
     if (typeof input !== 'string' || !input.startsWith(INDODAX_ORIGIN + '/')) return base(input, init);
-    if (!relaySecret) throw new Error('INDODAX relay is configured but INDODAX_RELAY_HMAC_SECRET is missing');
+    if (!relaySecret) throw new Error('INDODAX relay is configured but relay signing secret is missing');
     const target = relayUrl(input, proxy);
     const targetUrl = new URL(target);
     const timestamp = Math.floor(Date.now() / 1000);
