@@ -50,13 +50,11 @@ jobs:
 
           changed_files="$(git diff --name-only "$BASE_SHA" "$GITHUB_SHA")"
           echo "Changed files:"
-          printf '%s
-' "$changed_files"
+          echo "$changed_files"
 
           # Rebuild/deploy only when application, runtime, relay, or dependency
           # files change. Documentation and CI-only edits must not redeploy prod.
-          if printf '%s
-' "$changed_files" | grep -Eq '^(worker/|shared/|src/|public/|index\.html$|wrangler\.jsonc$|package\.json$|package-lock\.json$|supabase/functions/)'; then
+          if grep -Eq '^(worker/|shared/|src/|public/|index[.]html$|wrangler[.]jsonc$|vite[.]config[.]ts$|tsconfig([.][a-z]+)?[.]json$|package[.]json$|package-lock[.]json$|supabase/functions/)' <<< "$changed_files"; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
           else
             echo "deploy=false" >> "$GITHUB_OUTPUT"
@@ -64,8 +62,7 @@ jobs:
 
           # Historical strategy evaluation is needed only when strategy/data
           # execution code, schema, or its evaluator changes.
-          if printf '%s
-' "$changed_files" | grep -Eq '^(worker/|shared/|supabase/(functions|migrations)/|scripts/(backtest\.ts|backtest-history\.ts|backtest-execution\.ts|paper-report\.ts|write-evaluation-summary\.mjs)$|package\.json$|package-lock\.json$)'; then
+          if grep -Eq '^(worker/|shared/|supabase/(functions|migrations)/|scripts/(backtest[.]ts|backtest-history[.]ts|backtest-execution[.]ts|paper-report[.]ts|write-evaluation-summary[.]mjs)$|package[.]json$|package-lock[.]json$)' <<< "$changed_files"; then
             echo "strategy=true" >> "$GITHUB_OUTPUT"
           else
             echo "strategy=false" >> "$GITHUB_OUTPUT"
