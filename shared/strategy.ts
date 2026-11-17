@@ -330,6 +330,27 @@ type WarmRow = IndicatorRow & { ema9: number; ema21: number; rsi14: number; volM
 const warm = (r: IndicatorRow | undefined): r is WarmRow =>
   !!r && r.ema9 !== null && r.ema21 !== null && r.rsi14 !== null && r.volMa20 !== null;
 
+/**
+ * Fail closed on malformed market inputs before evaluating a crossover.
+ * Null indicators are allowed during warm-up; non-finite values, invalid RSI,
+ * non-positive closes, and negative/non-finite volume are not market observations.
+ */
+function validSignalInputs(rows: IndicatorRow[], volumes: number[]): boolean {
+  if (rows.length < 2 || volumes.length !== rows.length) return false;
+  return rows.every((row, index) => {
+    if (!Number.isFinite(row.t) || !Number.isFinite(row.close) || row.close <= 0) return false;
+    if (!Number.isFinite(volumes[index]) || volumes[index] < 0) return false;
+    const indicators = [
+      row.ema9, row.ema21, row.ema50, row.rsi14, row.macd, row.macdSignal,
+      row.macdHist, row.atr14, row.volMa20, row.support, row.resistance,
+    ];
+    if (!indicators.every((value) => value === null || Number.isFinite(value))) return false;
+    if (row.rsi14 !== null && (row.rsi14 < 0 || row.rsi14 > 100)) return false;
+    if (row.volMa20 !== null && row.volMa20 < 0) return false;
+    return true;
+  });
+}
+
 /** BUY filters evaluated on a single candle (everything except the cross itself). */
 function buyFiltersOk(r: WarmRow, volume: number, p: StrategyParams): boolean {
   const trendOk = !p.useTrendFilter || (r.ema50 !== null && r.close > r.ema50);
@@ -350,6 +371,7 @@ function buyFiltersOk(r: WarmRow, volume: number, p: StrategyParams): boolean {
  */
 export type BuyDiagnosticStage =
   | 'indicators_not_ready'
+  | 'invalid_market_data'
   | 'ema_fast_not_above_slow'
   | 'no_recent_cross'
   | 'trend_filter'
@@ -390,6 +412,7 @@ export function diagnoseBuySignalWindow(
   };
   const n = rows.length;
   if (n < 2 || volumes.length !== n) return unavailable;
+  if (!validSignalInputs(rows, volumes)) return { ...unavailable, stage: 'invalid_market_data' };
 
   const last = rows[n - 1];
   const prev = rows[n - 2];
@@ -532,7 +555,7 @@ export function diagnoseTrendContinuationWindow(
 
 export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
   const n = rows.length;
-  if (n < 2 || volumes.length !== n) return null;
+  if (!validSignalInputs(rows, volumes)) return null;
   const last = rows[n - 1];
   const prev = rows[n - 2];
   if (!warm(last) || prev.ema9 === null || prev.ema21 === null) return null;
@@ -598,6 +621,9 @@ export function evaluateMarketAction(
   const n = rows.length;
   if (n < 2 || volumes.length !== n) {
     return { action: 'HOLD', signal: null, reason: 'insufficient_aligned_rows' };
+  }
+  if (!validSignalInputs(rows, volumes)) {
+    return { action: 'HOLD', signal: null, reason: 'invalid_market_data' };
   }
   const last = rows[n - 1];
   const prev = rows[n - 2];

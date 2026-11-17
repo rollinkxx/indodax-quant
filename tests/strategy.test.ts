@@ -303,4 +303,25 @@ describe('explicit BUY / SELL / HOLD decisions', () => {
     );
     expect(result).toMatchObject({ action: 'HOLD', signal: null, reason: 'sell_blocked_rsi_confirmation' });
   });
+
+  it('fails closed with an explicit HOLD reason for NaN, infinite, negative-volume and invalid-RSI inputs', () => {
+    const cases: [IndicatorRow[], number[]][] = [
+      [[below, row({ ema9: 101, ema21: 100, close: Number.NaN })], [0, 15]],
+      [[below, row({ ema9: 101, ema21: 100, ema50: Number.POSITIVE_INFINITY })], [0, 15]],
+      [[below, above], [0, Number.NaN]],
+      [[below, above], [0, -1]],
+      [[below, row({ ema9: 101, ema21: 100, rsi14: 101 })], [0, 15]],
+    ];
+    for (const [rows, volumes] of cases) {
+      expect(evaluateMarketAction(rows, volumes)).toMatchObject({
+        action: 'HOLD', signal: null, reason: 'invalid_market_data',
+      });
+      expect(evaluateSignalWindow(rows, volumes)).toBeNull();
+    }
+  });
+
+  it('allows null warm-up indicators but never turns them into BUY or SELL', () => {
+    const result = evaluateMarketAction([below, row({ ema9: null })], [0, 15]);
+    expect(result).toMatchObject({ action: 'HOLD', signal: null, reason: 'indicators_not_ready' });
+  });
 });

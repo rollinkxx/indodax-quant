@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -50,6 +50,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
         }
         case 'save_analysis': return json({ new_signals: opts.newSignals ?? [] });
         case 'get_pending_sell_signals': return json(opts.pendingSells ?? []);
+        case 'paper_open_position': return json(opts.openResult ?? { ok: true, position_id: 55, cash_after: 9_700_000 });
         case 'paper_close_position': return json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
         case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
         case 'claim_notifications': return json(body.p_items.map((x: any) => x.dedupe_key));
@@ -248,6 +249,47 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(htfCalls(off.indodax)).toEqual([]);
     const save = off.rpcs.find((x) => x.fn === 'save_analysis')!.body;
     expect(save.p_candles).toEqual([]);
+  });
+});
+
+describe('pipeline: paper-only BUY / HOLD execution contract', () => {
+  const run = (o: ReturnType<typeof setup>) => runPipeline(env(), {
+    scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000,
+  });
+
+  it('opens a simulated paper position for an accepted BUY and never calls a private INDODAX endpoint', async () => {
+    const signal = {
+      id: 201, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 10 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const o = setup({
+      mtfMode: 'off',
+      newSignals: [signal],
+      openResult: { ok: true, position_id: 55, cash_after: 9_700_000 },
+    });
+    const result = await run(o);
+    expect(result.status).toBe('SUCCESS');
+    const opens = o.rpcs.filter((x) => x.fn === 'paper_open_position');
+    expect(opens).toHaveLength(1);
+    expect(opens[0].body).toMatchObject({
+      p_account_id: 1, p_pair_id: 'btcidr', p_signal_id: 201,
+      p_idempotency_key: 'open:1:201', p_reason: 'SIGNAL',
+    });
+    expect((result.steps as any).paper_trading.info).toMatchObject({
+      buy_signals_received: 1, entries_opened: 1, open: 1,
+    });
+    expect(o.indodax.every((path) => !/\/api\/(private|order|orders)(\/|$)/i.test(path))).toBe(true);
+  });
+
+  it('keeps HOLD cycles idle: no simulated order is opened or closed', async () => {
+    const o = setup({ mtfMode: 'off', newSignals: [] });
+    const result = await run(o);
+    expect(result.status).toBe('SUCCESS');
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    expect(o.rpcs.some((x) => x.fn === 'paper_close_position')).toBe(false);
+    expect((result.steps as any).paper_trading.info).toMatchObject({
+      buy_signals_received: 0, entries_opened: 0,
+    });
   });
 });
 
