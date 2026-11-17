@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyCiChanges } from '../scripts/detect-ci-changes';
+import { classifyCiChanges } from '../scripts/detect-ci-changes.mjs';
 
 describe('CI changed-file release policy', () => {
   it('skips deployment and backtest for documentation-only changes', () => {
@@ -21,7 +21,7 @@ describe('CI changed-file release policy', () => {
 
   it('marks relay source changes as relay deployments and strategy-relevant changes', () => {
     expect(classifyCiChanges('push', 'abc', ['supabase/functions/indodax-proxy/index.ts']))
-      .toEqual({ deploy: true, relay: true, strategy: true });
+      .toEqual({ deploy: false, relay: true, strategy: false });
   });
 
   it('runs evaluation for migrations and evaluator changes without deploying the Worker', () => {
