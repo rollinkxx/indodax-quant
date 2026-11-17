@@ -1,4 +1,4 @@
-import { signRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
+import { formatRelayAuthorization, signRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
 
 const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, '');
 const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -20,8 +20,7 @@ tamperedUrl.searchParams.set('path', '/api/ticker/ethidr');
 const tampered = await fetch(tamperedUrl, {
   method: 'GET',
   headers: {
-    'x-indodax-relay-timestamp': String(timestamp),
-    'x-indodax-relay-signature': signature,
+    authorization: formatRelayAuthorization(timestamp, signature),
   },
 });
 if (tampered.status !== 401) {
@@ -31,8 +30,7 @@ if (tampered.status !== 401) {
 const response = await fetch(requestUrl, {
   method: 'GET',
   headers: {
-    'x-indodax-relay-timestamp': String(timestamp),
-    'x-indodax-relay-signature': signature,
+    authorization: formatRelayAuthorization(timestamp, signature),
   },
 });
 if (!response.ok) {
@@ -50,8 +48,7 @@ const privateSignature = await signRelayRequest(secret, privateUrl.pathname + pr
 const privateResponse = await fetch(privateUrl, {
   method: 'GET',
   headers: {
-    'x-indodax-relay-timestamp': String(timestamp),
-    'x-indodax-relay-signature': privateSignature,
+    authorization: formatRelayAuthorization(timestamp, privateSignature),
   },
 });
 if (privateResponse.status !== 400) {

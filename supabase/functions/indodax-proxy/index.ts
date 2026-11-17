@@ -1,36 +1,39 @@
 // INDODAX QUANT — authenticated read-only relay for official INDODAX public market data.
 // verify_jwt is disabled because this service-to-service endpoint uses a narrow HMAC protocol.
 // No browser/client token is accepted, and no private INDODAX endpoint can pass the path validator.
-import { singleRelayPath, validateRelayTarget, verifyRelayRequest } from './_shared/relay.ts';
+import { parseRelayAuthorization, singleRelayPath, validateRelayTarget, verifyRelayRequest } from './_shared/relay.ts';
 
 Deno.serve(async (req: Request) => {
   if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
 
   const url = new URL(req.url);
-  const timestamp = req.headers.get('x-indodax-relay-timestamp') ?? '';
-  const signature = req.headers.get('x-indodax-relay-signature') ?? '';
+  const authorizationHeader = req.headers.get('authorization') ?? '';
+  const authorization = parseRelayAuthorization(authorizationHeader);
+  const timestamp = authorization?.timestamp ?? '';
+  const signature = authorization?.signature ?? '';
   const signedTarget = url.pathname + url.search;
   const relaySecret = Deno.env.get('INDODAX_RELAY_HMAC_SECRET') ?? '';
 
   if (relaySecret.length < 32) return json({ error: 'relay_auth_not_configured' }, 503);
-  const timestampNumber = /^\\d{1,12}$/.test(timestamp) ? Number(timestamp) : Number.NaN;
+  const timestampFormatValid = /^[0-9]{1,12}$/.test(timestamp);
+  const timestampNumber = timestampFormatValid ? Number(timestamp) : Number.NaN;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const timestampSkewSeconds = Number.isSafeInteger(timestampNumber) ? nowSeconds - timestampNumber : null;
-  const signatureFormatValid = /^[a-f0-9]{64}$/i.test(signature);
   const authenticated = await verifyRelayRequest(relaySecret, signedTarget, timestamp, signature);
   if (!authenticated) {
-    // Safe operational diagnostics only: never log the HMAC, secret value, or request headers.
-    const reason = !signatureFormatValid
-      ? 'signature_format_invalid'
-      : timestampSkewSeconds === null
+    // Safe operational diagnostics only: never log the HMAC, secret value, or authorization contents.
+    const reason = !authorization
+      ? 'authorization_format_invalid'
+      : !timestampFormatValid
         ? 'timestamp_format_invalid'
-        : Math.abs(timestampSkewSeconds) > 60
+        : Math.abs(timestampSkewSeconds ?? Infinity) > 60
           ? 'timestamp_out_of_window'
           : 'hmac_mismatch';
     console.warn('indodax_relay_auth_rejected', JSON.stringify({
       reason,
       target: signedTarget,
       timestampSkewSeconds,
+      authorizationLength: authorizationHeader.length,
       secretLength: relaySecret.length,
     }));
     return json({ error: 'unauthorized' }, 401);

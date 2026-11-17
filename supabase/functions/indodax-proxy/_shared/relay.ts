@@ -2,8 +2,49 @@ const encoder = new TextEncoder();
 const MAX_CLOCK_SKEW_SECONDS = 60;
 const INDODAX_ORIGIN = 'https://indodax.com';
 
+/**
+ * The Supabase gateway strips /functions/v1 before invoking an Edge Function.
+ * Sign both the external URL and the runtime-local URL using one canonical path.
+ */
+export function canonicalRelayTarget(target: string): string {
+  const queryAt = target.indexOf('?');
+  const pathname = queryAt === -1 ? target : target.slice(0, queryAt);
+  const query = queryAt === -1 ? '' : target.slice(queryAt);
+  return pathname === '/functions/v1/indodax-proxy'
+    ? '/indodax-proxy' + query
+    : target;
+}
+
+export interface RelayAuthorization {
+  timestamp: string;
+  signature: string;
+}
+
+/** Carry the timestamp and proof in the standard Authorization header. */
+export function formatRelayAuthorization(timestamp: number, signature: string): string {
+  if (!Number.isSafeInteger(timestamp) || timestamp <= 0 || !fromHex(signature)) {
+    throw new Error('invalid relay authorization');
+  }
+  return `Relay-HMAC ${timestamp}.${signature.toLowerCase()}`;
+}
+
+/** Parse only the dedicated Relay-HMAC authorization scheme. */
+export function parseRelayAuthorization(value: string | null): RelayAuthorization | null {
+  const prefix = 'Relay-HMAC ';
+  if (!value?.startsWith(prefix)) return null;
+  const credential = value.slice(prefix.length).trim();
+  const separator = credential.indexOf('.');
+  if (separator <= 0 || credential.indexOf('.', separator + 1) !== -1) return null;
+  const timestamp = credential.slice(0, separator);
+  const signature = credential.slice(separator + 1);
+  if (timestamp.length > 12 || timestamp.length === 0
+    || !Array.from(timestamp).every((char) => char >= '0' && char <= '9')
+    || !fromHex(signature)) return null;
+  return { timestamp, signature: signature.toLowerCase() };
+}
+
 function payload(target: string, timestamp: number): Uint8Array {
-  return encoder.encode(`GET\n${target}\n${timestamp}`);
+  return encoder.encode(`GET\n${canonicalRelayTarget(target)}\n${timestamp}`);
 }
 
 async function importKey(secret: string, usage: 'sign' | 'verify'): Promise<CryptoKey> {
