@@ -78,7 +78,7 @@ The active `strategy_configs` row in Supabase is the production source of truth.
 | Max drawdown | 15 % → automatic kill switch (close all, lock account) |
 | Emergency kill switch | button in the dashboard (admin) |
 
-Stop loss and take profit keep protecting open positions while the account is STOPPED. The current production paper account is RUNNING; its current observed cash and equity are each Rp10.000.000, with kill switch off (17 Nov 2026).
+Stop loss and take profit keep protecting open positions while the account is STOPPED. The production paper account is currently RUNNING with kill switch off; current balance, equity, realized P/L and trade counts are recorded in PROJECT_STATE.md with an explicit database snapshot timestamp. Do not treat historical report values as live balances.
 
 **Fee-model caveat:** `feePct` is stored in percentage points, so `0.00555` means `0.00555%` per side. This is the explicit paper-model assumption requested for this project. It must not be represented as independently verified all-in maker/taker fees for every account or market; actual fills can also differ because of spread, slippage, and execution conditions.
 
@@ -193,7 +193,7 @@ The app is then live at `https://indodax-quant.<your-subdomain>.workers.dev`
 ## Local development
 
 ```bash
-npm install
+npm ci
 cp .env.example .dev.vars   # fill SUPABASE_SERVICE_ROLE_KEY etc.
 npm run build && npx wrangler dev --test-scheduled   # API + assets on :8787
 npm run dev                  # Vite dev server on :5173 (proxies /api to :8787)
@@ -203,7 +203,7 @@ curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"  # trigger the cron loca
 ## Tests
 
 ```bash
-npm install              # required first (there is no package-lock.json)
+npm ci                   # reproducible install from the committed package-lock.json
 npm test                 # unit + integration tests (latest exact count is reported by CI)
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
