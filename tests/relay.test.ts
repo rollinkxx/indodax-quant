@@ -23,6 +23,20 @@ describe('INDODAX relay (Cloudflare Workers are blocked by indodax.com)', () => 
     expect(withIndodaxRelay(base, '')).toBe(base);
     expect(withIndodaxRelay(base, undefined)).toBe(base);
   });
+  it('uses a standard Relay-HMAC Authorization header instead of custom x- headers', async () => {
+    let authorization: string | null = null;
+    let legacyHeadersPresent = false;
+    const base = async (_url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      authorization = headers.get('authorization');
+      legacyHeadersPresent = headers.has('x-indodax-relay-timestamp') || headers.has('x-indodax-relay-signature');
+      return okJson({});
+    };
+    await withIndodaxRelay(base, PROXY, RELAY_SECRET)('https://indodax.com/api/pairs');
+    expect(authorization).toMatch(/^Relay-HMAC [0-9]{1,12}\.[a-f0-9]{64}$/i);
+    expect(legacyHeadersPresent).toBe(false);
+  });
+
   it('fails closed when the relay URL is configured without a signing secret', async () => {
     const base = async () => okJson({});
     const f = withIndodaxRelay(base, PROXY);

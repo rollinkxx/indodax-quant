@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { signRelayRequest, singleRelayPath, validateRelayTarget, verifyRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
+import { canonicalRelayTarget, formatRelayAuthorization, parseRelayAuthorization, signRelayRequest, singleRelayPath, validateRelayTarget, verifyRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
 
 const secret = 'test-service-secret-never-use-in-production';
 const target = '/functions/v1/indodax-proxy?path=%2Fapi%2Ftrades%2Fbtcidr';
@@ -11,10 +11,28 @@ describe('INDODAX relay request authentication', () => {
     await expect(verifyRelayRequest(secret, target, String(timestamp), signature, 1_000)).resolves.toBe(true);
   });
 
+  it('normalizes the public Functions URL to the runtime-local path before signing', async () => {
+    const timestamp = 1_000;
+    const signature = await signRelayRequest(secret, target, timestamp);
+    const runtimeTarget = target.replace('/functions/v1', '');
+    expect(canonicalRelayTarget(target)).toBe(runtimeTarget);
+    await expect(verifyRelayRequest(secret, runtimeTarget, String(timestamp), signature, 1_000)).resolves.toBe(true);
+  });
+
   it('rejects a request when its query string is changed after signing', async () => {
     const timestamp = 1_000;
     const signature = await signRelayRequest(secret, target, timestamp);
     await expect(verifyRelayRequest(secret, target + '&pair_id=ethidr', String(timestamp), signature, 1_000)).resolves.toBe(false);
+  });
+
+  it('formats and parses a timestamp-bound Authorization proof without exposing the secret', async () => {
+    const timestamp = 1_000;
+    const signature = await signRelayRequest(secret, target, timestamp);
+    const authorization = formatRelayAuthorization(timestamp, signature);
+    expect(authorization).toBe(`Relay-HMAC ${timestamp}.${signature}`);
+    expect(parseRelayAuthorization(authorization)).toEqual({ timestamp: String(timestamp), signature });
+    expect(parseRelayAuthorization('Bearer token')).toBeNull();
+    expect(parseRelayAuthorization('Relay-HMAC invalid')).toBeNull();
   });
 
   it('rejects the wrong secret and malformed signatures', async () => {

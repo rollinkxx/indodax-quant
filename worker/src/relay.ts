@@ -1,11 +1,8 @@
 // INDODAX calls from Cloudflare Workers are routed through the authenticated read-only Supabase relay.
 import type { FetchLike } from './env';
-import { signRelayRequest } from '../../supabase/functions/indodax-proxy/_shared/relay';
+import { formatRelayAuthorization, signRelayRequest } from '../../supabase/functions/indodax-proxy/_shared/relay';
 
 export const INDODAX_ORIGIN = 'https://indodax.com';
-export const RELAY_TIMESTAMP_HEADER = 'x-indodax-relay-timestamp';
-export const RELAY_SIGNATURE_HEADER = 'x-indodax-relay-signature';
-
 export function relayUrl(url: string, proxyUrl: string): string {
   const source = new URL(url);
   const proxy = new URL(proxyUrl);
@@ -15,8 +12,8 @@ export function relayUrl(url: string, proxyUrl: string): string {
 }
 
 /**
- * Rewrite only official INDODAX URLs. The Worker signs the exact proxy path/query;
- * its Supabase service secret is used as an HMAC key and is never transmitted.
+ * Rewrite only official INDODAX URLs. The Worker signs the canonical proxy path/query;
+ * the HMAC proof is sent via Authorization, never the Supabase service secret.
  */
 export function withIndodaxRelay(base: FetchLike, proxyUrl?: string, relaySecret?: string): FetchLike {
   const proxy = proxyUrl?.trim();
@@ -29,8 +26,9 @@ export function withIndodaxRelay(base: FetchLike, proxyUrl?: string, relaySecret
     const timestamp = Math.floor(Date.now() / 1000);
     const signature = await signRelayRequest(relaySecret, targetUrl.pathname + targetUrl.search, timestamp);
     const headers = new Headers(init?.headers);
-    headers.set(RELAY_TIMESTAMP_HEADER, String(timestamp));
-    headers.set(RELAY_SIGNATURE_HEADER, signature);
+    headers.delete('x-indodax-relay-timestamp');
+    headers.delete('x-indodax-relay-signature');
+    headers.set('authorization', formatRelayAuthorization(timestamp, signature));
     return base(target, { ...init, method: 'GET', headers });
   };
 }
