@@ -607,6 +607,21 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         return r?.ok ?? false;
       };
 
+      // a0) A SELL is stored once (ON CONFLICT DO NOTHING), so it is only "new" in the run that saved it. If that run skipped the
+      // exit check (stale ticker, rejected close, orphaned run) the SELL would be lost. Re-read stored SELLs for open positions on
+      // pairs that pass data quality; paper_close_position makes the close idempotent (duplicate / not OPEN is rejected).
+      const pendingSellPairs = [...open.keys()].filter((id) => analysis?.quality?.[id] === 'ok');
+      if (pendingSellPairs.length > 0) {
+        try {
+          const pending = await db.rpc<SignalRow[]>('get_pending_sell_signals', { p_pairs: pendingSellPairs });
+          if (Array.isArray(pending)) {
+            for (const s of pending) if (s.side === 'SELL') sellSignals.add(s.pair_id);
+          }
+        } catch (e) {
+          actions.push(`pending sell lookup failed: ${errorMessage(e)}`);
+        }
+      }
+
       // a) Exits: stop loss / take profit / trailing stop / time stop / SELL signal. Open positions stay protected even when STOPPED.
       for (const pos of [...open.values()]) {
         const t = freshTicker(pos.pair_id);

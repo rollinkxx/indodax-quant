@@ -78,6 +78,12 @@ Latest PR head `290f871fc6f8cd7afa65ebb5936aa8ff48e320ef` passed GitHub Actions 
 
 **Not yet complete:** PR #22 remains open and its HMAC changes have not been deployed. Production `indodax-proxy` version 72 remains unauthenticated as described above. Merge and post-deploy checks are still required before marking relay hardening complete.
 
+## Open audit work (INDODAX-quant engine audit, base `054ec28`)
+
+Validated against production data on 17 Nov 2026: F1, F2, F3, F4, F6 CONFIRMED; F9 PARTIAL (`market_tickers` exists, but only 9 core pairs have continuous per-minute quotes). Not yet validated or implemented: F5, F7, F8, F10, F11, F12 and the unaudited areas (ingest, api, relay, telegram, posthog, frontend, CI).
+
+Planned PR order: PR-A observability (F7 `engine_decisions`, F1 3-scenario fee reports + `repriceTrades()`, F4 `actionable`, F5 per-trade analytics, F8 RESEARCH_ONLY metrics, F10 report, F12b); PR-C research tooling (F9 `replay-parity`, F2 MTF in backtest); PR-D default-off flags and owner proposals (F2 `minBuyStrength`, F5 `minStopCostMultiple`, F11, F12a, F1 `feeModel`, F10 options). F3 and F6 are in PR-B. Owner decisions (none activated): fee model, MTF filter / minimum strength, ATR and trailing multipliers, universe ranking, `minCandles`, evidence-gate proposal. Release decision stays NO-GO.
+
 ## Remaining validation
 
 1. Merge PR #22 only after the latest checks remain green and the release diff has been reviewed.

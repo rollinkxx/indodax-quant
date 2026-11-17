@@ -276,7 +276,9 @@ function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = ca
   const start = Math.max(0, candles.length - Math.max(1, Math.floor(tail)));
   const rows: IndicatorRow[] = [];
   for (let i = start; i < candles.length; i++) {
-    const sr = supportResistance(candles.slice(0, i + 1), 50);
+    // Levels come from the candles BEFORE this one. A slice that includes the candle itself makes
+    // resistance >= close and support <= close by construction, so a breakout could never be detected.
+    const sr = supportResistance(candles.slice(0, i), 50);
     rows.push({
       t: candles[i].t, close: candles[i].c, ema9: f[i], ema21: s[i], ema50: tr[i], rsi14: r[i],
       macd: m.macd[i], macdSignal: m.signal[i], macdHist: m.hist[i], atr14: a[i], volMa20: vm[i],
