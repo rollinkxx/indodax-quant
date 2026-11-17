@@ -62,6 +62,10 @@ jobs:
           if git ls-tree -r HEAD --name-only | grep -qx 'package-lock.json'; then
             echo "package-lock.json already exists in the branch."
           else
+            # PR jobs check out GitHub's synthetic merge ref by default. Switch
+            # to the actual same-repository head branch before committing.
+            git fetch origin "$GITHUB_HEAD_REF"
+            git checkout -B "$GITHUB_HEAD_REF" FETCH_HEAD
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add package-lock.json
