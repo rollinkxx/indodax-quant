@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignal, evaluateSignalWindow, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignal, evaluateSignalWindow, evaluateMarketAction, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
@@ -263,5 +263,44 @@ describe('params validation', () => {
     expect(p.emaFast).toBe(9);
     expect(p.feePct).toBe(0.2);
     expect(mergeParams(null)).toEqual(DEFAULT_PARAMS);
+  });
+});
+
+
+describe('explicit BUY / SELL / HOLD decisions', () => {
+  const below = row({ ema9: 99, ema21: 100 });
+  const above = row({ ema9: 101, ema21: 100 });
+
+  it('returns BUY only when the crossover and entry filters pass', () => {
+    const result = evaluateMarketAction([below, above], [0, 15]);
+    expect(result.action).toBe('BUY');
+    expect(result.signal?.side).toBe('BUY');
+    expect(result.reason).toBe('buy_setup_confirmed');
+  });
+
+  it('returns SELL on a fresh cross down without allowing entry filters to suppress exits by default', () => {
+    const result = evaluateMarketAction([above, row({ ema9: 99, ema21: 100, rsi14: 65 })], [15, 5]);
+    expect(result.action).toBe('SELL');
+    expect(result.signal?.side).toBe('SELL');
+    expect(result.reason).toBe('sell_cross_confirmed');
+  });
+
+  it('returns an auditable HOLD when there is no fresh setup', () => {
+    const result = evaluateMarketAction([above, above], [15, 15]);
+    expect(result).toEqual({ action: 'HOLD', signal: null, reason: 'no_fresh_setup' });
+  });
+
+  it('returns HOLD rather than a false signal for misaligned or unready inputs', () => {
+    expect(evaluateMarketAction([below], [0])).toMatchObject({ action: 'HOLD', reason: 'insufficient_aligned_rows' });
+    expect(evaluateMarketAction([below, row({ rsi14: null })], [0, 15])).toMatchObject({ action: 'HOLD', reason: 'indicators_not_ready' });
+    expect(evaluateMarketAction([below, above], [0])).toMatchObject({ action: 'HOLD', reason: 'insufficient_aligned_rows' });
+  });
+
+  it('keeps a confirmed exit as HOLD only when optional SELL confirmations are explicitly enabled', () => {
+    const result = evaluateMarketAction(
+      [above, row({ ema9: 99, ema21: 100, rsi14: 65 })], [15, 5],
+      { ...DEFAULT_PARAMS, sellRequireConfirm: true },
+    );
+    expect(result).toMatchObject({ action: 'HOLD', signal: null, reason: 'sell_blocked_rsi_confirmation' });
   });
 });
