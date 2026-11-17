@@ -20,7 +20,7 @@ export function classifyCiChanges(eventName, baseSha, changedFiles = []) {
   const deploy = anyMatch(files, /^(worker\/|shared\/|src\/|public\/|index[.]html$|wrangler[.]jsonc$|vite[.]config[.]ts$|tsconfig([.][a-z]+)?[.]json$|package[.]json$|package-lock[.]json$|scripts\/smoke-production[.]ts$)/);
   // Every Worker deployment refreshes its relay-signing secret; redeploy the Supabase relay in the same release.
   // CI workflow edits also trigger a relay sync so orchestration changes are verified immediately.
-  const relay = anyMatch(files, /^supabase\\/functions\\/indodax-proxy\\//) || files.includes('scripts/smoke-production.ts') || files.includes('scripts/smoke-relay.ts') || deploy || files.includes('.github/workflows/ci-deploy.yml');
+  const relay = anyMatch(files, /^supabase\/functions\/indodax-proxy\//) || files.includes('scripts/smoke-production.ts') || files.includes('scripts/smoke-relay.ts') || deploy || files.includes('.github/workflows/ci-deploy.yml');
   const strategy = anyMatch(files, /^(worker\/|shared\/|supabase\/migrations\/|scripts\/(backtest[.]ts|backtest-history[.]ts|backtest-execution[.]ts|paper-report[.]ts|write-evaluation-summary[.]mjs)$|package[.]json$|package-lock[.]json$)/);
   return { deploy, relay, strategy };
 }

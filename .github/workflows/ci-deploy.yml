@@ -130,7 +130,7 @@ jobs:
           MIN_PIPELINE_START_AT: ${{ steps.verify-relay.outputs.verified_at }}
         run: npx tsx scripts/smoke-production.ts
 
-  # Deploy the signing-capable Worker before the relay begins requiring HMAC.
+  # Deploy the Worker first, then synchronize and verify relay HMAC before testing pipeline ingestion.
   deploy:
     outputs:
       url: ${{ steps.deploy.outputs.url }}
