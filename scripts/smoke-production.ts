@@ -63,7 +63,8 @@ while (Date.now() < deadline) {
       freshSuccess = true;
       break;
     }
-    if (latest.status === 'FAILED' || latest.status === 'PARTIAL') {
+    if (startedAtMs >= minPipelineStartMs
+      && (latest.status === 'FAILED' || latest.status === 'PARTIAL')) {
       throw new Error(`Post-deploy pipeline finished with ${latest.status} at ${latest.started_at}`);
     }
   }
