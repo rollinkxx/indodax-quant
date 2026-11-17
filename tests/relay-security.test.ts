@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { signRelayRequest, validateRelayTarget, verifyRelayRequest } from '../supabase/functions/_shared/relay';
+import { signRelayRequest, validateRelayTarget, verifyRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
 
 const secret = 'test-service-secret-never-use-in-production';
 const target = '/functions/v1/indodax-proxy?path=%2Fapi%2Ftrades%2Fbtcidr';
