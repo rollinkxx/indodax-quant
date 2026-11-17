@@ -115,7 +115,7 @@ jobs:
           umask 077
           SECRET_FILE="$(mktemp)"
           trap 'rm -f "$SECRET_FILE"' EXIT
-          printf '%s\\n' "INDODAX_RELAY_HMAC_SECRET=$SUPABASE_SERVICE_ROLE_KEY" > "$SECRET_FILE"
+          printf '%s\n' "INDODAX_RELAY_HMAC_SECRET=$SUPABASE_SERVICE_ROLE_KEY" > "$SECRET_FILE"
           npx -y supabase@2 secrets set --env-file "$SECRET_FILE" --project-ref znikuooxiqfcicyuhqsx
       - name: Deploy authenticated INDODAX relay
         run: |
