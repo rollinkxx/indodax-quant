@@ -24,6 +24,13 @@ describe('CI changed-file release policy', () => {
       .toEqual({ deploy: false, relay: true, strategy: false });
   });
 
+  it('selects Worker and relay deployment when the end-to-end production smoke contract changes', () => {
+    expect(classifyCiChanges('push', 'abc', ['scripts/smoke-production.ts']))
+      .toEqual({ deploy: true, relay: true, strategy: false });
+    expect(classifyCiChanges('push', 'abc', ['scripts/smoke-relay.ts']))
+      .toEqual({ deploy: false, relay: true, strategy: false });
+  });
+
   it('runs evaluation for migrations and evaluator changes without deploying the Worker', () => {
     expect(classifyCiChanges('push', 'abc', ['supabase/migrations/20261117000100_test.sql']))
       .toEqual({ deploy: false, relay: false, strategy: true });
