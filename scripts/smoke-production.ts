@@ -26,10 +26,9 @@ async function select<T>(path: string): Promise<T[]> {
   return await response.json() as T[];
 }
 
-const [accounts, configs, tickers] = await Promise.all([
+const [accounts, configs] = await Promise.all([
   select<{ status: string; kill_switch: boolean }>('paper_accounts?select=status,kill_switch&id=eq.1&limit=1'),
   select<{ params: Record<string, unknown> }>('strategy_configs?select=params&is_active=eq.true&limit=1'),
-  select<{ server_time: string; updated_at: string }>('market_tickers_latest?select=server_time,updated_at&order=updated_at.desc&limit=1'),
 ]);
 
 if (!accounts[0] || accounts[0].status !== 'RUNNING' || accounts[0].kill_switch !== false) {
@@ -42,10 +41,6 @@ if (!p || Number(p.feePct) !== 0.00555 || p.mtfMode !== 'score'
   || Number(p.maxTotalExposurePct) !== 60) {
   throw new Error('Active paper strategy configuration does not match the approved production snapshot');
 }
-const ticker = tickers[0];
-const tickerAgeMs = ticker ? Date.now() - Date.parse(ticker.updated_at) : Number.POSITIVE_INFINITY;
-const marketTimeAgeMs = ticker ? Date.now() - Date.parse(ticker.server_time) : Number.POSITIVE_INFINITY;
-
 // Cron runs once per minute and a healthy pipeline normally takes several seconds.
 // Do not fail while the newest row is still RUNNING; require a SUCCESS run that began
 // after this deployment/relay activation, and wait through the next scheduled tick.
@@ -80,6 +75,13 @@ if (!freshSuccess) {
     `No SUCCESS pipeline execution started after deployment within 110s; latest=${latest?.status ?? 'missing'} at ${latest?.started_at ?? 'n/a'}`,
   );
 }
+
+const tickers = await select<{ server_time: string; updated_at: string }>(
+  'market_tickers_latest?select=server_time,updated_at&order=updated_at.desc&limit=1',
+);
+const ticker = tickers[0];
+const tickerAgeMs = ticker ? Date.now() - Date.parse(ticker.updated_at) : Number.POSITIVE_INFINITY;
+const marketTimeAgeMs = ticker ? Date.now() - Date.parse(ticker.server_time) : Number.POSITIVE_INFINITY;
 if (!ticker || !Number.isFinite(tickerAgeMs) || tickerAgeMs < -60_000 || tickerAgeMs > 5 * 60_000
   || !Number.isFinite(marketTimeAgeMs) || marketTimeAgeMs < -60_000 || marketTimeAgeMs > 5 * 60_000) {
   throw new Error('INDODAX market ticker ingestion is missing, stale, or has a stale upstream server timestamp');
