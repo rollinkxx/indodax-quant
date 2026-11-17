@@ -50,6 +50,8 @@ jobs:
         with:
           node-version: 24
       - run: npm install --no-audit --no-fund
+      - name: Generate reproducible lockfile with the CI npm toolchain
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
       - name: Verify Supabase security and index migrations on PostgreSQL 17
         env:
           PGPASSWORD: postgres
@@ -66,8 +68,10 @@ jobs:
       - run: npm run build
       - uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist
+          name: dist-and-lock
+          path: |
+            dist/
+            package-lock.json
 
   # Deploy the relay separately and verify both unsigned rejection and valid HMAC traffic.
   deploy-relay:
