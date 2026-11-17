@@ -36,7 +36,7 @@ describe('INDODAX relay request authentication', () => {
 describe('INDODAX relay envelope validation', () => {
   it('accepts exactly one path parameter and rejects duplicate or missing path values', () => {
     expect(singleRelayPath(new URLSearchParams('path=%2Fapi%2Fpairs'))).toBe('/api/pairs');
-    expect(singleRelayPath(new URLSearchParams('path=%2Fapi%2Fpairs&path=%2Ftapi')).toBeNull();
+    expect(singleRelayPath(new URLSearchParams('path=%2Fapi%2Fpairs&path=%2Ftapi'))).toBeNull();
     expect(singleRelayPath(new URLSearchParams())).toBeNull();
   });
 });
