@@ -54,7 +54,8 @@ Timeframe 5m, completed candles only.
 - **SELL**: any fresh EMA9 cross below EMA21 (`sellRequireConfirm: false`; set it to `true` to also require RSI14 ≤ 50 and volume).
   The engine is long-only: SELL closes an open position on that pair and is ignored when flat. SELL signals are always stored,
   but sent to Telegram only when a position in that pair is open.
-- Strength score adds MACD histogram, volume spikes and support/resistance breaks.
+- Strength score adds MACD histogram, volume spikes and support/resistance breaks. Support/resistance levels are computed from the candles *before* the signal candle, so "Breaking resistance/support" can fire (previously the levels included the signal candle and a break was impossible). Strength only ranks signals today (no minimum-strength gate), and stored strength values from before this change are not comparable on the same scale.
+- A SELL signal is stored once. Open positions also re-read stored SELLs newer than the position's `opened_at` (RPC `get_pending_sell_signals`, service_role only) on every run, so an exit missed because of a stale ticker or an interrupted run is still executed with reason `SIGNAL`; `paper_close_position` keeps the close idempotent.
 - **Entry gate** (checked against the live quote just before a BUY is filled): skip when the spread is above
   `maxEntrySpreadPct` (0.6%), the ask is more than `maxEntryDriftPct` (0.5%) above the signal close, or the bid is already at/below
   the stop or the spread is over half of the stop distance (`stop_inside_spread`). Skips are logged in `execution_logs`.
