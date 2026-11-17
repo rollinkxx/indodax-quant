@@ -42,7 +42,7 @@ const rateLimitedFetch: typeof fetch = async (input, init) => {
   await acquireHistoryRequestSlot();
   return fetch(input, init);
 };
-const indodax = new IndodaxClient(withIndodaxRelay(rateLimitedFetch, proxyUrl), { timeoutMs: 8_000, retries: 2 });
+const indodax = new IndodaxClient(withIndodaxRelay(rateLimitedFetch, proxyUrl, KEY), { timeoutMs: 8_000, retries: 2 });
 const HISTORY_CHUNK_SECONDS = 12 * 60 * 60;
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }

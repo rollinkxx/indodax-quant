@@ -75,17 +75,20 @@ The evaluation is sufficient to block promotion: even this simplified approximat
 
 ## Production paper-engine evidence
 
-Verified after deployment of main commit `75e38927deb22a7efe86cf99f2496e20655ac482`:
+Historical snapshot from main deployment run `#43991484904` established that the Worker health check returned `ok:true` and `liveTrading:false`, and its 24-hour execution-log window had 1,440 successful runs. The production Worker remains paper-only; this section is a historical deployment/evaluation record, not a live account balance.
 
-- Worker `indodax-quant` deployed successfully. The deployment smoke test returned `ok:true` and `liveTrading:false`.
-- The paper account remains `RUNNING`, kill switch off, cash and equity Rp10,000,000; the account was not reset.
-- The latest 24-hour execution-log audit had 1,440 successful runs and no failed or partial runs. After deployment, 60/60 checked pipeline runs were also successful.
-- Each production cycle received 450 tickers, stored trades/candles, and ran the signal diagnostics. The latest inspected cycles had no qualifying BUY candidate; two pair/candle checks correctly reported `no_trades_in_signal_candle`.
-- The paper report since account reset shows 39 BUY entry attempts, 0 opened positions and 39 rejections: `stop_inside_spread` 19, `net_reward_risk_below_minimum` 7, `wide_spread` 6, `net_reward_non_positive` 6 and `price_drift` 1.
-- The paper report contains no closed trades since the current account reset. Therefore paper win rate, profit factor and expectancy are not established.
-- Historical rejection logs preserve their original `fee_pct` values. Some attempts predate the fee update and used 0.3%; those values are not recalculated. The current active fee snapshot is 0.00555%.
+A later direct, read-only database snapshot was taken at **17 Nov 2026 04:10:13 UTC (11:10:13 WIB)**:
 
-These are safety-gate outcomes, not reasons to weaken the gates. No real orders are submitted.
+- Paper account #1: `RUNNING`, kill switch off; cash/equity Rp9,977,128.19; realized P/L -Rp22,871.81; unrealized P/L Rp0; total fees Rp829.97.
+- Six positions exist in the table, all CLOSED; zero currently open. Three closed positions belong to the current account-reset period: BTCIDR TAKE_PROFIT (+Rp10,465.40), FARTCOINIDR STOP_LOSS (-Rp19,481.45), and HYPEIDR STOP_LOSS (-Rp13,855.76). The realized sum matches the account snapshot. Three older closed positions predate the reset.
+- Last 24 hours: 1,440 execution-log runs, all `SUCCESS`, with no partial or failed runs; 30 BUY and 99 SELL signal records; six simulated paper orders (three BUY and three SELL). Signal count must not be interpreted as entry-attempt count.
+- Active configuration snapshot: fee assumption 0.00555% per side, MTF `score`, crossLookback 2, entry spread cap 0.6%, and ask-drift cap 0.5%. Earlier transactions preserve their historical fee assumptions.
+
+This operational snapshot does **not** change the strategy release decision: the historical holdout results remain NO-GO, and three closed paper trades are far too few to establish win rate, profit factor or stable expectancy. The engine is functioning as a paper-monitoring system, not a validated profitable strategy.
+
+The production Supabase relay is currently version 72 and still uses the legacy unauthenticated GET-only implementation. The HMAC-authenticated relay is proposed in PR #22 and must not be described as active until deployment and the unsigned/signed smoke tests succeed.
+
+These are paper-only records. No live INDODAX orders are submitted.
 
 ## Monitoring
 

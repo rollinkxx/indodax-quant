@@ -1,49 +1,82 @@
-// INDODAX QUANT — read-only relay for the INDODAX OFFICIAL PUBLIC API.
-// Why: indodax.com answers HTTP 403 to requests that originate from Cloudflare Workers.
-// The Worker calls this function; it forwards GET requests to whitelisted PUBLIC endpoints only.
-// No private/trade API (/tapi), no API keys, no orders. Market data only.
-// Deployed by .github/workflows/ci-deploy.yml (supabase functions deploy --no-verify-jwt).
-const BASE = 'https://indodax.com';
-const ALLOWED = [
-  /^\/api\/summaries$/,
-  /^\/api\/pairs$/,
-  /^\/api\/server_time$/,
-  /^\/api\/trades\/[a-z0-9]+$/,
-  /^\/api\/ticker\/[a-z0-9]+$/,
-  /^\/tradingview\/history_v2$/,
-];
+// INDODAX QUANT — authenticated read-only relay for official INDODAX public market data.
+// verify_jwt is disabled because this service-to-service endpoint uses a narrow HMAC protocol.
+// No browser/client token is accepted, and no private INDODAX endpoint can pass the path validator.
+import { singleRelayPath, validateRelayTarget, verifyRelayRequest } from './_shared/relay.ts';
+
+function configuredRelaySecrets(): string[] {
+  const values: string[] = [];
+  const legacy = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (legacy) values.push(legacy);
+
+  // Supabase exposes new sb_secret_* keys as a JSON map, while legacy projects
+  // expose SUPABASE_SERVICE_ROLE_KEY as a plain string.
+  const raw = Deno.env.get('SUPABASE_SECRET_KEYS');
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      for (const value of Object.values(parsed)) {
+        if (typeof value === 'string' && value.length >= 16) values.push(value);
+      }
+    } catch {
+      // Invalid environment configuration is handled as no usable credential below.
+    }
+  }
+  return [...new Set(values)];
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
+
   const url = new URL(req.url);
-  const path = url.searchParams.get('path') ?? '';
-  if (!ALLOWED.some((r) => r.test(path))) return json({ error: 'path_not_allowed', path }, 400);
-  const qs = new URLSearchParams(url.searchParams);
-  qs.delete('path');
-  const target = BASE + path + (qs.toString() ? '?' + qs.toString() : '');
+  const timestamp = req.headers.get('x-indodax-relay-timestamp') ?? '';
+  const signature = req.headers.get('x-indodax-relay-signature') ?? '';
+  const signedTarget = url.pathname + url.search;
+  const secrets = configuredRelaySecrets();
+
+  if (secrets.length === 0) return json({ error: 'relay_auth_not_configured' }, 503);
+
+  let authenticated = false;
+  for (const secret of secrets) {
+    if (await verifyRelayRequest(secret, signedTarget, timestamp, signature)) {
+      authenticated = true;
+      break;
+    }
+  }
+  if (!authenticated) return json({ error: 'unauthorized' }, 401);
+
+  const path = singleRelayPath(url.searchParams);
+  if (!path) return json({ error: 'invalid_relay_path_parameter' }, 400);
+  const upstreamQuery = new URLSearchParams(url.searchParams);
+  upstreamQuery.delete('path');
+  const validated = validateRelayTarget(path, upstreamQuery);
+  if (!validated.ok) return json({ error: validated.error }, validated.status);
+
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 8000);
+  const timer = setTimeout(() => ctrl.abort(), 8_000);
   try {
-    const res = await fetch(target, {
+    const response = await fetch(validated.target, {
+      method: 'GET',
       headers: { accept: 'application/json', 'user-agent': 'indodax-quant/1.0 (paper-trading monitor)' },
       signal: ctrl.signal,
     });
-    const body = await res.text();
-    return new Response(body, {
-      status: res.status,
+    return new Response(response.body, {
+      status: response.status,
       headers: {
-        'content-type': res.headers.get('content-type') ?? 'application/json',
-        'x-upstream-status': String(res.status),
+        'content-type': response.headers.get('content-type') ?? 'application/json',
+        'x-upstream-status': String(response.status),
         'cache-control': 'no-store',
       },
     });
-  } catch (e) {
-    return json({ error: 'upstream_failed', message: String(e) }, 502);
+  } catch {
+    return json({ error: 'upstream_failed' }, 502);
   } finally {
     clearTimeout(timer);
   }
 });
 
-function json(obj: unknown, status: number): Response {
-  return new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
+function json(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  });
 }
