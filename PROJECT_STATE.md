@@ -74,7 +74,7 @@ Wilson 95% lower win-rate bounds were 12.07%, 16.35%, and 9.55%. All three varia
 
 PR #20 was merged into `main` as commit `75e38927deb22a7efe86cf99f2496e20655ac482`. CI passed PostgreSQL 17 assertions, typecheck, tests and build; desktop/mobile light/dark browser smoke passed; production Worker deployment and `/api/health` smoke passed; the main strategy-evaluation job completed and uploaded artifact `strategy-evaluation`.
 
-The report, README and handoff were subsequently found to need a same-day evaluation refresh because the active pair universe changed from 13 to 12 pairs. A documentation-only follow-up branch is now being prepared: `docs/refresh-strategy-evaluation-20261117`.
+The same-day refresh is now prepared on documentation-only branch `docs/refresh-strategy-evaluation-20261117`: the strategy report and handoff show the latest 12-pair evaluation artifact (run #43991484904), and the PostHog NO-GO dashboard tile has been refreshed to the same figures.
 
 The merged code changes:
 - Correct stale README statements about production MTF mode, universe cap, fee, open-position cap, runtime measurements, and current paper-account status.
@@ -86,7 +86,7 @@ The merged code changes:
 ## Remaining validation
 
 1. Finish CI for the documentation refresh branch and merge only if checks pass.
-2. Update the PostHog dashboard's NO-GO note to the latest run #43991484904 figures.
+2. Verify the final saved documentation and PostHog dashboard note remain aligned with run #43991484904.
 3. Continue forward paper observation. Profitability remains unproven until a sufficiently large, untouched sample closes with realistic quote/spread/fee/slippage and portfolio constraints.
 
 ## Owner-only / unavailable checks
