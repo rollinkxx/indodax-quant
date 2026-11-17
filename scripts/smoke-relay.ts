@@ -1,9 +1,8 @@
-import { deriveRelayHmacSecret, signRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
+import { signRelayRequest } from '../supabase/functions/indodax-proxy/_shared/relay';
 
 const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, '');
-const rootKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-if (!supabaseUrl || !rootKey) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for relay smoke');
-const secret = await deriveRelayHmacSecret(rootKey);
+const secret = process.env.SUPABASE_SERVICE_ROLE_KEY;
+if (!supabaseUrl || !secret) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for relay smoke');
 
 const requestUrl = new URL(`${supabaseUrl}/functions/v1/indodax-proxy?path=%2Fapi%2Fticker%2Fbtcidr`);
 const unauthenticated = await fetch(requestUrl);
