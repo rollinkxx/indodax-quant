@@ -8,7 +8,7 @@ Cryptocurrency monitoring and **automated paper trading** platform for INDODAX m
 - **Scheduler**: Cloudflare Cron Trigger `* * * * *` (UTC)
 - **Database / Auth**: Supabase PostgreSQL + Supabase Auth, Row Level Security
 - **Market data**: [INDODAX Official Public API](https://github.com/btcid/indodax-official-api-docs) only,
-  fetched through the read-only Supabase Edge Function relay `indodax-proxy` (INDODAX returns HTTP 403 to Cloudflare Worker IPs)
+  fetched through the read-only Supabase Edge Function relay `indodax-proxy` (INDODAX returns HTTP 403 to Cloudflare Worker IPs). Worker-to-relay traffic uses a dedicated HMAC-SHA256 secret, derived with domain separation in CI and synchronized explicitly to both services
 - **Notifications**: Telegram Bot API called directly from the Worker
 
 > **No live trading.** The code contains no INDODAX private/trade API client, no API keys, no order
@@ -25,7 +25,7 @@ The production system has no dependency on n8n.
 Cloudflare Cron (every minute, UTC)
   └─ Worker.scheduled → runPipeline()
        1. begin_run RPC        idempotency (one run per minute) + DB lock (no concurrent runs)
-       2. INDODAX /api/summaries, /api/trades/{pair}  via relay `indodax-proxy` (GET-only, public allow-list)
+       2. INDODAX /api/summaries, /api/trades/{pair}  via HMAC-authenticated relay `indodax-proxy` (GET-only, strict public allow-list)
                                (timeouts, retries, 429 back-off, validation)
        3. 1m candles from trades; gaps/bootstrap from official /tradingview/history_v2; 5m aggregation
        4. ingest_market RPC    tickers (latest + history), trades (dedup by tid), candles, sync state
