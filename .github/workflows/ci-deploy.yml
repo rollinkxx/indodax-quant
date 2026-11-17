@@ -63,6 +63,17 @@ jobs:
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/is_app_user_security_assert.sql
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/mtf_source_precedence_test.sql
           psql -h localhost -U postgres -d indodax_quant_test -v ON_ERROR_STOP=1 -f tests/sql/run_watchdog_test.sql
+      - name: Replay the complete Supabase migration chain on a clean PostgreSQL 17 database
+        env:
+          PGPASSWORD: postgres
+        run: |
+          createdb -h localhost -U postgres indodax_quant_migration_test
+          psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/migrations-clean-bootstrap.sql
+          for migration in supabase/migrations/*.sql; do
+            echo "Applying $migration"
+            psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f "$migration"
+          done
+          psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/migrations-clean-assert.sql
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
