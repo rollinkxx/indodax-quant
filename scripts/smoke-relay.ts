@@ -35,7 +35,10 @@ const response = await fetch(requestUrl, {
     'x-indodax-relay-signature': signature,
   },
 });
-if (!response.ok) throw new Error(`Authenticated relay request failed: HTTP ${response.status}`);
+if (!response.ok) {
+  const detail = await response.text();
+  throw new Error(`Authenticated relay request failed: HTTP ${response.status} ${detail}`);
+}
 const payload = await response.json() as { ticker?: { last?: string | number } };
 const last = Number(payload?.ticker?.last);
 if (!Number.isFinite(last) || last <= 0) throw new Error('Authenticated relay returned an invalid INDODAX ticker payload');

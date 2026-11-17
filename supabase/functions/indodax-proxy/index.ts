@@ -13,7 +13,26 @@ Deno.serve(async (req: Request) => {
   const relaySecret = Deno.env.get('INDODAX_RELAY_HMAC_SECRET') ?? '';
 
   if (relaySecret.length < 32) return json({ error: 'relay_auth_not_configured' }, 503);
-  if (!(await verifyRelayRequest(relaySecret, signedTarget, timestamp, signature))) {
+  const timestampNumber = /^\\d{1,12}$/.test(timestamp) ? Number(timestamp) : Number.NaN;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const timestampSkewSeconds = Number.isSafeInteger(timestampNumber) ? nowSeconds - timestampNumber : null;
+  const signatureFormatValid = /^[a-f0-9]{64}$/i.test(signature);
+  const authenticated = await verifyRelayRequest(relaySecret, signedTarget, timestamp, signature);
+  if (!authenticated) {
+    // Safe operational diagnostics only: never log the HMAC, secret value, or request headers.
+    const reason = !signatureFormatValid
+      ? 'signature_format_invalid'
+      : timestampSkewSeconds === null
+        ? 'timestamp_format_invalid'
+        : Math.abs(timestampSkewSeconds) > 60
+          ? 'timestamp_out_of_window'
+          : 'hmac_mismatch';
+    console.warn('indodax_relay_auth_rejected', JSON.stringify({
+      reason,
+      target: signedTarget,
+      timestampSkewSeconds,
+      secretLength: relaySecret.length,
+    }));
     return json({ error: 'unauthorized' }, 401);
   }
 
