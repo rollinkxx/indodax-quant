@@ -26,10 +26,9 @@ async function select<T>(path: string): Promise<T[]> {
   return await response.json() as T[];
 }
 
-const [accounts, configs, logs, tickers] = await Promise.all([
+const [accounts, configs, tickers] = await Promise.all([
   select<{ status: string; kill_switch: boolean }>('paper_accounts?select=status,kill_switch&id=eq.1&limit=1'),
   select<{ params: Record<string, unknown> }>('strategy_configs?select=params&is_active=eq.true&limit=1'),
-  select<{ status: string; started_at: string }>('execution_logs?select=status,started_at&order=started_at.desc&limit=1'),
   select<{ server_time: string; updated_at: string }>('market_tickers_latest?select=server_time,updated_at&order=updated_at.desc&limit=1'),
 ]);
 
