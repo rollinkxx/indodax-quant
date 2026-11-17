@@ -144,7 +144,7 @@ describe('pipeline: MTF + dynamic universe', () => {
   it('skips a BUY when net take-profit reward does not cover net stop risk', async () => {
     const signal = {
       id: 99, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
-      indicators: { atr14: 10 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+      indicators: { atr14: 2.866 }, candle_time: new Date(expectedLast * 1000).toISOString(),
     };
     const { f, rpcs } = setup({ mtfMode: 'off', strategyParams: { atrTakeProfitMultiplier: 0.5 }, newSignals: [signal] });
     const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
@@ -260,7 +260,7 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
   it('opens a simulated paper position for an accepted BUY and never calls a private INDODAX endpoint', async () => {
     const signal = {
       id: 201, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
-      indicators: { atr14: 2.866 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+      indicators: { atr14: 10 }, candle_time: new Date(expectedLast * 1000).toISOString(),
     };
     const o = setup({
       mtfMode: 'off',
