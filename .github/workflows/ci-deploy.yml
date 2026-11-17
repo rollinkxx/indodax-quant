@@ -112,12 +112,10 @@ jobs:
           test -n "$SUPABASE_SERVICE_ROLE_KEY" || { echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for relay verification."; exit 1; }
       - name: Configure explicit relay HMAC secret in Supabase
         run: |
-          RELAY_SECRET="$(npx tsx scripts/derive-relay-secret.ts)"
-          echo "::add-mask::$RELAY_SECRET"
           umask 077
           SECRET_FILE="$(mktemp)"
           trap 'rm -f "$SECRET_FILE"' EXIT
-          printf 'INDODAX_RELAY_HMAC_SECRET=%s\\n' "$RELAY_SECRET" > "$SECRET_FILE"
+          printf '%s\\n' "INDODAX_RELAY_HMAC_SECRET=$SUPABASE_SERVICE_ROLE_KEY" > "$SECRET_FILE"
           npx -y supabase@2 secrets set --env-file "$SECRET_FILE" --project-ref znikuooxiqfcicyuhqsx
       - name: Deploy authenticated INDODAX relay
         run: |
@@ -180,10 +178,6 @@ jobs:
         run: |
           printf '%s' "$SUPABASE_SERVICE_ROLE_KEY" | npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY >/dev/null
           echo "synced SUPABASE_SERVICE_ROLE_KEY"
-          RELAY_SECRET="$(npx tsx scripts/derive-relay-secret.ts)"
-          echo "::add-mask::$RELAY_SECRET"
-          printf '%s' "$RELAY_SECRET" | npx wrangler secret put INDODAX_RELAY_HMAC_SECRET >/dev/null
-          echo "synced INDODAX_RELAY_HMAC_SECRET"
           for NAME in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID POSTHOG_PROJECT_TOKEN; do
             VALUE="${!NAME}"
             if [ -n "$VALUE" ]; then
