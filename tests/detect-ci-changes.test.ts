@@ -58,8 +58,10 @@ describe('CI changed-file release policy', () => {
     ])).toEqual({ deploy: false, relay: false, strategy: false });
   });
 
-  it('does not classify CI-only edits as app, relay, or strategy changes', () => {
-    expect(classifyCiChanges('push', 'abc', ['.github/workflows/ci-deploy.yml', 'tests/relay.test.ts']))
+  it('runs a complete Worker + relay release when the deployment workflow changes', () => {
+    expect(classifyCiChanges('push', 'abc', ['.github/workflows/ci-deploy.yml']))
+      .toEqual({ deploy: true, relay: true, strategy: false });
+    expect(classifyCiChanges('push', 'abc', ['tests/relay.test.ts']))
       .toEqual({ deploy: false, relay: false, strategy: false });
   });
 });
