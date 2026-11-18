@@ -242,9 +242,12 @@ export function simulate(
       entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
       feePct, exitSlippageBps: slip,
     })) continue;
+    // Size with the fee actually charged for this pair (effectiveFeePct), matching the live
+    // pipeline. Passing `p` directly would size against `p.feePct` and, under feeModel
+    // 'pair_taker', overstate position size and net reward/risk versus production.
     const size = positionSize({
       equity, cash: equity, entry: fill, stopLoss: stops.stopLoss,
-      exitSlippageBps: slip, params: p,
+      exitSlippageBps: slip, params: { ...p, feePct },
     });
     if (size.qty <= 0) continue;
     pos = {
