@@ -90,6 +90,35 @@ BEGIN
 END
 $audit$;
 
+-- Candle integrity: the replay must install candles_low_positive, and a low <= 0 row must be rejected.
+DO $low_check$
+DECLARE
+  v_rejected boolean := false;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.candles'::regclass AND conname = 'candles_low_positive'
+  ) THEN
+    RAISE EXCEPTION 'candles_low_positive constraint missing after migration replay';
+  END IF;
+
+  INSERT INTO public.market_pairs (id, symbol, ticker_id, base_currency, traded_currency)
+    VALUES ('__check__', '__CHECK__', '__check___idr', 'idr', 'check')
+    ON CONFLICT (id) DO NOTHING;
+  BEGIN
+    INSERT INTO public.candles (pair_id, timeframe, open_time, open, high, low, close)
+      VALUES ('__check__', '5m', now(), 10, 11, -1, 10);
+  EXCEPTION WHEN check_violation THEN
+    v_rejected := true;
+  END;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'candles row with low <= 0 was not rejected';
+  END IF;
+  DELETE FROM public.candles WHERE pair_id = '__check__';
+  DELETE FROM public.market_pairs WHERE id = '__check__';
+END
+$low_check$;
+
 -- Explicitly print the replay summary for the CI log.
 SELECT
   (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE') AS public_tables,
