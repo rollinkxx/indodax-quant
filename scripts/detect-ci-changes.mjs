@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
-const ALL = Object.freeze({ deploy: true, relay: true, strategy: true });
-const NONE = Object.freeze({ deploy: false, relay: false, strategy: false });
+const ALL = Object.freeze({ deploy: true, relay: true, strategy: true, migrate: true });
+const NONE = Object.freeze({ deploy: false, relay: false, strategy: false, migrate: false });
 
 function anyMatch(files, pattern) {
   return files.some((file) => pattern.test(file));
@@ -22,7 +22,10 @@ export function classifyCiChanges(eventName, baseSha, changedFiles = []) {
   // CI workflow edits also trigger a relay sync so orchestration changes are verified immediately.
   const relay = anyMatch(files, /^supabase\/functions\/indodax-proxy\//) || files.includes('scripts/smoke-production.ts') || files.includes('scripts/smoke-relay.ts') || deploy || files.includes('.github/workflows/ci-deploy.yml');
   const strategy = anyMatch(files, /^(worker\/|shared\/|supabase\/migrations\/|scripts\/(backtest[.]ts|backtest-history[.]ts|backtest-execution[.]ts|paper-report[.]ts|write-evaluation-summary[.]mjs)$|package[.]json$|package-lock[.]json$)/);
-  return { deploy, relay, strategy };
+  // Production migrations must be applied before (or with) the code that depends on them. Any change to
+  // a migration file, the applier, or the Worker/shared code that may reference new schema triggers it.
+  const migrate = anyMatch(files, /^(supabase\/migrations\/|scripts\/apply-migrations[.]ts$|shared\/migrationPlan[.]ts$)/) || deploy;
+  return { deploy, relay, strategy, migrate };
 }
 
 function run() {

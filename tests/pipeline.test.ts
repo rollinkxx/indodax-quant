@@ -50,7 +50,11 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
           });
         }
         case 'save_analysis': return json({ new_signals: opts.newSignals ?? [] });
-        case 'get_pending_sell_signals': return json(opts.pendingSells ?? []);
+        // A string simulates the production failure (PostgREST 404 when the RPC is missing); an array is a normal response.
+        case 'get_pending_sell_signals':
+          return typeof opts.pendingSells === 'string'
+            ? json({ code: 'PGRST202', message: opts.pendingSells }, 404)
+            : json(opts.pendingSells ?? []);
         case 'paper_open_position': return json(opts.openResult ?? { ok: true, position_id: 55, cash_after: 9_700_000 });
         case 'paper_close_position': return json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
         case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
@@ -373,10 +377,14 @@ describe('pipeline: persisted SELL exits (F3)', () => {
     expect(closes(stale)).toHaveLength(0);
   });
 
-  it('keeps running when the pending SELL lookup fails', async () => {
+  it('degrades the run status when the pending SELL lookup fails instead of reporting success', async () => {
+    // A broken safety net must not look healthy: the run stays alive (positions are still marked to
+    // market) but reports PARTIAL and records the failure so an operator is alerted.
     const o = setup({ mtfMode: 'off', openPositions: [position], pendingSells: 'boom' as any });
     const r = await run(o);
-    expect(r.status).toBe('SUCCESS');
+    expect(r.status).toBe('PARTIAL');
     expect(closes(o)).toHaveLength(0);
+    expect((r.steps as any).paper_trading.info.degraded).toContainEqual(expect.stringContaining('pending sell lookup failed'));
+    expect(r.errors).toContainEqual(expect.stringContaining('pending sell lookup failed'));
   });
 });

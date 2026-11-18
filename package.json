@@ -16,7 +16,9 @@
     "fee:sensitivity": "tsx scripts/fee-sensitivity.ts",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
-    "paper:report": "tsx scripts/paper-report.ts"
+    "paper:report": "tsx scripts/paper-report.ts",
+    "db:verify": "tsx scripts/verify-schema-contract.ts",
+    "db:migrate": "tsx scripts/apply-migrations.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.119.0",

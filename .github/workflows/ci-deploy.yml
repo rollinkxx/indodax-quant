@@ -17,6 +17,7 @@ jobs:
       deploy: ${{ steps.detect.outputs.deploy }}
       relay: ${{ steps.detect.outputs.relay }}
       strategy: ${{ steps.detect.outputs.strategy }}
+      migrate: ${{ steps.detect.outputs.migrate }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,10 +83,43 @@ jobs:
             dist/
             package-lock.json
 
+  # Apply pending Supabase migrations to production BEFORE deploying code that may depend on them.
+  # This closes the drift class where a Worker change shipped ahead of its migration and failed at runtime
+  # with a PostgREST 404 that the per-minute cron silently absorbed (the pending-SELL regression).
+  migrate:
+    needs: [test, detect-changes]
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      needs.test.result == 'success' &&
+      needs.detect-changes.result == 'success' &&
+      needs.detect-changes.outputs.migrate == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: znikuooxiqfcicyuhqsx
+      SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-audit --no-fund
+      - name: Require migration credentials
+        run: |
+          test -n "$SUPABASE_ACCESS_TOKEN" || { echo "::error::SUPABASE_ACCESS_TOKEN is required to apply migrations."; exit 1; }
+          test -n "$SUPABASE_SERVICE_ROLE_KEY" || { echo "::error::SUPABASE_SERVICE_ROLE_KEY is required to verify the schema."; exit 1; }
+      - name: Apply pending Supabase migrations
+        run: npx tsx scripts/apply-migrations.ts
+      - name: Verify the live schema exposes every RPC and table the Worker requires
+        run: npx tsx scripts/verify-schema-contract.ts
+
   # Every Worker deployment refreshes the signing secret; sync and deploy the Supabase relay afterwards.
   # Pipeline ingestion is smoke-tested in deploy-relay, only after both sides share the same HMAC secret.
   deploy-relay:
-    needs: [test, detect-changes, deploy]
+    needs: [test, detect-changes, migrate, deploy]
     if: >-
       always() &&
       github.event_name != 'pull_request' &&
@@ -93,6 +127,7 @@ jobs:
       needs.test.result == 'success' &&
       needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.relay == 'true' &&
+      (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') &&
       (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
     runs-on: ubuntu-latest
     env:
@@ -135,14 +170,15 @@ jobs:
     outputs:
       url: ${{ steps.deploy.outputs.url }}
       deployed_at: ${{ steps.deploy.outputs.deployed_at }}
-    needs: [test, detect-changes]
+    needs: [test, detect-changes, migrate]
     if: >-
       always() &&
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
       needs.test.result == 'success' &&
       needs.detect-changes.result == 'success' &&
-      needs.detect-changes.outputs.deploy == 'true'
+      needs.detect-changes.outputs.deploy == 'true' &&
+      (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -198,7 +234,7 @@ jobs:
   strategy-evaluation:
     # A historical evaluation must not race the release that updates its INDODAX relay.
     # The deploy jobs may be skipped for non-runtime changes; wait for either success or skip.
-    needs: [test, detect-changes, deploy, deploy-relay]
+    needs: [test, detect-changes, migrate, deploy, deploy-relay]
     if: >-
       always() &&
       github.event_name != 'pull_request' &&
@@ -206,6 +242,7 @@ jobs:
       needs.test.result == 'success' &&
       needs.detect-changes.result == 'success' &&
       needs.detect-changes.outputs.strategy == 'true' &&
+      (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') &&
       (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') &&
       (needs.deploy-relay.result == 'success' || needs.deploy-relay.result == 'skipped')
     runs-on: ubuntu-latest
