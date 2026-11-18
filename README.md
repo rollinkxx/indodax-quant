@@ -222,6 +222,7 @@ npm test                 # unit + integration tests (latest exact count is repor
 npm run typecheck
 npm run verify:indodax btcidr   # live, read-only check against INDODAX public API
 BACKTEST_HISTORY_DAYS=30 npm run backtest  # official 30-day history; see Backtest scope and interpretation
+npm run backtest -- --overrides='{"trailActivationAtr":2.5}'   # read-only param sweep; the active config is not modified
 ```
 
 Coverage includes: indicator maths (reference RSI values), candle building and gap handling,
