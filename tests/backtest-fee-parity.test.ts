@@ -30,6 +30,7 @@ describe('simulate fee parity', () => {
     const base = mergeParams({
       ...DEFAULT_PARAMS, feeModel: 'pair_taker', feePct: 0.00555,
       rsiBuyMin: 0, rsiBuyMax: 100, volumeMultiplier: 0, useTrendFilter: false, maxEntryExtensionPct: 0,
+      mtfMode: 'off',
     });
     const candles = oscillator(3000, 60, 0.03);
     const PAIR_FEE = 0.2;
@@ -47,7 +48,7 @@ describe('simulate fee parity', () => {
   });
 
   it('charges the pair fee on exit as well as entry', () => {
-    const p = mergeParams({ ...DEFAULT_PARAMS, feeModel: 'pair_taker' });
+    const p = mergeParams({ ...DEFAULT_PARAMS, feeModel: 'pair_taker', mtfMode: 'off' });
     const candles = oscillator(3000, 60, 0.03);
     const cheap = simulate('xidr', candles, p, 10_000_000, 5e9, 'crossover', 0, 0.00555);
     const dear = simulate('xidr', candles, p, 10_000_000, 5e9, 'crossover', 0, 2);
