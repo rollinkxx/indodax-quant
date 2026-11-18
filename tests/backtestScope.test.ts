@@ -27,11 +27,13 @@ describe('backtest scope warnings', () => {
     expect(scope).toContain('max total exposure');
     expect(scope).toContain('daily-loss flattening');
     expect(scope).toContain('drawdown kill-switch');
+    expect(scope).toContain('Cross-pair portfolio controls are not simulated');
   });
 
-  it('warns when the active config enables MTF although the backtest does not apply it', () => {
-    expect(backtestScopeWarnings({ mtfMode: 'filter' }).join('\n')).toContain('MTF mode "filter" is not applied');
-    expect(backtestScopeWarnings({ mtfMode: 'score' }).join('\n')).toContain('15m/1h confirmation is omitted');
+  it('states that MTF is applied causally rather than omitted when enabled', () => {
+    expect(backtestScopeWarnings({ mtfMode: 'filter' }).join('\n')).toContain('MTF mode "filter" (15m/1h) is applied causally');
+    expect(backtestScopeWarnings({ mtfMode: 'score' }).join('\n')).toContain('applied causally to BUY entries');
+    expect(backtestScopeWarnings({ mtfMode: 'score' }).join('\n')).not.toContain('is not applied');
   });
 
   it('does not report an MTF omission when MTF is disabled', () => {

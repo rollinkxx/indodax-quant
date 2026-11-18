@@ -26,9 +26,11 @@ function oscillator(n: number, periodBars: number, amp: number, seed = 1): Candl
 }
 
 /** A parameter set that fires many trades on the oscillator (loosest possible BUY gate). */
+// mtfMode is pinned off here so this suite isolates the 5m crossover engine; MTF gating
+// parity is covered by tests/backtest-mtf-parity.test.ts.
 const LOOSE = mergeParams({
   ...DEFAULT_PARAMS, rsiBuyMin: 0, rsiBuyMax: 100, volumeMultiplier: 0,
-  useTrendFilter: false, maxEntryExtensionPct: 0,
+  useTrendFilter: false, maxEntryExtensionPct: 0, mtfMode: 'off',
 });
 
 describe('backtest causality (no lookahead)', () => {

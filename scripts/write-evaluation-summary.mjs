@@ -19,6 +19,7 @@ const lines = [
   '',
   '- Control: crossLookback=2.',
   '- Variant: crossLookback=4 (only changed parameter).',
+  '- MTF: ' + (experiment.mtf || 'n/a') + '.',
   '- Holdout: chronological final 30% per pair.',
   '- No order or paper-account mutation is performed by either script.',
   '',

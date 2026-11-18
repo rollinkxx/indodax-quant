@@ -4,9 +4,13 @@
 // Exit-parameter sweeps are supported read-only via --overrides='{"trailDistanceAtr":2}'.
 // Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run backtest [--overrides=<json>] [pairId ...]
 import {
-  computeIndicators, diagnoseTrendContinuationWindow, evaluateSignalWindow,
+  computeIndicators, diagnoseTrendContinuationWindow, evaluateMarketAction, evaluateSignalWindow,
   mergeParams, type StrategyParams,
 } from '../shared/strategy';
+import {
+  aggregateComplete, applyMtfToMarketAction, buildHigherSeries, HIGHER_TFS, lastCompleteBucket,
+  MTF_WINDOW, trendState, type TfState,
+} from '../shared/mtf';
 import { applyBacktestOverrides, parseBacktestOverrides } from '../shared/backtestOverrides';
 import {
   buyFillPrice, computeStats, computeStops, dynamicSlippageBps, effectiveFeePct, feeFor,
@@ -162,7 +166,8 @@ export interface SimTrade {
 /**
  * Per-pair candle-only simulation. Indicators use only current/past bars; entries fill on
  * the next observed candle open. startIndex makes a chronological holdout possible while
- * retaining pre-holdout indicator warm-up. It deliberately does not model MTF or shared cash.
+ * retaining pre-holdout indicator warm-up. MTF (15m/1h) gating/scoring is applied causally,
+ * mirroring the pipeline; shared cross-pair cash/exposure is still not modelled.
  */
 export function simulate(
   pair: string,
@@ -180,6 +185,27 @@ export function simulate(
   const rows = computeIndicators(series, p);
   const trades: SimTrade[] = [];
   const slip = p.dynamicSlippage ? dynamicSlippageBps(p.slippageBps, volIdr) : p.slippageBps;
+
+  // Multi-timeframe parity with the paper pipeline (shared/mtf.ts), applied causally: the MTF state at
+  // signal bar i aggregates only completed 15m/1h buckets ending at or before bar i. Higher-timeframe
+  // candles are aggregated once from the full 5m series (the whole sample is present here, so the stored
+  // HTF backfill the pipeline uses for older history is unnecessary), then each bar's state is served
+  // from a cache keyed by bucket boundary, so cost stays ~O(bars) instead of recomputing per bar.
+  const mtfOn = p.mtfMode !== 'off';
+  const htfAggregated = mtfOn
+    ? HIGHER_TFS.map((h) => ({ tf: h.tf, sec: h.sec, candles: aggregateComplete(series, h.sec) }))
+    : [];
+  const tfStateCache = new Map<string, TfState>();
+  const mtfStatesAt = (idx: number): TfState[] => htfAggregated.map((h) => {
+    const lastComplete = lastCompleteBucket(series[idx].t, h.sec);
+    const key = `${h.sec}:${lastComplete}`;
+    const cached = tfStateCache.get(key);
+    if (cached) return cached;
+    const hs = buildHigherSeries([], h.candles, h.sec, lastComplete, MTF_WINDOW);
+    const st = trendState(h.tf, hs, lastComplete, p);
+    tfStateCache.set(key, st);
+    return st;
+  });
   let pos: {
     qty: number; entry: number; cost: number; sl: number; tp: number;
     openedIdx: number; entryTime: number;
@@ -229,9 +255,16 @@ export function simulate(
     if (!hasBacktestDataQuality(series, i, p.minCandles) || i + 1 >= series.length) continue;
     const windowRows = rows.slice(i - win + 1, i + 1);
     const windowVolumes = series.slice(i - win + 1, i + 1).map((x) => x.v);
-    const isBuy = mode === 'crossover'
-      ? evaluateSignalWindow(windowRows, windowVolumes, p)?.side === 'BUY'
-      : diagnoseTrendContinuationWindow(windowRows, windowVolumes, p).ready;
+    let isBuy: boolean;
+    if (mode === 'crossover') {
+      // Mirror the pipeline: raw 5m three-state decision, then MTF gating/scoring, then act on the
+      // resulting signal. SELL is never blocked by MTF (it is an exit, handled above).
+      const action = evaluateMarketAction(windowRows, windowVolumes, p);
+      const finalAction = mtfOn ? applyMtfToMarketAction(action, mtfStatesAt(i), p.mtfMode).action : action;
+      isBuy = finalAction.signal?.side === 'BUY';
+    } else {
+      isBuy = diagnoseTrendContinuationWindow(windowRows, windowVolumes, p).ready;
+    }
     if (!isBuy) continue;
 
     const next = series[i + 1];
@@ -501,6 +534,9 @@ async function main() {
         : null,
       control: 'crossLookback=2',
       variant: 'crossLookback=4',
+      mtf: live.mtfMode === 'off'
+        ? 'disabled (mtfMode=off)'
+        : `applied causally to BUY entries (mtfMode=${live.mtfMode}, shared/mtf.ts); 15m/1h aggregated from the 5m series`,
       controlledParameterDifferences: ['crossLookback'],
       shadowVariant: 'EMA21 pullback-reclaim in EMA9>EMA21>EMA50 uptrend; not sent to paper execution',
       split: 'first 70% for indicator warm-up/context; last 30% is chronological holdout; no entries before holdout',
