@@ -132,8 +132,21 @@ PROJECT_STATE.md           current production state, open tasks and notes for ma
 
 ### 1. Supabase
 
-The migrations in `supabase/migrations/` are already applied to project `sinyalku`
+The migrations in `supabase/migrations/` are applied to project `sinyalku`
 (`znikuooxiqfcicyuhqsx`). For a new project run them in order (SQL editor or `supabase db push`).
+
+CI applies any pending migration to production before it deploys Worker code, so a migration and the
+code that depends on it always ship together:
+
+```bash
+SUPABASE_ACCESS_TOKEN=... SUPABASE_PROJECT_REF=znikuooxiqfcicyuhqsx npm run db:migrate  # apply pending
+SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run db:verify                        # assert the live schema has every RPC/table the Worker calls
+```
+
+`npm run db:verify` reads the PostgREST OpenAPI document and fails if any RPC or table referenced by
+`worker/src` is missing. It exists because the Worker reaches Postgres only through PostgREST: a
+schema-dependent change shipped without its migration becomes a runtime 404 that the per-minute cron
+would otherwise absorb silently.
 
 1. **Create the dashboard user**: Supabase → Authentication → Users → *Add user* → `gsdrxx@gmail.com`
    with a password (the email is pre-registered as `admin` in `public.app_users`).
@@ -251,8 +264,8 @@ Telegram messages display Asia/Jakarta (WIB). The daily P/L report is sent short
 
 - GitHub: source of truth. A push to `main` runs the *CI & Deploy* workflow (GitHub Actions), which is the production deploy.
 - Cloudflare: Worker `indodax-quant`. The separate "Workers Builds" Git check can fail intermittently; it does not affect production.
-- Supabase: project "sinyalku"; migrations in `supabase/migrations/` are applied by the Supabase integration.
+- Supabase: project "sinyalku". The *CI & Deploy* workflow applies pending `supabase/migrations/` (job `migrate`, via `scripts/apply-migrations.ts`) before deploying Worker code, then verifies the live schema with `scripts/verify-schema-contract.ts`.
 
 Current production state and open tasks: see `PROJECT_STATE.md`.
 
-_Last updated: 2026-11-17_
+_Last updated: 2026-11-18_

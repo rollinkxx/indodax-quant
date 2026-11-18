@@ -44,6 +44,7 @@ BEGIN
     'public.ingest_market(jsonb,jsonb,jsonb,jsonb,jsonb,jsonb)',
     'public.get_recent_candles(text[],text,integer)',
     'public.get_recent_candles_multi(text[],text[],integer)',
+    'public.get_pending_sell_signals(text[])',
     'public.set_universe(jsonb)',
     'public.save_analysis(jsonb,jsonb,jsonb)',
     'public.paper_open_position(bigint,text,numeric,numeric,numeric,numeric,numeric,numeric,numeric,bigint,text,text)',

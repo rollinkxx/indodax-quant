@@ -574,8 +574,12 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     }
 
     // 6+7. Paper trading (simulation only) + portfolio
-    await step('paper_trading', async () => {
+    const paperTrading = await step('paper_trading', async () => {
       const actions: string[] = [];
+      // Failures of the position-protection safety nets (stored-SELL lookup, trailing-stop persistence).
+      // A position stays open when these break, so they must degrade the run status instead of hiding in
+      // `actions`: otherwise a run reports SUCCESS while the stop/exit net is silently disabled.
+      const degraded: string[] = [];
       const openedEntries: { pair_id: string; signal_id: number; position_id: number; qty: number; fill_price: number; notional: number; fee: number }[] = [];
       const entryRejections: { pair_id: string; signal_id: number; stage: string; reason: string; metrics?: Record<string, number> }[] = [];
       const rejectEntry = (signal: SignalRow, stage: string, reason: string, metrics?: Record<string, number>) => {
@@ -626,7 +630,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             for (const s of pending) if (s.side === 'SELL') sellSignals.add(s.pair_id);
           }
         } catch (e) {
-          actions.push(`pending sell lookup failed: ${errorMessage(e)}`);
+          const msg = `pending sell lookup failed: ${errorMessage(e)}`;
+          actions.push(msg);
+          degraded.push(msg);
         }
       }
 
@@ -644,7 +650,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               pos.stop_loss = newStop;
               actions.push(`trail ${pos.pair_id} stop -> ${newStop}`);
             } catch (e) {
-              actions.push(`trail ${pos.pair_id} failed: ${errorMessage(e)}`);
+              const msg = `trail ${pos.pair_id} failed: ${errorMessage(e)}`;
+              actions.push(msg);
+              degraded.push(msg);
             }
           }
         }
@@ -790,6 +798,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         drawdown: Number(mtm.drawdown_pct),
         open: open.size,
         actions,
+        degraded,
         buy_signals_received: buys.length,
         entries_opened: entries,
         opened_entries: openedEntries,
@@ -798,6 +807,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         risk_block_reasons: risk.blockEntries ? risk.reasons : [],
       };
     }, (r) => r);
+
+    // A degraded safety net leaves positions unprotected; escalate it to a run error so the status
+    // becomes PARTIAL and the hourly system-error notification fires (see the `degraded` comment above).
+    for (const failure of paperTrading?.degraded ?? []) errors.push(`paper_trading: ${failure}`);
 
     // Daily P/L report at 00:00-00:14 WIB (17:00 UTC)
     const jakartaNow = new Date((nowSec + 7 * 3600) * 1000);
