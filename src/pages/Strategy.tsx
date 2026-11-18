@@ -35,7 +35,12 @@ const GROUPS: { title: string; desc: string; icon: IconName; fields: Field[] }[]
     { key: 'maxOpenPositions', label: 'Posisi terbuka maks' }, { key: 'maxTotalExposurePct', label: 'Eksposur total maks (% equity)', step: 1 },
     { key: 'closeOnDailyLoss', label: 'Tutup semua posisi saat batas rugi harian tercapai', bool: true },
     { key: 'dynamicSlippage', label: 'Slippage dinamis untuk pair tipis', bool: true }, { key: 'dailyLossLimitPct', label: 'Batas rugi harian (%)', step: 0.1 },
-    { key: 'maxDrawdownPct', label: 'Max drawdown → kill switch (%)', step: 0.5 }, { key: 'feePct', label: 'Fee per sisi (%)', step: 0.01 },
+    { key: 'maxDrawdownPct', label: 'Max drawdown → kill switch (%)', step: 0.5 },
+    { key: 'feeModel', label: 'Model biaya', options: [
+      { value: 'assumption', label: 'Asumsi manual (fee per sisi di bawah)' },
+      { value: 'pair_taker', label: 'Taker per pair (dari katalog INDODAX, mis. 0.2%)' },
+    ], hint: 'Taker per pair memakai trade_fee_percent_taker asli tiap pair; fallback ke fee per sisi bila kosong' },
+    { key: 'feePct', label: 'Fee per sisi (%)', step: 0.01 },
     { key: 'slippageBps', label: 'Slippage (bps)', step: 1 },
   ] },
   { title: 'Multi-timeframe (MTF)', desc: 'Konfirmasi arah tren pada candle 15m dan 1h yang sudah selesai.', icon: 'chart', fields: [

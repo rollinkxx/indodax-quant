@@ -140,6 +140,7 @@ async function main() {
       updatedAt: activeConfig.updated_at,
       parameters: {
         timeframe: activeConfig.params.timeframe ?? null,
+        feeModel: activeConfig.params.feeModel ?? 'assumption',
         feePct: activeConfig.params.feePct ?? null,
         feeUnit: 'percentage points; 0.00555 means 0.00555% per side',
         slippageBps: activeConfig.params.slippageBps ?? null,

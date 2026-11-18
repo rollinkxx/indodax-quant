@@ -7,7 +7,7 @@ import {
   mergeParams, type StrategyParams,
 } from '../shared/strategy';
 import {
-  buyFillPrice, computeStats, computeStops, dynamicSlippageBps, feeFor,
+  buyFillPrice, computeStats, computeStops, dynamicSlippageBps, effectiveFeePct, feeFor,
   netRewardRiskGate, positionSize, sellFillPrice, trailingStop,
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
@@ -46,7 +46,7 @@ const indodax = new IndodaxClient(withIndodaxRelay(rateLimitedFetch, proxyUrl, K
 const HISTORY_CHUNK_SECONDS = 12 * 60 * 60;
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
-interface StoredPair { id: string; symbol: string; is_tracked: boolean; in_universe: boolean }
+interface StoredPair { id: string; symbol: string; is_tracked: boolean; in_universe: boolean; trade_fee_percent_taker: number | null }
 interface OfficialHistoryResult {
   candles: Candle[];
   metrics: {
@@ -170,8 +170,11 @@ export function simulate(
   volIdr: number | null,
   mode: ExperimentMode = 'crossover',
   startIndex = 0,
+  pairTakerFeePct: number | null = null,
 ): SimTrade[] {
   const series = fillGaps(candles, 300);
+  // Charge the pair's real taker fee when feeModel='pair_taker', mirroring the paper pipeline.
+  const feePct = effectiveFeePct(p, pairTakerFeePct);
   const rows = computeIndicators(series, p);
   const trades: SimTrade[] = [];
   const slip = p.dynamicSlippage ? dynamicSlippageBps(p.slippageBps, volIdr) : p.slippageBps;
@@ -209,7 +212,7 @@ export function simulate(
       }
       if (exit !== null) {
         const fill = sellFillPrice(exit, slip);
-        const fee = feeFor(pos.qty * fill, p.feePct);
+        const fee = feeFor(pos.qty * fill, feePct);
         const pnl = pos.qty * fill - fee - pos.cost;
         equity += pnl;
         trades.push({
@@ -235,7 +238,7 @@ export function simulate(
     const stops = computeStops(fill, rows[i].atr14, p);
     if (netRewardRiskGate({
       entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
-      feePct: p.feePct, exitSlippageBps: slip,
+      feePct, exitSlippageBps: slip,
     })) continue;
     const size = positionSize({
       equity, cash: equity, entry: fill, stopLoss: stops.stopLoss,
@@ -262,7 +265,7 @@ export function simulate(
       }
     }
     if (!lastObserved) throw new Error(`Open position for ${pair} has no final observed candle`);
-    trades.push(finalizeEndOfDataTrade(pair, pos, lastObserved, slip, p.feePct));
+    trades.push(finalizeEndOfDataTrade(pair, pos, lastObserved, slip, feePct));
   }
 
   return trades;
@@ -340,12 +343,12 @@ async function main() {
 
   const cliPairs: string[] = process.argv.slice(2);
   const marketPairs = await get<StoredPair[]>(
-    'market_pairs?select=id,symbol,is_tracked,in_universe&is_maintenance=eq.false&limit=1000',
+    'market_pairs?select=id,symbol,is_tracked,in_universe,trade_fee_percent_taker&is_maintenance=eq.false&limit=1000',
   );
   const marketById = new Map(marketPairs.map((row) => [row.id, row]));
   // Compare only the active production scan universe, not unrelated high-volume IDR pairs.
   const selectedPairs = cliPairs.length
-    ? [...new Set(cliPairs)].map((id) => marketById.get(id) ?? { id, symbol: id.toUpperCase(), is_tracked: false, in_universe: false })
+    ? [...new Set(cliPairs)].map((id) => marketById.get(id) ?? { id, symbol: id.toUpperCase(), is_tracked: false, in_universe: false, trade_fee_percent_taker: null })
     : marketPairs.filter((row) => row.is_tracked || row.in_universe);
   const volRows = await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr');
   const vols: Record<string, number> = {};
@@ -412,8 +415,8 @@ async function main() {
     };
     const variantResults = pairResult.variants as Record<string, unknown>;
     for (const variant of variants) {
-      const full = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, 0);
-      const holdout = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, splitIndex);
+      const full = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, 0, pair.trade_fee_percent_taker);
+      const holdout = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, splitIndex, pair.trade_fee_percent_taker);
       holdoutTradesByVariant[variant.key].push(...holdout);
       variantResults[variant.key] = {
         fullPeriod: measure(full),

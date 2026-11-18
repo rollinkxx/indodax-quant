@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -30,6 +30,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
             ok: true, run_id: 7, config: { ...(opts.strategyParams ?? {}), ...(opts.mtfMode ? { mtfMode: opts.mtfMode } : {}) },
             account: { id: 1, status: 'RUNNING', kill_switch: false, cash_balance: 1e7, equity: 1e7, peak_equity: 1e7, max_drawdown_pct: 0, reset_at: '2026-01-01T00:00:00Z' },
             pairs: [{ id: 'btcidr', symbol: 'BTCIDR', ticker_id: 'btc_idr', is_maintenance: false, is_tracked: true, in_universe: false, trade_min_base_currency: 10000,
+              trade_fee_percent_taker: opts.pairTakerFee ?? null,
               covered_until: new Date((Math.floor(NOW / 60) * 60 - 60) * 1000).toISOString(), last_trade_time: null, last_trade_tid: null,
               htf_backfilled_at: opts.htfBackfilled ? '2026-01-01T00:00:00Z' : null }],
             catalog: { btcidr: false, pepeidr: false, usdtidr: false, dogeidr: false },
@@ -290,6 +291,41 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
     expect((result.steps as any).paper_trading.info).toMatchObject({
       buy_signals_received: 0, entries_opened: 0,
     });
+  });
+
+  it('charges the pair taker fee when feeModel=pair_taker', async () => {
+    const signal = {
+      id: 202, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 8 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const o = setup({
+      mtfMode: 'off', newSignals: [signal], pairTakerFee: 0.2,
+      strategyParams: { feeModel: 'pair_taker', crossLookback: 2 },
+      openResult: { ok: true, position_id: 56, cash_after: 9_700_000 },
+    });
+    const result = await run(o);
+    expect(result.status).toBe('SUCCESS');
+    const opens = o.rpcs.filter((x) => x.fn === 'paper_open_position');
+    expect(opens).toHaveLength(1);
+    // fill = ask(1000) + 10bps = 1001; sizing caps at 25% of 1e7 equity -> notional ~2.5M; fee = 2.5M * 0.2% = 5000
+    expect(opens[0].body.p_fee).toBeCloseTo(5000, 2);
+  });
+
+  it('rejects an entry the legacy fee assumption would have approved when the real taker fee applies', async () => {
+    const signal = {
+      id: 203, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 3 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const assumption = setup({ mtfMode: 'off', newSignals: [signal], strategyParams: { feeModel: 'assumption' }, openResult: { ok: true, position_id: 57, cash_after: 9_700_000 } });
+    await run(assumption);
+    expect(assumption.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(true);
+
+    const taker = setup({ mtfMode: 'off', newSignals: [signal], pairTakerFee: 0.2, strategyParams: { feeModel: 'pair_taker' } });
+    const rt = await run(taker);
+    expect(taker.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    expect((rt.steps as any).paper_trading.info.entry_rejections).toContainEqual(expect.objectContaining({
+      pair_id: 'btcidr', signal_id: 203, stage: 'economics_gate', reason: 'net_reward_risk_below_minimum',
+    }));
   });
 });
 

@@ -7,7 +7,7 @@ import { IndodaxClient } from './indodax';
 import { errorMessage } from './http';
 import { runPipeline } from './pipeline';
 import { sendTelegram, telegramConfigured, messages, jakarta } from './telegram';
-import { dynamicSlippageBps, sellFillPrice, feeFor, computeStats } from '../../shared/paper';
+import { dynamicSlippageBps, effectiveFeePct, sellFillPrice, feeFor, computeStats } from '../../shared/paper';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../../shared/strategy';
 
 const MAX_TRACKED_PAIRS = 10;
@@ -270,6 +270,11 @@ export async function killSwitch(env: Env, db: Db, actor: string, fetchImpl: Fet
   const strategy = await db.select<{ params: unknown }>('strategy_configs', 'select=params&is_active=eq.true&limit=1');
   const params = mergeParams(strategy[0]?.params);
   const open = await db.select<{ id: number; pair_id: string; qty: string }>('paper_positions', `select=id,pair_id,qty&account_id=eq.${acc.id}&status=eq.OPEN`);
+  // Same fee source as the pipeline so an emergency close charges the pair's real fee under 'pair_taker'.
+  const pairFeeRows = params.feeModel === 'pair_taker'
+    ? await db.select<{ id: string; trade_fee_percent_taker: number | string | null }>('market_pairs', 'select=id,trade_fee_percent_taker')
+    : [];
+  const pairFee = new Map(pairFeeRows.map((r) => [r.id, r.trade_fee_percent_taker === null ? null : Number(r.trade_fee_percent_taker)]));
   const dx = new IndodaxClient(fetchImpl);
   const results: unknown[] = [];
   let closed = 0;
@@ -282,7 +287,7 @@ export async function killSwitch(env: Env, db: Db, actor: string, fetchImpl: Fet
       }
       const slip = params.dynamicSlippage ? dynamicSlippageBps(params.slippageBps, t.vol_idr) : params.slippageBps;
       const fill = sellFillPrice(t.bid, slip);
-      const fee = feeFor(Number(pos.qty) * fill, params.feePct);
+      const fee = feeFor(Number(pos.qty) * fill, effectiveFeePct(params, pairFee.get(pos.pair_id)));
       const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
         p_position_id: pos.id, p_requested_price: t.bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: 'KILL_SWITCH',
       });

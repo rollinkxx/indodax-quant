@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "verify:indodax": "tsx scripts/verify-indodax.ts",
     "backtest": "tsx scripts/backtest.ts",
+    "fee:sensitivity": "tsx scripts/fee-sensitivity.ts",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
     "paper:report": "tsx scripts/paper-report.ts"

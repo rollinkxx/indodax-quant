@@ -257,6 +257,8 @@ describe('params validation', () => {
     expect(validateParams({ emaFast: 30, emaSlow: 20 })).toContain('emaFast must be smaller than emaSlow');
     expect(validateParams({ emaFast: 9.5 }).join()).toMatch(/integer/);
     expect(validateParams({ timeframe: '1m' })).toContain('timeframe must be "5m"');
+    expect(validateParams({ feeModel: 'taker' })[0]).toMatch(/feeModel must be one of/);
+    expect(validateParams({ feeModel: 'pair_taker' })).toEqual([]);
   });
   it('mergeParams ignores invalid stored values', () => {
     const p = mergeParams({ emaFast: 'bad', feePct: 0.2, unknown: 1 });
