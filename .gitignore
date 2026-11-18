@@ -9,3 +9,7 @@ dist
 .DS_Store
 coverage
 
+# Local agent/scratch artifacts (never committed)
+.openhands/
+scripts/_tmp-*.ts
+
