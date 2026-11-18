@@ -9,6 +9,7 @@ import { runPipeline } from './pipeline';
 import { sendTelegram, telegramConfigured, messages, jakarta } from './telegram';
 import { dynamicSlippageBps, effectiveFeePct, sellFillPrice, feeFor, computeStats } from '../../shared/paper';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../../shared/strategy';
+import { buildEngineDecisions } from '../../shared/engineDecisions';
 
 const MAX_TRACKED_PAIRS = 10;
 
@@ -141,6 +142,21 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       const tf = tfParam(q.get('tf'), false);
       const rows = await db.select<Record<string, unknown>>('indicators', `select=*&pair_id=eq.${pair}&timeframe=eq.${tf}&order=open_time.desc&limit=${int(q.get('limit'), 300, 1, 1000)}`);
       return json({ pair, timeframe: tf, indicators: rows.reverse() });
+    }
+
+    if (path === '/api/engine-decisions' && method === 'GET') {
+      // Read-only "why no trade" view over the latest pipeline run(s). Selects only the two step
+      // objects we need instead of the full jsonb blob, and never mutates anything.
+      const limit = int(q.get('limit'), 1, 1, 24);
+      const rows = await db.select<Record<string, unknown>>(
+        'execution_logs',
+        `select=id,status,scheduled_time,started_at,analyze:steps->analyze,paper:steps->paper_trading&order=scheduled_time.desc&limit=${limit}`,
+      );
+      const runs = rows.map((row) => {
+        const decisions = buildEngineDecisions(row);
+        return { id: row.id, startedAt: row.started_at ?? null, ...decisions };
+      });
+      return json({ latest: runs[0] ?? null, runs, liveTrading: false });
     }
 
     if (path === '/api/signals' && method === 'GET') {

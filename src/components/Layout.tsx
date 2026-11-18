@@ -15,6 +15,7 @@ const GROUPS: { label: string; items: NavItem[] }[] = [
   ] },
   { label: 'Trading', items: [
     { to: '/signals', label: 'Trading Signals', icon: 'signal' },
+    { to: '/decisions', label: 'Engine Decisions', icon: 'activity' },
     { to: '/paper', label: 'Paper Trading', icon: 'wallet' },
     { to: '/history', label: 'Trading History', icon: 'history' },
   ] },

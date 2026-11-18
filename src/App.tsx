@@ -17,6 +17,7 @@ const Paper = lazy(() => import('./pages/Paper'));
 const History = lazy(() => import('./pages/History'));
 const Strategy = lazy(() => import('./pages/Strategy'));
 const System = lazy(() => import('./pages/System'));
+const Decisions = lazy(() => import('./pages/Decisions'));
 const Settings = lazy(() => import('./pages/Settings'));
 
 export interface Me { email: string; role: 'admin' | 'viewer' }
@@ -85,6 +86,7 @@ export default function App() {
         <Route path="/market" element={<Market />} />
         <Route path="/chart" element={<Chart />} />
         <Route path="/signals" element={<Signals />} />
+        <Route path="/decisions" element={<Decisions />} />
         <Route path="/paper" element={<Paper isAdmin={isAdmin} />} />
         <Route path="/history" element={<History />} />
         <Route path="/strategy" element={<Strategy isAdmin={isAdmin} />} />
