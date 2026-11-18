@@ -1,11 +1,13 @@
 // Controlled, read-only strategy experiments. No live or paper orders are submitted.
 // Compare the production setup (crossLookback=2) against only one changed variable (4),
 // plus a separately labelled EMA21 pullback-reclaim continuation shadow variant.
-// Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run backtest [pairId ...]
+// Exit-parameter sweeps are supported read-only via --overrides='{"trailDistanceAtr":2}'.
+// Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run backtest [--overrides=<json>] [pairId ...]
 import {
   computeIndicators, diagnoseTrendContinuationWindow, evaluateSignalWindow,
   mergeParams, type StrategyParams,
 } from '../shared/strategy';
+import { applyBacktestOverrides, parseBacktestOverrides } from '../shared/backtestOverrides';
 import {
   buyFillPrice, computeStats, computeStops, dynamicSlippageBps, effectiveFeePct, feeFor,
   netRewardRiskGate, positionSize, sellFillPrice, trailingStop,
@@ -335,13 +337,20 @@ async function main() {
   const cfg = await get<{ name: string; params: unknown; updated_at: string }[]>('strategy_configs?select=name,params,updated_at&is_active=eq.true&limit=1');
   if (!cfg[0]) throw new Error('Active strategy config not found; refusing to backtest with code defaults.');
   const live = mergeParams(cfg[0].params);
-  for (const warning of backtestScopeWarnings(live)) console.warn(`[BACKTEST SCOPE] ${warning}`);
 
-  const params2: StrategyParams = { ...live, crossLookback: 2 };
+  // --overrides=<json> applies read-only StrategyParams changes on top of the active config.
+  const argv: string[] = process.argv.slice(2);
+  const overrideArg = argv.find((a) => a.startsWith('--overrides='));
+  const overrides = overrideArg ? parseBacktestOverrides(overrideArg.slice('--overrides='.length), live) : {};
+  const base = applyBacktestOverrides(live, overrides);
+  for (const warning of backtestScopeWarnings(base)) console.warn(`[BACKTEST SCOPE] ${warning}`);
+  const overrideKeys = Object.keys(overrides);
+
+  const params2: StrategyParams = { ...base, crossLookback: 2 };
   const params4: StrategyParams = { ...params2, crossLookback: 4 };
   assertControlledPair(params2, params4);
 
-  const cliPairs: string[] = process.argv.slice(2);
+  const cliPairs: string[] = argv.filter((a) => !a.startsWith('--'));
   const marketPairs = await get<StoredPair[]>(
     'market_pairs?select=id,symbol,is_tracked,in_universe,trade_fee_percent_taker&is_maintenance=eq.false&limit=1000',
   );
@@ -471,6 +480,11 @@ async function main() {
           maxEntryDriftPct: live.maxEntryDriftPct,
           atrStopMultiplier: live.atrStopMultiplier,
           atrTakeProfitMultiplier: live.atrTakeProfitMultiplier,
+          trailActivationAtr: live.trailActivationAtr,
+          trailDistanceAtr: live.trailDistanceAtr,
+          trailingStopEnabled: live.trailingStopEnabled,
+          timeStopMinutes: live.timeStopMinutes,
+          feeModel: live.feeModel,
           crossLookback: live.crossLookback,
           universeMode: live.universeMode,
           universeSize: live.universeSize,
@@ -478,6 +492,10 @@ async function main() {
           universeMaxSpreadPct: live.universeMaxSpreadPct,
         },
       },
+      parameterOverrides: overrides,
+      parameterOverridesNote: overrideKeys.length
+        ? `The active config is NOT modified; these overrides apply only to this in-memory run: ${overrideKeys.join(', ')}`
+        : null,
       control: 'crossLookback=2',
       variant: 'crossLookback=4',
       controlledParameterDifferences: ['crossLookback'],
@@ -505,7 +523,7 @@ async function main() {
       initialEquityPerPairIdr: 10_000_000,
       sharedPortfolio: false,
     },
-    scopeWarnings: backtestScopeWarnings(live),
+    scopeWarnings: backtestScopeWarnings(base),
     aggregateOutOfSampleIndependentPairAccounts: aggregateOutOfSample,
     evidenceGateByVariant,
     evidenceGatePolicy: 'NO_GO unless holdout has >=100 trades, Wilson 95% lower win-rate bound >=70%, profit factor >1 and net expectancy >0; eligible results require human review and are never auto-promoted',
