@@ -36,6 +36,22 @@ export function feeFor(notional: number, feePct: number): number {
   return round(notional * feePct / 100, 2);
 }
 
+/**
+ * Per-side fee (percentage points) actually charged for a pair.
+ * 'assumption' always uses `feePct`. 'pair_taker' uses the pair's real INDODAX taker fee when it
+ * is a valid non-negative number, otherwise falls back to `feePct` so a missing catalog value can
+ * never silently zero out the cost. A taker fee of exactly 0 is honoured (some zero-fee campaigns).
+ */
+export function effectiveFeePct(
+  p: Pick<StrategyParams, 'feeModel' | 'feePct'>,
+  pairTakerFeePct: number | null | undefined,
+): number {
+  if (p.feeModel !== 'pair_taker') return p.feePct;
+  if (pairTakerFeePct === null || pairTakerFeePct === undefined) return p.feePct;
+  const taker = Number(pairTakerFeePct);
+  return Number.isFinite(taker) && taker >= 0 ? taker : p.feePct;
+}
+
 export interface Stops {
   stopLoss: number;
   takeProfit: number;

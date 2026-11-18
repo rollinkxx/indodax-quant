@@ -44,6 +44,8 @@ export interface StrategyParams {
   closeOnDailyLoss: boolean;
   /** Scale slippage up for thin (low 24h IDR volume) pairs. */
   dynamicSlippage: boolean;
+  /** Which per-side fee the paper engine charges; see FeeModel. Default 'assumption' (legacy). */
+  feeModel: FeeModel;
   feePct: number;
   slippageBps: number;
   dailyLossLimitPct: number;
@@ -71,6 +73,14 @@ export type MtfMode = 'off' | 'filter' | 'score';
 export type UniverseMode = 'manual' | 'dynamic';
 export const MTF_MODES: MtfMode[] = ['off', 'filter', 'score'];
 export const UNIVERSE_MODES: UniverseMode[] = ['manual', 'dynamic'];
+/**
+ * Which per-side fee (percentage points) the paper engine charges.
+ * - 'assumption': charge `feePct` for every pair (legacy behaviour; the working assumption).
+ * - 'pair_taker': charge each pair's real INDODAX taker fee (`market_pairs.trade_fee_percent_taker`),
+ *   falling back to `feePct` only when that value is missing or invalid.
+ */
+export type FeeModel = 'assumption' | 'pair_taker';
+export const FEE_MODELS: FeeModel[] = ['assumption', 'pair_taker'];
 /** Stablecoins move with USD/IDR, not with crypto momentum: excluded from the dynamic universe by default. */
 export const DEFAULT_UNIVERSE_EXCLUDE = ['usdtidr', 'usdcidr', 'busdidr', 'daiidr', 'tusdidr', 'fdusdidr', 'pyusdidr', 'usdeidr',
   // gold-backed tokens track XAU/USD, not crypto momentum
@@ -108,6 +118,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   timeStopMinutes: 720,
   closeOnDailyLoss: true,
   dynamicSlippage: true,
+  feeModel: 'assumption',
   feePct: 0.00555,
   slippageBps: 10,
   dailyLossLimitPct: 3,
@@ -189,6 +200,10 @@ export function validateParams(input: Record<string, unknown>): string[] {
     }
     if (key === 'mtfMode') {
       if (!MTF_MODES.includes(value as MtfMode)) errors.push(`mtfMode must be one of ${MTF_MODES.join(', ')}`);
+      continue;
+    }
+    if (key === 'feeModel') {
+      if (!FEE_MODELS.includes(value as FeeModel)) errors.push(`feeModel must be one of ${FEE_MODELS.join(', ')}`);
       continue;
     }
     if (key === 'universeMode') {

@@ -10,7 +10,7 @@ import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../..
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -42,6 +42,7 @@ interface PairCtx {
   is_tracked?: boolean;
   in_universe?: boolean;
   trade_min_base_currency: number | null;
+  trade_fee_percent_taker: number | null;
   covered_until: string | null;
   last_trade_time: string | null;
   last_trade_tid: string | null;
@@ -590,13 +591,16 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const open = new Map<string, Position>(ctx.open_positions.map((p) => [p.pair_id, p]));
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
+      const pairFee = new Map(pairs.map((p) => [p.id, p.trade_fee_percent_taker]));
 
       const slipFor = (pairId: string) => (params.dynamicSlippage ? dynamicSlippageBps(params.slippageBps, tickers.get(pairId)?.vol_idr) : params.slippageBps);
+      // Per-side fee charged for a pair; 'pair_taker' uses the real INDODAX taker fee (see effectiveFeePct).
+      const feePctFor = (pairId: string) => effectiveFeePct(params, pairFee.get(pairId));
 
       const close = async (pos: Position, reason: string, bid: number) => {
         const slip = slipFor(pos.pair_id);
         const fill = sellFillPrice(bid, slip);
-        const fee = feeFor(Number(pos.qty) * fill, params.feePct);
+        const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
         const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
           p_position_id: pos.id, p_requested_price: bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
         });
@@ -697,6 +701,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const t = freshTicker(s.pair_id);
           if (!t) { rejectEntry(s, 'market_data_gate', 'stale_ticker'); continue; }
           const slip = slipFor(s.pair_id);
+          const feePct = feePctFor(s.pair_id);
           const fill = buyFillPrice(t.ask, slip);
           const atrValue = s.indicators?.atr14 ?? lastIndicators.get(s.pair_id)?.atr14 ?? null;
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);
@@ -718,13 +723,13 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               spread_to_stop_pct: stopDistance > 0 ? spread / stopDistance * 100 : 0,
               ask_drift_pct: Number(s.price) > 0 ? (t.ask - Number(s.price)) / Number(s.price) * 100 : 0,
               slippage_bps: slip,
-              fee_pct: params.feePct,
+              fee_pct: feePct,
             });
             continue;
           }
           const economics = netRewardRiskDiagnostics({
             entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
-            feePct: params.feePct, exitSlippageBps: slip,
+            feePct, exitSlippageBps: slip,
           });
           if (economics.reason) {
             rejectEntry(s, 'economics_gate', economics.reason, {
@@ -740,7 +745,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             });
             continue;
           }
-          const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
+          const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params: { ...params, feePct }, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
           if (size.qty <= 0) { rejectEntry(s, 'sizing_gate', size.reason ?? 'sizing_rejected'); continue; }
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
           if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { rejectEntry(s, 'portfolio_gate', 'max_total_exposure'); continue; }

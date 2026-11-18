@@ -1,8 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { buyFillPrice, computeStats, computeStops, exitReason, feeFor, positionSize, riskState, roundDown, roundTripPnl, sellFillPrice } from '../shared/paper';
+import { buyFillPrice, computeStats, computeStops, effectiveFeePct, exitReason, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundDown, roundTripPnl, sellFillPrice } from '../shared/paper';
 import { DEFAULT_PARAMS } from '../shared/strategy';
 
 const P = DEFAULT_PARAMS;
+
+describe('effective per-pair fee', () => {
+  it('assumption model always charges the configured feePct', () => {
+    expect(effectiveFeePct({ feeModel: 'assumption', feePct: 0.00555 }, 0.2)).toBe(0.00555);
+    expect(effectiveFeePct({ feeModel: 'assumption', feePct: 0.00555 }, null)).toBe(0.00555);
+  });
+  it('pair_taker model charges the pair fee and falls back on missing/invalid values', () => {
+    expect(effectiveFeePct({ feeModel: 'pair_taker', feePct: 0.00555 }, 0.2)).toBe(0.2);
+    expect(effectiveFeePct({ feeModel: 'pair_taker', feePct: 0.00555 }, 0.06)).toBe(0.06);
+    expect(effectiveFeePct({ feeModel: 'pair_taker', feePct: 0.00555 }, 0)).toBe(0); // honoured zero-fee
+    expect(effectiveFeePct({ feeModel: 'pair_taker', feePct: 0.00555 }, null)).toBe(0.00555);
+    expect(effectiveFeePct({ feeModel: 'pair_taker', feePct: 0.00555 }, undefined)).toBe(0.00555);
+    expect(effectiveFeePct({ feeModel: 'pair_taker', feePct: 0.00555 }, -1)).toBe(0.00555);
+    expect(effectiveFeePct({ feeModel: 'pair_taker', feePct: 0.00555 }, NaN)).toBe(0.00555);
+  });
+  it('a real taker fee makes an otherwise-approved setup fail the net reward/risk gate', () => {
+    const stops = computeStops(1001, 3, P);
+    const assumption = netRewardRiskDiagnostics({ entry: 1001, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, feePct: 0.00555, exitSlippageBps: 10 });
+    const taker = netRewardRiskDiagnostics({ entry: 1001, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, feePct: 0.2, exitSlippageBps: 10 });
+    expect(assumption.reason).toBeNull();
+    expect(taker.reason).toBe('net_reward_risk_below_minimum');
+  });
+});
 
 describe('fills, fees, slippage', () => {
   it('BUY fills above ask and SELL below bid by slippage bps', () => {

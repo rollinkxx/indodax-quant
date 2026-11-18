@@ -12,6 +12,19 @@ The same requested rate is applied to both the entry and exit legs, and the simu
 
 Past paper orders and realised P/L are not recalculated when this configuration changes. The new rate applies prospectively to future paper orders and strategy evaluations that load the active configuration.
 
+### Per-pair taker fee model (`feeModel`)
+
+INDODAX publishes each pair's real taker fee as `trade_fee_percent_taker` in `/api/pairs`. For every IDR pair the live catalog currently reports `0.2`, i.e. **0.2% per side**, which is ~36× the `0.00555` assumption for a round trip. Under the assumption the net reward/risk gate can therefore approve entries that are economically negative once the real fee is charged.
+
+To close that gap, `strategy_configs.params.feeModel` selects how the per-side fee is derived:
+
+- `assumption` (default, current behavior): every pair uses `feePct`. Nothing changes until you opt in.
+- `pair_taker`: each pair is charged its own `market_pairs.trade_fee_percent_taker`; a pair whose catalog value is missing or invalid falls back to `feePct`, and a genuine `0` fee is honoured.
+
+The model is applied consistently to position sizing, the economics gate, the exit fee, the kill switch, and the backtest. Per-pair taker fees are also returned by `begin_run` so the pipeline does not need a second query. Switching `feeModel` to `pair_taker` only affects future paper orders and evaluations; it does not rewrite past results.
+
+To see the cost of the mismatch before switching, run the read-only report `npm run fee:sensitivity` (requires `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`). It replays stored candles under both models and prints the P&L difference without modifying the active config or placing any order.
+
 ## PostHog instrumentation
 
 The Worker emits a small number of server-side events to PostHog:
