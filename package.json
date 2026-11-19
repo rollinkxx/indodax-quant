@@ -15,6 +15,7 @@
     "backtest": "tsx scripts/backtest.ts",
     "fee:sensitivity": "tsx scripts/fee-sensitivity.ts",
     "alpha:research": "tsx scripts/alpha-research.ts",
+    "backfill:candles": "tsx scripts/backfill-candles.ts",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
     "paper:report": "tsx scripts/paper-report.ts",

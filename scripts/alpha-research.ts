@@ -13,6 +13,7 @@ import {
   MTF_WINDOW, trendState, type TfState,
 } from '../shared/mtf';
 import type { Candle } from '../shared/candles';
+import { resolveResearchPairs } from './pairUniverse';
 import {
   contiguousSegments, evaluateHypothesis, forwardReturns, holdoutStartIndex, meanForwardVector,
   pctChange, quantileCuts, type AlphaSample,
@@ -28,7 +29,7 @@ const FEE_ROUND_TRIP_PCT = 0.4; // 0.2%/side pair taker, the live model
 const HORIZONS = [6, 12, 24, 48, 288] as const; // bars of 5m: 30m, 1h, 2h, 4h, 24h
 const MAX_HORIZON = Math.max(...HORIZONS);
 const VERDICT_HORIZON = HORIZONS.indexOf(48);
-const MAX_PAIRS = Math.max(1, Math.min(60, Number(process.argv[2] ?? process.env.ALPHA_MAX_PAIRS ?? 30)));
+const MAX_PAIRS = Math.max(1, Math.min(500, Number(process.argv[2] ?? process.env.ALPHA_MAX_PAIRS ?? 60)));
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
 
@@ -136,7 +137,10 @@ const fmt = (v: number, w = 8): string => v.toFixed(3).padStart(w);
 async function main(): Promise<void> {
   const active = await get<{ params: unknown }[]>('strategy_configs?select=params&is_active=eq.true&limit=1');
   const P = mergeParams(active[0]?.params ?? null);
-  const pairs = await get<{ id: string }[]>('market_pairs?select=id&or=(is_tracked.eq.true,in_universe.eq.true)&order=id.asc');
+  const pairs = await resolveResearchPairs(get, {
+    top: Number(process.argv[3] ?? process.env.ALPHA_TOP ?? 0),
+    explicit: process.env.ALPHA_PAIRS?.split(','),
+  });
   const ids = pairs.map((p) => p.id).slice(0, MAX_PAIRS);
   console.log(`[alpha-research] pairs=${ids.length} horizons(bars)=${HORIZONS.join(',')} feeRoundTrip=${FEE_ROUND_TRIP_PCT}% mtfMode=${P.mtfMode}`);
 

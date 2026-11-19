@@ -105,8 +105,8 @@ export class IndodaxClient {
       .filter((p) => p.ticker_id && p.base_currency === 'idr');
   }
 
-  /** Official OHLC history (used only to backfill gaps / bootstrap). tf '1' = 1 minute. */
-  async getHistory(symbol: string, tf: '1' | '15' | '60', fromSec: number, toSec: number): Promise<Candle[]> {
+  /** Official OHLC history (used only to backfill gaps / bootstrap). tf: 1/5/15/60 minutes. */
+  async getHistory(symbol: string, tf: '1' | '5' | '15' | '60', fromSec: number, toSec: number): Promise<Candle[]> {
     if (!/^[A-Z0-9]+$/.test(symbol)) throw new Error(`invalid symbol ${symbol}`);
     const raw = await this.getJson<unknown>(`/tradingview/history_v2?symbol=${symbol}&tf=${tf}&from=${Math.floor(fromSec)}&to=${Math.floor(toSec)}`);
     if (!Array.isArray(raw)) throw new Error(`Invalid history payload for ${symbol}`);
