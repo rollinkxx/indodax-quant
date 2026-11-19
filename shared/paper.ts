@@ -71,9 +71,21 @@ export function entryFeePct(
 export interface Stops {
   stopLoss: number;
   takeProfit: number;
-  method: 'atr' | 'percent';
+  method: 'atr' | 'percent' | 'rejected';
+  /** Set when method === 'rejected': why the ATR bracket was refused instead of falling back. */
+  rejectReason?: 'stop_out_of_bounds';
 }
 
+/**
+ * Compute the protective bracket for an entry.
+ *
+ * When the ATR-derived stop sits outside [0.2%, 30%] the historical behaviour is to silently swap
+ * in the `fallbackStopPct`/`fallbackTakeProfitPct` bracket (2%/4% by default). On a 4h series with a
+ * stop of k x ATR a volatile pair can exceed 30%, and that fallback replaces a wide, honest bracket
+ * with a 2%/4% one that the round-trip cost dominates. `rejectOutOfBoundsStops` makes the function
+ * refuse instead, so the pipeline can record `stop_out_of_bounds`. The flag defaults to false, which
+ * is exactly the previous behaviour, so 5m is unchanged until an operator turns it on.
+ */
 export function computeStops(entry: number, atrValue: number | null, p: StrategyParams): Stops {
   if (atrValue !== null && atrValue > 0) {
     const sl = entry - atrValue * p.atrStopMultiplier;
@@ -81,6 +93,9 @@ export function computeStops(entry: number, atrValue: number | null, p: Strategy
     // ATR stop must be meaningful but not absurd (between 0.2% and 30% away)
     const dist = (entry - sl) / entry;
     if (sl > 0 && dist >= 0.002 && dist <= 0.3) return { stopLoss: sl, takeProfit: tp, method: 'atr' };
+    if (p.rejectOutOfBoundsStops) {
+      return { stopLoss: 0, takeProfit: 0, method: 'rejected', rejectReason: 'stop_out_of_bounds' };
+    }
   }
   return {
     stopLoss: entry * (1 - p.fallbackStopPct / 100),

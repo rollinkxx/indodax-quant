@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignal, evaluateSignalWindow, evaluateMarketAction, mergeParams, validateBracketEconomics, validateParams, type IndicatorRow } from '../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignal, evaluateSignalWindow, evaluateMarketAction, mergeParams, mergeParamsDetailed, validateBracketEconomics, validateParams, type IndicatorRow } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
@@ -368,5 +368,39 @@ describe('diagnoseTrendContinuationWindow input validation (parity with BUY gate
       expect(d.stage).toBe('invalid_market_data');
       expect(diagnoseBuySignalWindow(rows, volumes).ready).toBe(false);
     }
+  });
+});
+
+describe('mergeParamsDetailed (WP1b)', () => {
+  it('reports an out-of-range stored key instead of silently substituting the default', () => {
+    // TP=25 exceeds the 20 cap, so with a stop of 9 the bracket would be gross 0.36 < minRR 0.4 and
+    // every entry would be rejected. Before WP1b the key was replaced by 3 with no signal at all.
+    const result = mergeParamsDetailed({ atrStopMultiplier: 9, atrTakeProfitMultiplier: 25 });
+    expect(result.rejectedKeys.map((r) => r.key)).toContain('atrTakeProfitMultiplier');
+    expect(result.rejectedKeys[0].reason).toContain('atrTakeProfitMultiplier');
+    expect(result.params.atrTakeProfitMultiplier).toBe(DEFAULT_PARAMS.atrTakeProfitMultiplier);
+    expect(result.params.atrStopMultiplier).toBe(9);
+    expect(result.fullReset).toBe(false);
+  });
+
+  it('flags a cross-field conflict and reports the full reset', () => {
+    // Both keys are individually in range; together emaFast >= emaSlow is contradictory.
+    const result = mergeParamsDetailed({ emaFast: 15, emaSlow: 12 });
+    expect(result.fullReset).toBe(true);
+    expect(result.rejectedKeys.some((r) => r.reason.includes('emaFast must be smaller than emaSlow'))).toBe(true);
+    expect(result.params).toEqual(DEFAULT_PARAMS);
+  });
+
+  it('stays a drop-in wrapper: mergeParams(x) equals mergeParamsDetailed(x).params', () => {
+    for (const stored of [{}, null, { emaFast: 'bad' }, { crossLookback: 4 }, { atrTakeProfitMultiplier: 25, atrStopMultiplier: 9 }]) {
+      expect(mergeParams(stored)).toEqual(mergeParamsDetailed(stored).params);
+    }
+  });
+
+  it('is clean for a valid stored config', () => {
+    const result = mergeParamsDetailed({ crossLookback: 4, atrStopMultiplier: 2, atrTakeProfitMultiplier: 4 });
+    expect(result.rejectedKeys).toEqual([]);
+    expect(result.fullReset).toBe(false);
+    expect(result.params.crossLookback).toBe(4);
   });
 });

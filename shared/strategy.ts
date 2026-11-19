@@ -44,6 +44,8 @@ export interface StrategyParams {
   closeOnDailyLoss: boolean;
   /** Scale slippage up for thin (low 24h IDR volume) pairs. */
   dynamicSlippage: boolean;
+  /** Reject an ATR stop outside [0.2%, 30%] instead of silently using the percent fallback. */
+  rejectOutOfBoundsStops: boolean;
   /**
    * Minimum net reward per unit of net stop-loss risk required to open a position. Lower values
    * allow a nearer target and therefore a higher hit rate; see MIN_NET_REWARD_RISK_RATIO.
@@ -123,6 +125,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   timeStopMinutes: 720,
   closeOnDailyLoss: true,
   dynamicSlippage: true,
+  rejectOutOfBoundsStops: false,
   minNetRewardRiskRatio: 1,
   feeModel: 'pair_taker',
   // Conservative fallback only. With feeModel='pair_taker' the real per-pair taker fee is charged
@@ -148,7 +151,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   notifyUniverse: true,
 };
 
-const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
+const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage', 'rejectOutOfBoundsStops']);
 
 type NumKey = { [K in keyof StrategyParams]: StrategyParams[K] extends number ? K : never }[keyof StrategyParams];
 
@@ -272,15 +275,60 @@ export function validateBracketEconomics(merged: StrategyParams): string[] {
 
 /** Merge stored params with defaults, ignoring invalid values. */
 export function mergeParams(stored: unknown): StrategyParams {
+  return mergeParamsDetailed(stored).params;
+}
+
+export interface RejectedParam {
+  key: string;
+  reason: string;
+}
+
+export interface DetailedMergeResult {
+  params: StrategyParams;
+  /** Stored keys that were discarded, each with the reason. Empty means the merge was clean. */
+  rejectedKeys: RejectedParam[];
+  /** True when a cross-field conflict forced a reset of the WHOLE config to defaults. */
+  fullReset: boolean;
+}
+
+/**
+ * Merge stored params with defaults, reporting every discard instead of hiding it.
+ *
+ * `mergeParams` silently substituted the code default for an out-of-range key and reset the entire
+ * config on a cross-field conflict, so a stored `atrTakeProfitMultiplier=25` with a stop of 9 became
+ * a 3/9 bracket that rejected every entry while the run still reported SUCCESS. Callers that can
+ * surface the problem (the pipeline) use this variant and push `rejectedKeys`/`fullReset` into
+ * `degraded[]` so the run becomes PARTIAL and a notification fires.
+ */
+export function mergeParamsDetailed(stored: unknown): DetailedMergeResult {
   const out: StrategyParams = { ...DEFAULT_PARAMS };
-  if (!stored || typeof stored !== 'object') return out;
+  const rejectedKeys: RejectedParam[] = [];
+  if (!stored || typeof stored !== 'object') {
+    return { params: out, rejectedKeys, fullReset: false };
+  }
   for (const [k, v] of Object.entries(stored as Record<string, unknown>)) {
     if (!(k in DEFAULT_PARAMS)) continue;
-    if (validateParams({ [k]: v }).some((e) => e.startsWith(k) || e.startsWith('unknown'))) continue;
+    // Only errors that name this key (or an unknown key) disqualify the value. A cross-field
+    // complaint caused by combining this key with the *defaults* (e.g. raising emaSlow past the
+    // default minCandles) is not a defect in the stored value and must not drop it — dropping it
+    // would change which stored configs are honoured, which WP1b must not do.
+    const errs = validateParams({ [k]: v } as Record<string, unknown>)
+      .filter((e) => e.startsWith(k) || e.startsWith('unknown'));
+    if (errs.length) {
+      rejectedKeys.push({ key: k, reason: errs.join('; ') });
+      continue;
+    }
     (out as unknown as Record<string, unknown>)[k] = v;
   }
-  if (validateParams(out as unknown as Record<string, unknown>).length) return { ...DEFAULT_PARAMS };
-  return out;
+  const crossField = validateParams(out as unknown as Record<string, unknown>);
+  if (crossField.length) {
+    // A combination that is valid key-by-key but contradictory as a set (e.g. emaFast=15 with
+    // emaSlow=12) cannot be repaired without guessing which side the operator meant, so the whole
+    // config falls back to defaults — but the reset is now visible.
+    for (const err of crossField) rejectedKeys.push({ key: 'cross-field', reason: err });
+    return { params: { ...DEFAULT_PARAMS }, rejectedKeys, fullReset: true };
+  }
+  return { params: out, rejectedKeys, fullReset: false };
 }
 
 export interface IndicatorRow {

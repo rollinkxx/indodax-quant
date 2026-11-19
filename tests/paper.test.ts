@@ -158,3 +158,32 @@ describe('risk management', () => {
     expect(computeStats([]).trades).toBe(0);
   });
 });
+
+describe('computeStops rejectOutOfBoundsStops (WP1h / D6)', () => {
+  // ATR of 400 on a 1000 entry with a 9x stop is a 360% stop — far outside [0.2%, 30%].
+  const P = { ...DEFAULT_PARAMS, atrStopMultiplier: 9, atrTakeProfitMultiplier: 3 };
+
+  it('flag off (default): silently uses the percent fallback, exactly as before', () => {
+    const s = computeStops(1000, 400, P);
+    expect(s.method).toBe('percent');
+    expect(s.stopLoss).toBeCloseTo(1000 * (1 - P.fallbackStopPct / 100), 6);
+    expect(s.takeProfit).toBeCloseTo(1000 * (1 + P.fallbackTakeProfitPct / 100), 6);
+  });
+
+  it('flag on: rejects with stop_out_of_bounds instead of trading a cost-dominated bracket', () => {
+    const s = computeStops(1000, 400, { ...P, rejectOutOfBoundsStops: true });
+    expect(s.method).toBe('rejected');
+    expect(s.rejectReason).toBe('stop_out_of_bounds');
+  });
+
+  it('flag on still returns a normal ATR bracket when the stop is in bounds', () => {
+    const s = computeStops(1000, 2, { ...P, atrStopMultiplier: 1.5, rejectOutOfBoundsStops: true });
+    expect(s.method).toBe('atr');
+    expect(s.stopLoss).toBeCloseTo(997, 6);
+  });
+
+  it('flag off keeps a valid ATR bracket too (no regression on the normal path)', () => {
+    const s = computeStops(1000, 2, { ...P, atrStopMultiplier: 1.5, rejectOutOfBoundsStops: false });
+    expect(s.method).toBe('atr');
+  });
+});

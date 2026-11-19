@@ -30,6 +30,8 @@ export function finalizeEndOfDataTrade(
   candle: Candle,
   slippageBps: number,
   feePct: number,
+  /** Quoted spread at the final candle; the forced exit crosses the book like any other exit. */
+  spreadPct = 0,
 ): FinalizedBacktestTrade {
   if (
     !pair ||
@@ -42,12 +44,13 @@ export function finalizeEndOfDataTrade(
     !isValidCandle(candle) ||
     candle.t < position.entryTime ||
     !Number.isFinite(slippageBps) || slippageBps < 0 || slippageBps >= 10_000 ||
-    !Number.isFinite(feePct) || feePct < 0
+    !Number.isFinite(feePct) || feePct < 0 ||
+    !Number.isFinite(spreadPct) || spreadPct < 0
   ) {
     throw new Error('Invalid end-of-data trade inputs');
   }
 
-  const exit = sellFillPrice(candle.c, slippageBps);
+  const exit = sellFillPrice(candle.c, slippageBps) * (1 - spreadPct / 200);
   const exitFee = feeFor(position.qty * exit, feePct);
   const pnl = position.qty * exit - exitFee - position.cost;
   return {

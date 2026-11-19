@@ -44,7 +44,55 @@ for (const [key, metrics] of Object.entries(backtest.aggregateOutOfSampleIndepen
 
 lines.push(
   '',
-  '### Evidence gate (never auto-promotes a strategy)',
+  '### Expectancy evidence gate (WP1a — the release gate; never auto-promotes)',
+  '',
+  'Win rate is a bracket-geometry property. This gate asks whether the mean net return per trade is',
+  'positive after real costs and survives outlier removal, week-block resampling and pair concentration.',
+  '',
+  '| Variant | Decision | Trades | Win rate | PF | Mean net/trade | 95% lower bound | Without best 5 | Top pair share | Positive folds | Max DD | Rejection reasons |',
+  '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|',
+);
+for (const [key, decision] of Object.entries(backtest.expectancyEvidenceByVariant || {})) {
+  lines.push(
+    '|' + key +
+    '|' + String(value(decision.status, 'NO_GO')) +
+    '|' + String(value(decision.trades)) +
+    '|' + String(value(decision.winRatePct)) + '%' +
+    '|' + String(value(decision.profitFactor, 'n/a')) +
+    '|' + String(value(decision.meanNetReturnPct)) + '%' +
+    '|' + (decision.meanNetReturnLower95Pct == null ? 'n/a' : String(decision.meanNetReturnLower95Pct) + '%') +
+    '|' + (decision.meanNetReturnWithoutBestPct == null ? 'n/a' : String(decision.meanNetReturnWithoutBestPct) + '%') +
+    '|' + String(value(decision.maxSinglePairProfitSharePct)) + '%' +
+    '|' + String(value(decision.positiveFoldSharePct)) + '%' +
+    '|' + String(value(decision.maxDrawdownPct)) + '%' +
+    '|' + (Array.isArray(decision.reasons) ? decision.reasons.join(', ') : '') + '|',
+  );
+}
+
+lines.push(
+  '',
+  '### Null model (WP1f — is the mean a coin flip?)',
+  '',
+  'Sign-flip permutation null: each draw randomises the direction of every trade while keeping its',
+  'magnitude, so the null is "no directional skill". A strategy must beat the 95th percentile here.',
+  '',
+  '| Variant | Status | Trades | Observed mean | Null 95th pct | p-value |',
+  '|---|---|---:|---:|---:|---:|',
+);
+for (const [key, decision] of Object.entries(backtest.nullModelByVariant || {})) {
+  lines.push(
+    '|' + key +
+    '|' + String(value(decision.status, 'INSUFFICIENT_SAMPLE')) +
+    '|' + String(value(decision.trades)) +
+    '|' + String(value(decision.observedMeanNetReturnPct)) + '%' +
+    '|' + (decision.nullMeanP95Pct == null ? 'n/a' : String(decision.nullMeanP95Pct) + '%') +
+    '|' + (decision.pValuePct == null ? 'n/a' : String(decision.pValuePct) + '%') + '|',
+  );
+}
+
+lines.push(
+  '',
+  '### Evidence gate (legacy 70%-win-rate gate, superseded by WP1a; never auto-promotes)',
   '',
   '| Variant | Decision | Wilson 95% win-rate lower bound | Rejection reasons |',
   '|---|---|---:|---|',

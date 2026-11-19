@@ -2,10 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PARAMS, mergeParams } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
-// scripts/backtest.ts fails fast on missing Supabase env at import time; the simulation
-// itself is pure and never touches the network, so dummy values are enough here.
-process.env.SUPABASE_URL = process.env.SUPABASE_URL ?? 'http://127.0.0.1:1';
-process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'test-key';
 const { simulate } = await import('../scripts/backtest');
 
 /** Oscillating series that forces repeated EMA9/EMA21 crossovers so entries actually fire. */

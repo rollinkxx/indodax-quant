@@ -92,3 +92,19 @@ describe('resolveProtectiveExit trailing stop attribution', () => {
       .toEqual({ price: 95, reason: 'STOP_LOSS' });
   });
 });
+
+describe('finalizeEndOfDataTrade: quoted spread', () => {
+  const pos = { qty: 10, entry: 100, cost: 1000, entryTime: 1_000 };
+  const candle = { t: 2_000, o: 110, h: 111, l: 109, c: 110, v: 500, n: 3, source: 'trades' as const };
+
+  it('crosses the book on the forced exit so the spread is not silently forgiven', () => {
+    const tight = finalizeEndOfDataTrade('xidr', pos, candle, 0, 0);
+    const wide = finalizeEndOfDataTrade('xidr', pos, candle, 0, 0, 2);
+    expect(wide.exit).toBeCloseTo(tight.exit * (1 - 2 / 200), 10);
+    expect(wide.pnl).toBeLessThan(tight.pnl);
+  });
+
+  it('defaults to a tight book when no spread is supplied', () => {
+    expect(finalizeEndOfDataTrade('xidr', pos, candle, 0, 0).exit).toBe(110);
+  });
+});
