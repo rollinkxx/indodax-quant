@@ -77,7 +77,12 @@ function indodax(): IndodaxClient {
 }
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
-interface StoredPair { id: string; symbol: string; is_tracked: boolean; in_universe: boolean; trade_fee_percent_taker: number | null }
+interface StoredPair {
+  id: string; symbol: string; is_tracked: boolean; in_universe: boolean;
+  trade_fee_percent_taker: number | null;
+  /** INDODAX trade_min_base_currency (IDR). Live rejects a smaller order; the backtest must too. */
+  trade_min_base_currency: number | null;
+}
 interface OfficialHistoryResult {
   candles: Candle[];
   metrics: {
@@ -276,6 +281,10 @@ export function simulate(
   // series has no quote for that bucket and the fill falls back to mid + slippage, exactly as
   // before, so a pair with no quote history is priced no worse than the legacy model.
   spreadPctAt: ((t: number) => number | null) | null = null,
+  // Live rejects an order below the pair's `trade_min_base_currency`. Defaulting here instead of
+  // reading the catalog let the backtest take trades production would refuse once a pair's
+  // minimum differs from 10,000 IDR.
+  minNotional: number | null = null,
 ): SimTrade[] {
   // Infer the bar interval from the data instead of assuming 5m. The gap filler, the MTF bucket
   // aggregation, and the time stop all scale with it, so hardcoding 300 silently injected 11
@@ -421,6 +430,7 @@ export function simulate(
     const size = positionSize({
       equity, cash: equity, entry: fill, stopLoss: stops.stopLoss,
       exitSlippageBps: slip, params: { ...p, feePct },
+      ...(minNotional !== null && Number.isFinite(minNotional) && minNotional > 0 ? { minNotional } : {}),
     });
     if (size.qty <= 0) continue;
     pos = {
@@ -528,12 +538,12 @@ async function main() {
 
   const cliPairs: string[] = argv.filter((a) => !a.startsWith('--'));
   const marketPairs = await get<StoredPair[]>(
-    'market_pairs?select=id,symbol,is_tracked,in_universe,trade_fee_percent_taker&is_maintenance=eq.false&limit=1000',
+    'market_pairs?select=id,symbol,is_tracked,in_universe,trade_fee_percent_taker,trade_min_base_currency&is_maintenance=eq.false&limit=1000',
   );
   const marketById = new Map(marketPairs.map((row) => [row.id, row]));
   // Compare only the active production scan universe, not unrelated high-volume IDR pairs.
   const selectedPairs = cliPairs.length
-    ? [...new Set(cliPairs)].map((id) => marketById.get(id) ?? { id, symbol: id.toUpperCase(), is_tracked: false, in_universe: false, trade_fee_percent_taker: null })
+    ? [...new Set(cliPairs)].map((id) => marketById.get(id) ?? { id, symbol: id.toUpperCase(), is_tracked: false, in_universe: false, trade_fee_percent_taker: null, trade_min_base_currency: null })
     : marketPairs.filter((row) => row.is_tracked || row.in_universe);
   const volRows = await get<{ pair_id: string; vol_idr: number }[]>('market_tickers_latest?select=pair_id,vol_idr');
   const vols: Record<string, number> = {};
@@ -607,8 +617,8 @@ async function main() {
     };
     const variantResults = pairResult.variants as Record<string, unknown>;
     for (const variant of variants) {
-      const full = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, 0, pair.trade_fee_percent_taker, spreadAt);
-      const holdout = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, splitIndex, pair.trade_fee_percent_taker, spreadAt);
+      const full = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, 0, pair.trade_fee_percent_taker, spreadAt, pair.trade_min_base_currency);
+      const holdout = simulate(pair.id, candles, variant.params, 10_000_000, vols[pair.id] ?? null, variant.mode, splitIndex, pair.trade_fee_percent_taker, spreadAt, pair.trade_min_base_currency);
       holdoutTradesByVariant[variant.key].push(...holdout);
       variantResults[variant.key] = {
         fullPeriod: measure(full),

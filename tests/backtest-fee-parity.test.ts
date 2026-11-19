@@ -54,3 +54,30 @@ describe('simulate fee parity', () => {
     expect(netDear).toBeLessThanOrEqual(netCheap + 1e-6);
   });
 });
+
+describe('minNotional parity with live positionSize', () => {
+  // Live passes the pair's trade_min_base_currency to positionSize; the backtest used to rely on
+  // the 10,000 default. A pair whose catalog minimum is higher must lose those entries here too.
+  const candles = oscillator(3000, 60, 0.03);
+  const LOOSE = mergeParams({
+    ...DEFAULT_PARAMS, rsiBuyMin: 0, rsiBuyMax: 100, volumeMultiplier: 0,
+    useTrendFilter: false, maxEntryExtensionPct: 0, mtfMode: 'off',
+  });
+
+  it('takes the trade when the notional clears the pair minimum', () => {
+    const trades = simulate('xidr', candles, LOOSE, 10_000_000, 5e9, 'crossover', 0, 0.2, null, 10_000);
+    expect(trades.length).toBeGreaterThan(0);
+  });
+
+  it('rejects every entry when the pair minimum exceeds the sized notional', () => {
+    // 1e9 IDR minimum cannot be met by a 10M equity account at riskPerTradePct, so nothing opens.
+    const trades = simulate('xidr', candles, LOOSE, 10_000_000, 5e9, 'crossover', 0, 0.2, null, 1e9);
+    expect(trades).toEqual([]);
+  });
+
+  it('falls back to the 10,000 default when the catalog value is absent', () => {
+    const withNull = simulate('xidr', candles, LOOSE, 10_000_000, 5e9, 'crossover', 0, 0.2, null, null);
+    const withDefault = simulate('xidr', candles, LOOSE, 10_000_000, 5e9, 'crossover', 0, 0.2, null, 10_000);
+    expect(withNull).toEqual(withDefault);
+  });
+});
