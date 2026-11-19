@@ -14,12 +14,14 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
   const f = fakeFetch([
     (u, init) => {
+      // Trailing-stop ratchet writes straight to the table, not through an RPC.
+      if (u.href.startsWith(SB + '/rest/v1/paper_positions')) return json([{ id: 5 }]);
       if (!u.href.startsWith(SB + '/rest/v1/rpc/')) return;
       const fn = u.pathname.replace('/rest/v1/rpc/', '');
       const body = JSON.parse(String(init.body ?? '{}'));
@@ -66,7 +68,8 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
       if (u.hostname !== 'indodax.com') return;
       indodax.push(u.pathname + u.search);
       if (u.pathname === '/api/summaries') {
-        const t = (id: string, vol: number) => [id.replace('idr', '_idr'), { last: '1000', buy: opts.wideSpread ? '998.9' : '999', sell: '1000', high: '1', low: '1', vol_idr: String(vol), server_time: opts.staleTicker ? NOW - 3600 : NOW - 5 }];
+        const bid = String(opts.tickerBid ?? 1000);
+        const t = (id: string, vol: number) => [id.replace('idr', '_idr'), { last: bid, buy: opts.wideSpread ? String(Number(bid) * 0.9989) : bid, sell: bid, high: '1', low: '1', vol_idr: String(vol), server_time: opts.staleTicker ? NOW - 3600 : NOW - 5 }];
         return json({ tickers: Object.fromEntries([t('btcidr', 9e10), t('pepeidr', 5e10), t('usdtidr', 8e10), t('dogeidr', 2e10)]), prices_24h: {} });
       }
       if (u.pathname.startsWith('/api/trades/')) {
@@ -361,7 +364,7 @@ describe('pipeline: persisted SELL exits (F3)', () => {
     expect(closes(run1)).toHaveLength(0);
 
     // Run 2: ticker fresh, ON CONFLICT DO NOTHING means no new signals, the stored SELL is still pending.
-    const run2 = setup({ mtfMode: 'off', openPositions: [position], newSignals: [], pendingSells: [sell] });
+    const run2 = setup({ mtfMode: 'off', openPositions: [position], newSignals: [], pendingSells: [sell], tickerBid: 1010 });
     const r = await run(run2);
     expect(r.status).toBe('SUCCESS');
     expect(run2.rpcs.find((x) => x.fn === 'get_pending_sell_signals')!.body).toEqual({ p_pairs: ['btcidr'] });
@@ -370,13 +373,13 @@ describe('pipeline: persisted SELL exits (F3)', () => {
   });
 
   it('closes once when the SELL is both new and pending', async () => {
-    const o = setup({ mtfMode: 'off', openPositions: [position], newSignals: [sell], pendingSells: [sell] });
+    const o = setup({ mtfMode: 'off', openPositions: [position], newSignals: [sell], pendingSells: [sell], tickerBid: 1010 });
     await run(o);
     expect(closes(o)).toHaveLength(1);
   });
 
   it('a repeated pending SELL after the position is gone is rejected by the RPC without error', async () => {
-    const o = setup({ mtfMode: 'off', openPositions: [position], pendingSells: [sell], closeResult: { ok: false, reason: 'not_open' } });
+    const o = setup({ mtfMode: 'off', openPositions: [position], pendingSells: [sell], closeResult: { ok: false, reason: 'not_open' }, tickerBid: 1010 });
     const r = await run(o);
     expect(r.status).toBe('SUCCESS');
     expect(closes(o)).toHaveLength(1);

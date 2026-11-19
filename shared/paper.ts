@@ -89,6 +89,29 @@ export function computeStops(entry: number, atrValue: number | null, p: Strategy
   };
 }
 
+/**
+ * Whether a signal-driven exit would at least break even after the round trip.
+ *
+ * A SELL signal is a discretionary exit, unlike the stop-loss which defines the risk budget. When
+ * the position is already underwater, paying another 0.2% fee and 10 bps of slippage to leave
+ * converts a recoverable drawdown into a booked loss, and on 5m candles those exits averaged
+ * -0.97% net against a 4.2% win rate. Withholding the exit leaves the stop in control.
+ */
+export function signalExitCoversCosts(input: {
+  entryPrice: number;
+  qty: number;
+  costBasis: number;
+  bid: number;
+  feePct: number;
+  slippageBps: number;
+}): boolean {
+  const { entryPrice, qty, costBasis, bid } = input;
+  if (!(entryPrice > 0) || !(qty > 0) || !(bid > 0) || !Number.isFinite(costBasis)) return false;
+  const fill = sellFillPrice(bid, input.slippageBps);
+  const proceeds = qty * fill - feeFor(qty * fill, input.feePct);
+  return proceeds >= costBasis;
+}
+
 /** Round-trip cost in percentage points: both fees plus expected slippage on each side. */
 export function roundTripCostPct(feePct: number, slippageBps: number): number {
   const fee = Number.isFinite(feePct) && feePct > 0 ? feePct : 0;

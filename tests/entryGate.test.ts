@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buyFillPrice, computeStops, entryGate, netRewardRiskDiagnostics, netRewardRiskGate, positionSize } from '../shared/paper';
+import { buyFillPrice, computeStops, entryGate, netRewardRiskDiagnostics, netRewardRiskGate, positionSize, signalExitCoversCosts } from '../shared/paper';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../shared/strategy';
 
 const P = DEFAULT_PARAMS;
@@ -108,5 +108,26 @@ describe('params', () => {
     const merged = mergeParams({ emaFast: 9 });
     expect(merged.maxEntrySpreadPct).toBe(0.6);
     expect(merged.maxEntryDriftPct).toBe(0.5);
+  });
+});
+
+describe('signal exit cost guard', () => {
+  const base = { entryPrice: 1000, qty: 10, costBasis: 10_020, feePct: 0.2, slippageBps: 10 };
+
+  it('withholds a SELL exit that would book a loss after fees and slippage', () => {
+    // Flat price: the 0.2% exit fee plus slippage alone turns this into a loss.
+    expect(signalExitCoversCosts({ ...base, bid: 1000 })).toBe(false);
+    expect(signalExitCoversCosts({ ...base, bid: 995 })).toBe(false);
+  });
+
+  it('allows the same exit once the bid clears the round trip', () => {
+    expect(signalExitCoversCosts({ ...base, bid: 1010 })).toBe(true);
+    expect(signalExitCoversCosts({ ...base, bid: 2000 })).toBe(true);
+  });
+
+  it('rejects malformed inputs instead of silently allowing an exit', () => {
+    expect(signalExitCoversCosts({ ...base, bid: 0 })).toBe(false);
+    expect(signalExitCoversCosts({ ...base, qty: 0, bid: 2000 })).toBe(false);
+    expect(signalExitCoversCosts({ ...base, costBasis: Number.NaN, bid: 2000 })).toBe(false);
   });
 });

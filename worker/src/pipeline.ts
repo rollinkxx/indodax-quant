@@ -10,7 +10,7 @@ import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../..
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -663,7 +663,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           }
         }
         if (!reason && timeStopHit(pos.opened_at ? Date.parse(pos.opened_at) : null, now(), params)) reason = 'TIME_STOP';
-        if (!reason && sellSignals.has(pos.pair_id)) reason = 'SIGNAL';
+        if (!reason && sellSignals.has(pos.pair_id) && signalExitCoversCosts({
+          entryPrice: Number(pos.entry_price), qty: Number(pos.qty), costBasis: Number(pos.cost_basis),
+          bid: t.bid, feePct: feePctFor(pos.pair_id), slippageBps: slipFor(pos.pair_id),
+        })) reason = 'SIGNAL';
         if (reason) await close(pos, reason, t.bid);
       }
 
