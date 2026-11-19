@@ -109,8 +109,8 @@ describe('exits and PnL', () => {
     expect(exitReason({ stop_loss: null, take_profit: null }, 1)).toBeNull();
   });
   it('labels a stop ratcheted above entry as TRAILING_STOP, not STOP_LOSS', () => {
-    // Trade 14 in production: entry 333.33, trailed stop 342.62, exited 339.76 for a profit but was
-    // booked as STOP_LOSS, which counted a winner as a loser in win rate and expectancy.
+    // Trade 14 in production: entry 333.33, trailed stop 342.62, exited 339.76 (+35,485 IDR) but was
+    // booked as STOP_LOSS, hiding that the trail produced the exit.
     const trailed = { entry_price: '333.331999', stop_loss: '342.62402751145373', take_profit: '358.20831507107255' };
     expect(exitReason(trailed, 339.762897)).toBe('TRAILING_STOP');
     // A stop at or below entry is still a genuine stop loss.
