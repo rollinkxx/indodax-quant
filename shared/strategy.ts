@@ -44,6 +44,11 @@ export interface StrategyParams {
   closeOnDailyLoss: boolean;
   /** Scale slippage up for thin (low 24h IDR volume) pairs. */
   dynamicSlippage: boolean;
+  /**
+   * Minimum net reward per unit of net stop-loss risk required to open a position. Lower values
+   * allow a nearer target and therefore a higher hit rate; see MIN_NET_REWARD_RISK_RATIO.
+   */
+  minNetRewardRiskRatio: number;
   /** Which per-side fee the paper engine charges; see FeeModel. Default 'assumption' (legacy). */
   feeModel: FeeModel;
   feePct: number;
@@ -118,6 +123,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   timeStopMinutes: 720,
   closeOnDailyLoss: true,
   dynamicSlippage: true,
+  minNetRewardRiskRatio: 1,
   feeModel: 'pair_taker',
   // Conservative fallback only. With feeModel='pair_taker' the real per-pair taker fee is charged
   // and a missing catalog value rejects the entry, so this value can never silently under-charge.
@@ -168,6 +174,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   maxOpenPositions: [1, 10, true],
   maxEntrySpreadPct: [0, 10],
   maxEntryDriftPct: [0, 10],
+  minNetRewardRiskRatio: [0.05, 10],
   maxTotalExposurePct: [5, 100],
   trailActivationAtr: [0.1, 20],
   trailDistanceAtr: [0.1, 20],

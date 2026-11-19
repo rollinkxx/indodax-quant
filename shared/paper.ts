@@ -89,6 +89,13 @@ export function computeStops(entry: number, atrValue: number | null, p: Strategy
   };
 }
 
+/** Round-trip cost in percentage points: both fees plus expected slippage on each side. */
+export function roundTripCostPct(feePct: number, slippageBps: number): number {
+  const fee = Number.isFinite(feePct) && feePct > 0 ? feePct : 0;
+  const slip = Number.isFinite(slippageBps) && slippageBps > 0 ? slippageBps / 100 : 0;
+  return fee * 2 + slip * 2;
+}
+
 export interface SizingInput {
   equity: number;
   cash: number;
@@ -160,9 +167,19 @@ export interface NetRewardRiskInput {
   takeProfit: number;
   feePct: number;
   exitSlippageBps: number;
+  /** Minimum net reward per unit of net risk. Defaults to MIN_NET_REWARD_RISK_RATIO. */
+  minRatio?: number;
 }
 
-/** Minimum expected net reward per unit of net stop-loss risk. */
+/**
+ * Default minimum expected net reward per unit of net stop-loss risk.
+ *
+ * This ratio decides the shape of the win/loss distribution. In a driftless market the probability
+ * of touching the target before the stop is stopDistance / (stopDistance + targetDistance), so a
+ * ratio of 1 caps the achievable hit rate at 50% before costs and far below that after them.
+ * Lower ratios buy a higher hit rate at a lower payoff; raise it for the opposite. Override per
+ * config with `minNetRewardRiskRatio` in StrategyParams.
+ */
 export const MIN_NET_REWARD_RISK_RATIO = 1;
 
 export interface NetRewardRiskDiagnostics {
@@ -235,7 +252,8 @@ export function netRewardRiskDiagnostics(i: NetRewardRiskInput): NetRewardRiskDi
 
   if (!(netRisk > 0) || !Number.isFinite(netRisk)) return { reason: 'invalid_reward_risk_inputs', metrics };
   if (!(netReward > 0) || !Number.isFinite(netReward)) return { reason: 'net_reward_non_positive', metrics };
-  if (ratio < MIN_NET_REWARD_RISK_RATIO) return { reason: 'net_reward_risk_below_minimum', metrics };
+  const minRatio = Number.isFinite(i.minRatio) ? (i.minRatio as number) : MIN_NET_REWARD_RISK_RATIO;
+  if (ratio < minRatio) return { reason: 'net_reward_risk_below_minimum', metrics };
   return { reason: null, metrics };
 }
 
@@ -252,13 +270,21 @@ export function trailingStop(
   bid: number,
   atrValue: number | null,
   p: Pick<StrategyParams, 'trailingStopEnabled' | 'trailActivationAtr' | 'trailDistanceAtr'>,
+  /** Round-trip cost in percent; the ratchet never sets a stop that would still lose after it. */
+  costPct = 0,
 ): number | null {
   if (!p.trailingStopEnabled || atrValue === null || !(atrValue > 0)) return null;
   const entry = Number(pos.entry_price);
   if (!(bid >= entry + p.trailActivationAtr * atrValue)) return null;
   const candidate = bid - p.trailDistanceAtr * atrValue;
+  // A stop below the break-even price locks in a loss the round trip has already decided.
+  // On 5m candles 1x ATR is often ~0.2%, i.e. half the 0.4% taker round trip, so trailing
+  // unguarded produced exits with a positive gross move that still settled net negative.
+  const breakEven = entry * (1 + (Number.isFinite(costPct) && costPct > 0 ? costPct / 100 : 0));
+  const floor = Math.max(entry, breakEven);
   const current = pos.stop_loss === null ? 0 : Number(pos.stop_loss);
-  return candidate > current && candidate < bid ? candidate : null;
+  if (candidate <= Math.max(current, floor)) return null;
+  return candidate < bid ? candidate : null;
 }
 
 /** True when the position has been open longer than the configured time stop. */

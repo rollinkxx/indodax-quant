@@ -14,7 +14,7 @@ import {
 import { applyBacktestOverrides, parseBacktestOverrides } from '../shared/backtestOverrides';
 import {
   buyFillPrice, computeStats, computeStops, dynamicSlippageBps, effectiveFeePct, feeFor,
-  netRewardRiskGate, positionSize, sellFillPrice, trailingStop,
+  netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, trailingStop,
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
@@ -226,7 +226,7 @@ export function simulate(
       let exit: number | null = protectiveExit?.price ?? null;
       let reason = protectiveExit?.reason ?? '';
       if (exit === null) {
-        const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p);
+        const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p, roundTripCostPct(feePct, slip));
         if (nsl !== null) pos.sl = nsl;
         if (p.timeStopMinutes > 0 && (i - pos.openedIdx) * 5 >= p.timeStopMinutes) {
           exit = c.c; reason = 'TIME_STOP';
@@ -273,7 +273,7 @@ export function simulate(
     const stops = computeStops(fill, rows[i].atr14, p);
     if (netRewardRiskGate({
       entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
-      feePct, exitSlippageBps: slip,
+      feePct, exitSlippageBps: slip, minRatio: p.minNetRewardRiskRatio,
     })) continue;
     // Size with the fee actually charged for this pair (effectiveFeePct), matching the live
     // pipeline. Passing `p` directly would size against `p.feePct` and, under feeModel
