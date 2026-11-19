@@ -112,11 +112,21 @@ export function signalExitCoversCosts(input: {
   return proceeds >= costBasis;
 }
 
-/** Round-trip cost in percentage points: both fees plus expected slippage on each side. */
-export function roundTripCostPct(feePct: number, slippageBps: number): number {
+/**
+ * Round-trip cost in percentage points: both fees, expected slippage on each side, and the
+ * quoted spread.
+ *
+ * The spread is a real round-trip cost, not a modelling nicety: entries fill at the ask and
+ * exits at the bid, so a position must gain the full spread before it breaks even. Leaving it
+ * out understated the break-even price on wide pairs, which let the trailing stop ratchet to a
+ * level that still settled net negative. Callers without a live quote (the candle-only
+ * backtest) pass 0 and keep the previous behaviour.
+ */
+export function roundTripCostPct(feePct: number, slippageBps: number, spreadPct = 0): number {
   const fee = Number.isFinite(feePct) && feePct > 0 ? feePct : 0;
   const slip = Number.isFinite(slippageBps) && slippageBps > 0 ? slippageBps / 100 : 0;
-  return fee * 2 + slip * 2;
+  const spread = Number.isFinite(spreadPct) && spreadPct > 0 ? spreadPct : 0;
+  return fee * 2 + slip * 2 + spread;
 }
 
 export interface SizingInput {
