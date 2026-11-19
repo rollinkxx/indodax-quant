@@ -228,3 +228,65 @@ of a config that already had an impossible bracket. The check runs only on the a
 - Run 8962 end-to-end: 1 BUY signal created → received by `paper_trading` → rejected at
   `net_reward_risk_below_minimum`. Signal generation, gating, and rejection telemetry all work.
 - Supabase reachable; `market_pairs` carries `trade_fee_percent_taker = 0.2` for all 438 pairs.
+
+## Finding 8 (fixed): 5m candles and indicators had no retention; the largest query scanned the whole table
+
+The database reached 306 MB of a 500 MB free-tier quota on 2026-11-19. No run had ever failed on
+disk (zero SQLSTATE 53100 in 8,967 runs), so this was not the cause of the PARTIAL runs — but two
+tables grew forever with nothing deleting from them:
+
+| table | rows | size | growth | retention before |
+|---|---|---|---|---|
+| candles 5m | 510,601 | 188 MB | +8,453/day | none |
+| indicators | 35,989 | 10 MB | +5,787/day | none |
+
+Retention now bounds both (5m 45d, indicators 7d) and tightens tickers 30d→8d and logs 14d→7d.
+The 5m delete is batched at 50k rows so the first hourly run cannot lock the largest table.
+
+`candles_lookup_idx` was `(pair_id, timeframe, open_time DESC)` — the same columns as
+`candles_pkey` plus a DESC suffix. A btree scans backwards, so EXPLAIN shows both the ASC research
+query and the DESC RPC using the primary key. Dropping it returned 51 MB and removes a second index
+write from every candle insert.
+
+Measured: 306 MB → 202 MB.
+
+The actual cause of the PARTIAL runs was `get_recent_candles`. It numbered every closed candle with
+a window function and then filtered to the newest 250, scanning 267k rows to return 3,500: 2,642 ms
+and 27k buffers per call. That crossed the statement timeout roughly once a day (runs 8671 and 8972
+both died with SQLSTATE 57014). Rewritten per-pair with `LATERAL ... ORDER BY open_time DESC LIMIT n`,
+it is 128 ms and returns byte-identical JSON. Run 8996 finished SUCCESS with `analyze` at 1,522 ms.
+
+## Finding 9 (attribution): the strategy lost money, and the loss is explained
+
+Sixteen closed positions, of which three were opened before `paper_accounts.reset_at` and are
+excluded. The thirteen that belong to the current config:
+
+| metric | value |
+|---|---|
+| trades | 13 |
+| wins / losses | 3 / 10 (23.1%) |
+| net realized | −Rp238,041.69 |
+| gross win / gross loss | +Rp69,631.10 / −Rp307,672.79 |
+| profit factor | 0.226 |
+| fees paid | Rp41,127.25 |
+| avg hold | 0.83 h |
+
+Exit attribution: 9 STOP_LOSS for −Rp303,544, 2 TRAILING_STOP for +Rp31,357, 1 TAKE_PROFIT for
++Rp10,465, 1 SIGNAL for +Rp23,680. Every winner is small and every loser is roughly 1.5–2R. The
+stop is doing its job; the entries are simply wrong more often than the payoff compensates for.
+
+Two honest caveats:
+
+- **Stops fill through the level.** A stop is checked once per minute, so a fast move fills at the
+  next observed bid rather than at the trigger. Positions 3, 8, 13 and 16 exited 0.5–0.8% past
+  their stop. This is real gap risk, not a bug — the engine cannot fill at a price that was never
+  quoted — but it means the effective loss per stop is larger than the configured distance.
+- **Cost is a large share of a small stop.** Position 4 had a 0.428% stop distance against 0.598%
+  of round-trip cost: the fee and spread alone were 1.40× the risk it was trying to take. The
+  reward/risk gate rejects a *net* risk that is not positive, so it did not let a negative-risk
+  trade through, but a stop that thin cannot survive costs. The current config's stops are
+  1.3–2.8%, where cost is 0.14–0.30R — acceptable.
+
+The 0.226 profit factor matches the independent backtest finding (5m PF 1.02 on 57 trades,
+15m/30m/1h at 0.42/0.40/0.28). The entry rule has no edge after real costs. That is a research
+problem — a different entry signal — not a defect in the engine.
