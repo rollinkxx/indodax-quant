@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  contiguousSegments, evaluateHypothesis, forwardReturns, holdoutStartIndex, meanForwardVector,
+  contiguousSegments, evaluateHypothesis, evaluateHypothesisWalkForward, foldOfIndex,
+  forwardReturns, holdoutStartIndex, meanForwardVector,
   pctChange, quantileCuts, type AlphaSample,
 } from '../shared/alphaResearch';
 import type { Candle } from '../shared/candles';
@@ -71,8 +72,8 @@ describe('holdoutStartIndex', () => {
   });
 });
 
-function sample(forward: number[], isHoldout: boolean, feature: number): AlphaSample {
-  return { pair: 'x', isHoldout, close: 1, forward, features: { f: feature } };
+function sample(forward: number[], isHoldout: boolean, feature: number, fold = 0): AlphaSample {
+  return { pair: 'x', isHoldout, fold, close: 1, forward, features: { f: feature } };
 }
 
 describe('meanForwardVector', () => {
@@ -142,6 +143,58 @@ describe('evaluateHypothesis', () => {
       sample([0], true, 0), sample([9], true, 1),
     ];
     const r = evaluateHypothesis(samples, (f) => f.f === 1, 0, 1, { feeRoundTripPct: 0.4, minHoldout: 5 });
+    expect(r.verdict).toBe('thin');
+  });
+});
+
+describe('foldOfIndex', () => {
+  it('partitions a series into equal chronological blocks', () => {
+    expect(foldOfIndex(0, 10, 5)).toBe(0);
+    expect(foldOfIndex(4, 10, 5)).toBe(2);
+    expect(foldOfIndex(9, 10, 5)).toBe(4);
+  });
+
+  it('clamps the last index into the final fold and handles degenerate input', () => {
+    expect(foldOfIndex(10, 10, 5)).toBe(4);
+    expect(foldOfIndex(3, 0, 5)).toBe(0);
+    expect(foldOfIndex(3, 10, 1)).toBe(0);
+  });
+});
+
+describe('evaluateHypothesisWalkForward', () => {
+  const opts = { feeRoundTripPct: 0.4, minHoldout: 1 };
+
+  it('earns CANDIDATE only when every test fold is net-positive', () => {
+    // Fold 0 is train-only; folds 1..3 each carry a net-positive hit.
+    const samples: AlphaSample[] = [
+      sample([0], false, 0, 0), sample([0], false, 0, 0),
+      sample([5], false, 1, 1), sample([0], false, 0, 1),
+      sample([5], false, 1, 2), sample([0], false, 0, 2),
+      sample([5], false, 1, 3), sample([0], false, 0, 3),
+    ];
+    const r = evaluateHypothesisWalkForward(samples, (f) => f.f === 1, 0, 1, 4, opts);
+    expect(r.totalTestFolds).toBe(3);
+    expect(r.positiveTestFolds).toBe(3);
+    expect(r.verdict).toBe('CANDIDATE');
+  });
+
+  it('rejects a rule that is net-positive in only some folds (regime artefact)', () => {
+    const samples: AlphaSample[] = [
+      sample([0], false, 0, 0),
+      sample([5], false, 1, 1), sample([0], false, 0, 1),
+      sample([-5], false, 1, 2), sample([0], false, 0, 2),
+      sample([5], false, 1, 3), sample([0], false, 0, 3),
+    ];
+    const r = evaluateHypothesisWalkForward(samples, (f) => f.f === 1, 0, 1, 4, opts);
+    expect(r.positiveTestFolds).toBe(2);
+    expect(r.verdict).toBe('no');
+  });
+
+  it('marks a rule thin when any test fold is too small', () => {
+    const samples: AlphaSample[] = [
+      sample([0], false, 0, 0), sample([5], false, 1, 1), sample([5], false, 1, 2),
+    ];
+    const r = evaluateHypothesisWalkForward(samples, (f) => f.f === 1, 0, 1, 3, { feeRoundTripPct: 0.4, minHoldout: 2 });
     expect(r.verdict).toBe('thin');
   });
 });

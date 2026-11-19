@@ -5,6 +5,8 @@ import { isValidCandle, type Candle } from './candles';
 export interface AlphaSample {
   pair: string;
   isHoldout: boolean;
+  /** Chronological block index within the pair, used for walk-forward folds. */
+  fold: number;
   close: number;
   /** Forward percentage returns, one entry per configured horizon. */
   forward: number[];
@@ -79,6 +81,67 @@ export function quantileCuts(values: readonly number[], buckets = 5): number[] {
     cuts.push(sorted[Math.min(sorted.length - 1, Math.floor((i / buckets) * sorted.length))]);
   }
   return cuts;
+}
+
+/**
+ * Chronological block index for a sample at `index` of a series of `length`.
+ * Folds are equal-width, time-ordered blocks; used for walk-forward validation.
+ */
+export function foldOfIndex(index: number, length: number, folds = 5): number {
+  if (length <= 0 || folds < 2) return 0;
+  return Math.min(folds - 1, Math.floor((index / length) * folds));
+}
+
+export interface WalkForwardFold {
+  fold: number;
+  trainCount: number;
+  testCount: number;
+  netTrainPct: number;
+  netTestPct: number;
+}
+
+export interface WalkForwardResult {
+  folds: WalkForwardFold[];
+  positiveTestFolds: number;
+  totalTestFolds: number;
+  meanNetTestPct: number;
+  verdict: HypothesisVerdict;
+}
+
+/**
+ * Walk-forward check: split the samples into `folds` chronological blocks and, for each block
+ * after the first, train on everything before it and score the block itself. A rule only earns
+ * CANDIDATE when the net-of-cost mean is positive in EVERY test block (and each block has enough
+ * samples). This is stricter than one 70/30 split: a rule that only worked in one regime fails.
+ */
+export function evaluateHypothesisWalkForward(
+  samples: readonly AlphaSample[],
+  predicate: (features: Record<string, number | string>) => boolean,
+  horizonIndex: number,
+  horizonCount: number,
+  folds: number,
+  opts: { feeRoundTripPct: number; minHoldout: number },
+): WalkForwardResult {
+  const results: WalkForwardFold[] = [];
+  for (let k = 1; k < folds; k++) {
+    const train = samples.filter((s) => s.fold < k && predicate(s.features));
+    const test = samples.filter((s) => s.fold === k && predicate(s.features));
+    results.push({
+      fold: k,
+      trainCount: train.length,
+      testCount: test.length,
+      netTrainPct: (meanForwardVector(train, horizonCount)[horizonIndex] ?? 0) - opts.feeRoundTripPct,
+      netTestPct: (meanForwardVector(test, horizonCount)[horizonIndex] ?? 0) - opts.feeRoundTripPct,
+    });
+  }
+  const positiveTestFolds = results.filter((f) => f.netTestPct > 0).length;
+  const meanNetTestPct = results.length
+    ? results.reduce((sum, f) => sum + f.netTestPct, 0) / results.length
+    : 0;
+  let verdict: HypothesisVerdict = 'no';
+  if (!results.length || results.some((f) => f.testCount < opts.minHoldout)) verdict = 'thin';
+  else if (positiveTestFolds === results.length && meanNetTestPct > 0) verdict = 'CANDIDATE';
+  return { folds: results, positiveTestFolds, totalTestFolds: results.length, meanNetTestPct, verdict };
 }
 
 export type HypothesisVerdict = 'CANDIDATE' | 'no' | 'thin';
