@@ -9,8 +9,8 @@ import { errorMessage, HttpError } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
-import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
+import { selectUniverse, universeDue, universeShortfall } from '../../shared/universe';
+import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, signalExitCoversCosts, stopCoversCostGate, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -196,7 +196,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           });
         }
         return result;
-      }, (r) => ({ mode: params.universeMode, members: r.members.map((m) => m.pair_id), added: r.added, removed: r.removed, eligible: r.eligible, rejected: r.rejected }));
+      }, (r) => ({
+        mode: params.universeMode, members: r.members.map((m) => m.pair_id), added: r.added, removed: r.removed,
+        eligible: r.eligible, rejected: r.rejected,
+        // A universe that silently collapses to a handful of pairs looks identical to a healthy one in
+        // every downstream step. Report the shortfall in the run's step detail so it is visible in the
+        // admin UI and execution log, without turning a full-but-smaller universe into a failed run.
+        underfilled: universeShortfall(r, params, pairs.filter((p) => p.is_tracked).length),
+      }));
     }
 
     // 1c. Check actual higher-timeframe coverage on every run. The legacy timestamp
@@ -746,6 +753,25 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               target_distance_pct: fill > 0 ? (stops.takeProfit - fill) / fill * 100 : 0,
               spread_to_stop_pct: stopDistance > 0 ? spread / stopDistance * 100 : 0,
               ask_drift_pct: Number(s.price) > 0 ? (t.ask - Number(s.price)) / Number(s.price) * 100 : 0,
+              slippage_bps: slip,
+              fee_pct: feePct,
+            });
+            continue;
+          }
+          // A stop inside the round-trip cost band is triggered by spread and slippage rather than by
+          // the trade's direction, so the realised hit rate collapses even when the entry is right.
+          const spreadPctNow = (t.ask + t.bid) > 0 ? (t.ask - t.bid) / ((t.ask + t.bid) / 2) * 100 : 0;
+          const stopCostGate = stopCoversCostGate(fill, stops.stopLoss, roundTripCostPct(feePct, slip, spreadPctNow));
+          if (stopCostGate) {
+            rejectEntry(s, 'economics_gate', stopCostGate, {
+              bid_price: t.bid,
+              ask_price: t.ask,
+              entry_price: fill,
+              stop_price: stops.stopLoss,
+              target_price: stops.takeProfit,
+              stop_distance_pct: (fill - stops.stopLoss) / fill * 100,
+              round_trip_cost_pct: roundTripCostPct(feePct, slip, spreadPctNow),
+              spread_pct: spreadPctNow,
               slippage_bps: slip,
               fee_pct: feePct,
             });

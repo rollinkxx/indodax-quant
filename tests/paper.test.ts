@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buyFillPrice, computeStats, computeStops, effectiveFeePct, entryFeePct, exitReason, feeFor, netRewardRiskDiagnostics, positionSize, riskState, round, roundDown, roundTripPnl, sellFillPrice } from '../shared/paper';
+import { breakEvenWinRatePct, buyFillPrice, computeStats, computeStops, effectiveFeePct, entryFeePct, exitReason, feeFor, netRewardRiskDiagnostics, positionSize, riskState, round, roundDown, roundTripPnl, sellFillPrice, stopCoversCostGate } from '../shared/paper';
 import { DEFAULT_PARAMS } from '../shared/strategy';
 
 const P = DEFAULT_PARAMS;
@@ -156,5 +156,69 @@ describe('risk management', () => {
     expect(s).toMatchObject({ trades: 3, wins: 2, losses: 1, totalPnl: 100, profitFactor: 3, best: 100, worst: -50 });
     expect(s.winRate).toBeCloseTo(66.67, 1);
     expect(computeStats([]).trades).toBe(0);
+  });
+});
+
+describe('stopCoversCostGate', () => {
+  // 0.2% taker fee each way plus 10bps slippage each way = 0.6% round trip.
+  const roundTrip = 0.6;
+  it('rejects a stop narrower than the round trip', () => {
+    // hypeidr in production: 0.428% stop against a 0.598% round trip. The exit side alone costs
+    // more than the stop can ever capture, so no signal quality could make this trade profitable.
+    expect(stopCoversCostGate(1000, 995.72, roundTrip)).toBe('stop_below_round_trip_cost');
+  });
+  it('accepts a stop that clears the round trip', () => {
+    expect(stopCoversCostGate(1000, 960, roundTrip)).toBeNull();
+  });
+  it('rejects a stop at or above the entry as invalid rather than silently passing', () => {
+    expect(stopCoversCostGate(1000, 1000, roundTrip)).toBe('invalid_stop');
+    expect(stopCoversCostGate(1000, 1010, roundTrip)).toBe('invalid_stop');
+  });
+});
+
+describe('breakEvenWinRatePct', () => {
+  it('a symmetric bracket needs a 50% hit rate', () => {
+    expect(breakEvenWinRatePct(5, -5)).toBeCloseTo(50, 6);
+  });
+  it('a 0.5 reward/risk bracket needs a 67% hit rate', () => {
+    // This is the live 9x stop / 5x target shape: +5 on a win, -9 on a loss.
+    expect(breakEvenWinRatePct(5, -9)).toBeCloseTo(64.29, 1);
+  });
+  it('a 3:1 bracket breaks even near 25%', () => {
+    expect(breakEvenWinRatePct(12, -4)).toBeCloseTo(25, 6);
+  });
+  it('returns null for degenerate inputs instead of NaN', () => {
+    expect(breakEvenWinRatePct(0, 0)).toBeNull();
+    expect(breakEvenWinRatePct(NaN, -1)).toBeNull();
+  });
+});
+
+describe('computeStats break-even metrics', () => {
+  it('reports the hit rate the observed win/loss sizes require', () => {
+    // 2 wins of +10% and 8 losses of -5%: break-even = 5/(10+5) = 33.3%, but the realised win
+    // rate is 20%, so the sample is losing and the gap is visible at a glance.
+    const closed = [
+      ...Array.from({ length: 2 }, () => ({ realized_pnl: 100, cost_basis: 1000 })),
+      ...Array.from({ length: 8 }, () => ({ realized_pnl: -50, cost_basis: 1000 })),
+    ];
+    const s = computeStats(closed);
+    expect(s.winRate).toBeCloseTo(20, 6);
+    expect(s.avgWinPct).toBeCloseTo(10, 6);
+    expect(s.avgLossPct).toBeCloseTo(-5, 6);
+    expect(s.breakEvenWinRate).toBeCloseTo(33.33, 1);
+    expect(s.winRate).toBeLessThan(s.breakEvenWinRate!);
+  });
+  it('a sample above its break-even rate is profitable', () => {
+    const closed = [
+      ...Array.from({ length: 6 }, () => ({ realized_pnl: 100, cost_basis: 1000 })),
+      ...Array.from({ length: 4 }, () => ({ realized_pnl: -100, cost_basis: 1000 })),
+    ];
+    const s = computeStats(closed);
+    expect(s.breakEvenWinRate).toBeCloseTo(50, 6);
+    expect(s.winRate).toBeGreaterThan(s.breakEvenWinRate!);
+    expect(s.totalPnl).toBeGreaterThan(0);
+  });
+  it('is null with no trades rather than NaN', () => {
+    expect(computeStats([]).breakEvenWinRate).toBeNull();
   });
 });

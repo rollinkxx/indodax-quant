@@ -44,6 +44,28 @@ export function spreadPct(bid: number, ask: number): number {
   return mid > 0 ? (ask - bid) / mid * 100 : Infinity;
 }
 
+/**
+ * Explain why the dynamic universe is smaller than configured, or null when it is full.
+ *
+ * `universeSize` is a target, not a guarantee: volume and spread filters can leave far fewer
+ * eligible pairs than requested (in production 7 of 25 were eligible because the 1e9 IDR volume
+ * floor rejected 397 of 431 pairs). Without this signal the shortfall is invisible — the engine
+ * simply analyses fewer pairs and reports success.
+ */
+export function universeShortfall(
+  result: UniverseResult,
+  params: Pick<StrategyParams, 'universeMode' | 'universeSize' | 'universeMinVolumeIdr'>,
+  pinnedCount: number,
+): string | null {
+  if (params.universeMode !== 'dynamic') return null;
+  const held = result.members.length + pinnedCount;
+  if (held >= params.universeSize) return null;
+  const top = Object.entries(result.rejected).sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([why, n]) => `${why}=${n}`).join(', ');
+  return `universe_underfilled: ${held}/${params.universeSize} pairs eligible`
+    + ` (minVolume=${params.universeMinVolumeIdr} IDR; rejected: ${top || 'none'})`;
+}
+
 export function selectUniverse(u: UniverseInput): UniverseResult {
   const p = u.params;
   const rejected: Record<string, number> = {};

@@ -74,6 +74,44 @@ export interface Stops {
   method: 'atr' | 'percent';
 }
 
+/**
+ * Break-even win rate implied by a bracket, in percent.
+ *
+ * With net win/loss magnitudes W and L, expectancy is zero at p*W - (1-p)*L = 0, i.e.
+ * p = L / (W + L). The caller supplies net (after-cost) magnitudes, so the result is the hit rate
+ * the bracket needs to break even. A bracket whose break-even rate exceeds the hit rate the entry
+ * signal actually produces is a guaranteed loser regardless of market direction.
+ */
+export function breakEvenWinRatePct(avgWinPct: number, avgLossPct: number): number | null {
+  const win = Math.abs(avgWinPct);
+  const loss = Math.abs(avgLossPct);
+  if (!Number.isFinite(win) || !Number.isFinite(loss) || win + loss <= 0) return null;
+  return loss / (win + loss) * 100;
+}
+
+/**
+ * Reject a stop that sits inside the round-trip cost band.
+ *
+ * This is a risk rule, not a proof of impossibility: a stop narrower than the cost of entering and
+ * exiting can still pay for itself if the target is wide enough, because expectancy is
+ * p*target - (1-p)*stop - cost. What makes it unusable is that the stop is then inside the spread
+ * and slippage band, so it is triggered by cost rather than by the direction of the trade, and the
+ * realised hit rate collapses. The genuinely unprovable-in-advance case is handled separately by
+ * the net-reward gate, which rejects a target that cannot cover the round trip at all.
+ *
+ * Returns a skip reason or null.
+ */
+export function stopCoversCostGate(
+  entry: number,
+  stopLoss: number,
+  roundTripPct: number,
+): string | null {
+  if (!(entry > 0) || !(stopLoss > 0) || stopLoss >= entry) return 'invalid_stop';
+  const stopPct = (entry - stopLoss) / entry * 100;
+  // Require the stop to be at least the round-trip cost, so a stop-out is a loss of price, not of fees.
+  return stopPct < roundTripPct ? 'stop_below_round_trip_cost' : null;
+}
+
 export function computeStops(entry: number, atrValue: number | null, p: StrategyParams): Stops {
   if (atrValue !== null && atrValue > 0) {
     const sl = entry - atrValue * p.atrStopMultiplier;
@@ -404,6 +442,15 @@ export interface PerformanceStats {
   profitFactor: number | null;
   best: number;
   worst: number;
+  /** Mean winning trade return, as a percentage of cost basis. */
+  avgWinPct: number;
+  /** Mean losing trade return (negative), as a percentage of cost basis. */
+  avgLossPct: number;
+  /**
+   * Hit rate the observed win/loss sizes require to break even. Compare against `winRate`:
+   * a strategy is profitable exactly when winRate > breakEvenWinRate.
+   */
+  breakEvenWinRate: number | null;
 }
 
 export function computeStats(closed: ClosedTrade[]): PerformanceStats {
@@ -411,6 +458,9 @@ export function computeStats(closed: ClosedTrade[]): PerformanceStats {
   const rets = closed.map((c, i) => (Number(c.cost_basis) > 0 ? pnls[i] / Number(c.cost_basis) * 100 : 0));
   const wins = pnls.filter((x) => x > 0);
   const losses = pnls.filter((x) => x <= 0);
+  // Win/loss sizes are measured as returns so the break-even rate is comparable across position sizes.
+  const winRets = rets.filter((_, i) => pnls[i] > 0);
+  const lossRets = rets.filter((_, i) => pnls[i] <= 0);
   const grossWin = wins.reduce((a, b) => a + b, 0);
   const grossLoss = -losses.reduce((a, b) => a + b, 0);
   const total = pnls.reduce((a, b) => a + b, 0);
@@ -425,5 +475,11 @@ export function computeStats(closed: ClosedTrade[]): PerformanceStats {
     profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? null : 0,
     best: pnls.length ? Math.max(...pnls) : 0,
     worst: pnls.length ? Math.min(...pnls) : 0,
+    avgWinPct: winRets.length ? winRets.reduce((a, b) => a + b, 0) / winRets.length : 0,
+    avgLossPct: lossRets.length ? lossRets.reduce((a, b) => a + b, 0) / lossRets.length : 0,
+    breakEvenWinRate: breakEvenWinRatePct(
+      winRets.length ? winRets.reduce((a, b) => a + b, 0) / winRets.length : 0,
+      lossRets.length ? lossRets.reduce((a, b) => a + b, 0) / lossRets.length : 0,
+    ),
   };
 }

@@ -14,7 +14,8 @@ import {
 import { applyBacktestOverrides, parseBacktestOverrides } from '../shared/backtestOverrides';
 import {
   buyFillPrice, computeStats, computeStops, dynamicSlippageBps, effectiveFeePct, feeFor,
-  netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, signalExitCoversCosts, trailingStop,
+  netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, signalExitCoversCosts,
+  stopCoversCostGate, trailingStop,
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
@@ -22,7 +23,7 @@ import { evaluateStrategyEvidence } from '../shared/strategyEvidence';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
 import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, createRequestStartLimiter, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
-import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
+import { DEFAULT_STOP_OVERSHOOT_PCT, finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -201,6 +202,7 @@ export function simulate(
   mode: ExperimentMode = 'crossover',
   startIndex = 0,
   pairTakerFeePct: number | null = null,
+  stopOvershootPct: number = DEFAULT_STOP_OVERSHOOT_PCT,
 ): SimTrade[] {
   // Infer the bar interval from the data instead of assuming 5m. The gap filler, the MTF bucket
   // aggregation, and the time stop all scale with it, so hardcoding 300 silently injected 11
@@ -252,7 +254,7 @@ export function simulate(
     if (pos) {
       // The entry candle is deliberately processed on the next loop iteration;
       // if both protective levels are touched, stop loss takes precedence.
-      const protectiveExit = resolveProtectiveExit(pos.sl, pos.tp, c, pos.entry);
+      const protectiveExit = resolveProtectiveExit(pos.sl, pos.tp, c, pos.entry, stopOvershootPct);
       let exit: number | null = protectiveExit?.price ?? null;
       let reason = protectiveExit?.reason ?? '';
       if (exit === null) {
@@ -303,6 +305,8 @@ export function simulate(
     if (next.source === 'synthetic' || !isValidCandle(next) || next.v <= 0) continue;
     const fill = buyFillPrice(next.o, slip);
     const stops = computeStops(fill, rows[i].atr14, p);
+    // Same structural gate as production: a stop inside the round trip can never pay for itself.
+    if (stopCoversCostGate(fill, stops.stopLoss, roundTripCostPct(feePct, slip))) continue;
     if (netRewardRiskGate({
       entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
       feePct, exitSlippageBps: slip, minRatio: p.minNetRewardRiskRatio,

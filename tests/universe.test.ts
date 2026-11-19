@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectUniverse, spreadPct, universeDue, type UniverseInput, type UniverseTicker } from '../shared/universe';
+import { selectUniverse, spreadPct, universeDue, universeShortfall, type UniverseInput, type UniverseTicker } from '../shared/universe';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../shared/strategy';
 
 const NOW = 1_800_000_000;
@@ -114,5 +114,29 @@ describe('MTF + universe parameters', () => {
   });
   it('invalid stored values fall back per key', () => {
     expect(mergeParams({ mtfMode: 'bogus', universeSize: 3 })).toMatchObject({ mtfMode: 'filter', universeSize: 3 });
+  });
+});
+
+describe('universeShortfall', () => {
+  const result = (members: number, rejected: Record<string, number> = {}) => ({
+    members: Array.from({ length: members }, (_, i) => ({ pair_id: `p${i}`, rank: i + 1, vol_idr: 1e10, spread_pct: 0.1 })),
+    added: [], removed: [], eligible: members, rejected,
+  });
+  const params = { universeMode: 'dynamic' as const, universeSize: 25, universeMinVolumeIdr: 1e9 };
+
+  it('is silent when the universe is full', () => {
+    expect(universeShortfall(result(25), params, 0)).toBeNull();
+    expect(universeShortfall(result(20), params, 5)).toBeNull();
+  });
+  it('reports the shortfall with the dominant rejection reasons', () => {
+    const msg = universeShortfall(result(7, { low_volume: 397, wide_spread: 12 }), params, 0);
+    // Production collapsed to 7 of 25 pairs because the volume floor rejected 397 of 431 pairs;
+    // that must be visible rather than silently shrinking the analysed sample.
+    expect(msg).toContain('7/25');
+    expect(msg).toContain('low_volume=397');
+    expect(msg).toContain('1000000000');
+  });
+  it('does not apply to manual mode', () => {
+    expect(universeShortfall(result(1), { ...params, universeMode: 'manual' }, 0)).toBeNull();
   });
 });

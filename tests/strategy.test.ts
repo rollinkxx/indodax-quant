@@ -273,9 +273,15 @@ describe('params validation', () => {
     expect(validateBracketEconomics(mergeParams({
       atrStopMultiplier: 9, atrTakeProfitMultiplier: 5, minNetRewardRiskRatio: 0.8,
     })).join()).toMatch(/no entry can pass the net reward\/risk gate/);
-    // The live 9/5 bracket against its 0.4 floor is permissible, if marginal.
+    // A gross ratio below 1 is NOT rejected: every bracket has zero expectancy before costs, so the
+    // ratio only sets the hit rate needed, it does not decide the sign. On real candles the 9/5
+    // bracket (0.56) was the best performer measured, so rejecting it would block the strongest
+    // configuration. Only the genuinely impossible case - gross below the net floor - is refused.
     expect(validateBracketEconomics(mergeParams({
       atrStopMultiplier: 9, atrTakeProfitMultiplier: 5, minNetRewardRiskRatio: 0.4,
+    }))).toEqual([]);
+    expect(validateBracketEconomics(mergeParams({
+      atrStopMultiplier: 2, atrTakeProfitMultiplier: 4, minNetRewardRiskRatio: 0.4,
     }))).toEqual([]);
     expect(validateBracketEconomics(DEFAULT_PARAMS)).toEqual([]);
     // mergeParams must keep accepting the bracket so a stored config is never reset wholesale.

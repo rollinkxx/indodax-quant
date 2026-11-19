@@ -160,18 +160,21 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(r.status).toBe('SUCCESS');
     expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
     const actions = (r.steps as any)?.paper_trading?.info?.actions as string[];
-    // At the real 0.2% taker fee a 0.5xATR target cannot even cover the round trip, so the
-    // economics gate rejects it as net_reward_non_positive (stronger than below_minimum).
-    expect(actions).toContain('skip btcidr: net_reward_non_positive');
+    // A 0.5xATR target cannot cover the round trip, and the 1.5xATR stop (~0.43% of price) is
+    // itself narrower than the 0.6% round trip at the real 0.2% taker fee. The stop-cost gate
+    // fires first because it is the more fundamental impossibility.
+    expect(actions).toContain('skip btcidr: stop_below_round_trip_cost');
     const paperInfo = (r.steps as any)?.paper_trading?.info;
     expect(paperInfo).toMatchObject({ buy_signals_received: 1, entries_opened: 0 });
     expect(paperInfo.entry_rejections).toContainEqual(expect.objectContaining({
-      pair_id: 'btcidr', signal_id: 99, stage: 'economics_gate', reason: 'net_reward_non_positive',
+      pair_id: 'btcidr', signal_id: 99, stage: 'economics_gate', reason: 'stop_below_round_trip_cost',
     }));
-    expect(paperInfo.entry_rejection_counts.net_reward_non_positive).toBe(1);
-    expect(paperInfo.entry_rejections[0].metrics.net_reward_risk_ratio).toBeLessThan(0);
-    expect(paperInfo.entry_rejections[0].metrics.net_reward_per_unit).toBeDefined();
-    expect(paperInfo.entry_rejections[0].metrics.net_risk_per_unit).toBeDefined();
+    expect(paperInfo.entry_rejection_counts.stop_below_round_trip_cost).toBe(1);
+    // The rejection carries the numbers behind it, so the stop and the cost can be compared directly.
+    expect(paperInfo.entry_rejections[0].metrics.stop_distance_pct).toBeGreaterThan(0);
+    expect(paperInfo.entry_rejections[0].metrics.round_trip_cost_pct).toBeGreaterThan(
+      paperInfo.entry_rejections[0].metrics.stop_distance_pct,
+    );
   });
 
 
@@ -332,8 +335,11 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
     const taker = setup({ mtfMode: 'off', newSignals: [signal], pairTakerFee: 0.2, strategyParams: { feeModel: 'pair_taker' } });
     const rt = await run(taker);
     expect(taker.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    // The 1.5xATR stop (~0.45%) sits below the 0.6% round trip once the real 0.2% taker fee is
+    // charged, while the 0.00555% assumption left room above it. Rejection is therefore caused by
+    // the true fee, which is the point of the test; the gate that fires is the stop-cost one.
     expect((rt.steps as any).paper_trading.info.entry_rejections).toContainEqual(expect.objectContaining({
-      pair_id: 'btcidr', signal_id: 203, stage: 'economics_gate', reason: 'net_reward_risk_below_minimum',
+      pair_id: 'btcidr', signal_id: 203, stage: 'economics_gate', reason: 'stop_below_round_trip_cost',
     }));
   });
 

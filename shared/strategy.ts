@@ -251,18 +251,27 @@ export function validateParams(input: Record<string, unknown>): string[] {
 /**
  * Cross-field economics check that only makes sense on a complete parameter set.
  *
- * Costs only ever lower reward/risk, so a bracket whose *gross* ratio is under the net minimum
- * can never pass the entry gate: every signal is rejected as net_reward_risk_below_minimum and
- * the engine silently stops trading. On 2026-11-19 the active 9/5 bracket sat at 0.556 gross
- * against a 0.4 floor and could only trade on the 16% of bars whose ATR was high enough for
- * costs to matter less than the ratio gap.
+ * Costs only ever lower reward/risk, so a bracket whose *gross* ratio is under the net minimum can
+ * never pass the entry gate: every signal would be rejected as net_reward_risk_below_minimum and
+ * the engine would silently stop trading. That is the only *provable* config-level failure, and it
+ * is why this runs where a human saves a config rather than inside mergeParams() (which validates
+ * the full stored set and would reset every other parameter on any error).
  *
- * Deliberately not part of validateParams: mergeParams() validates the full stored set and
- * falls back to DEFAULT_PARAMS on any error, so an impossible stored bracket would silently
- * reset every other parameter instead of surfacing. This runs where a human saves a config.
+ * What this deliberately does NOT reject is a gross ratio at or below 1. In a driftless market the
+ * chance of touching the target before the stop is stop/(stop+target), so every bracket has exactly
+ * zero expectancy before costs and -cost after; the ratio only moves the hit rate needed to break
+ * even, it does not decide the sign. Measured on this venue's own candles, the 9x/5x bracket
+ * (gross 0.56) actually produced the *best* profit factor of every bracket tested (0.893 at a 68%
+ * hit rate) while a 2x/4x bracket at gross 2.0 produced 0.368. Rejecting low ratios here would have
+ * blocked the strongest configuration and admitted weaker ones.
+ *
+ * The impossibility that *is* real depends on volatility, not on the ratio: a stop or target
+ * narrower than the round trip cannot be profitable at any hit rate. That requires the live ATR, so
+ * it is enforced per trade by `stopCoversCostGate` in the entry path, not guessed here.
  */
 export function validateBracketEconomics(merged: StrategyParams): string[] {
   if (!(merged.atrStopMultiplier > 0)) return ['atrStopMultiplier must be positive'];
+  if (!(merged.atrTakeProfitMultiplier > 0)) return ['atrTakeProfitMultiplier must be positive'];
   const grossRatio = merged.atrTakeProfitMultiplier / merged.atrStopMultiplier;
   if (grossRatio < merged.minNetRewardRiskRatio) {
     return [`atrTakeProfitMultiplier / atrStopMultiplier (${grossRatio.toFixed(3)}) is below minNetRewardRiskRatio (${merged.minNetRewardRiskRatio}); no entry can pass the net reward/risk gate`];
