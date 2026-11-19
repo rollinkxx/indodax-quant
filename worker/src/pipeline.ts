@@ -611,7 +611,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (r?.ok) {
           open.delete(pos.pair_id);
           actions.push(`close ${pos.pair_id} ${reason}`);
-          notes.push({ event_type: reason === 'STOP_LOSS' ? 'stop_loss' : reason === 'TAKE_PROFIT' ? 'take_profit' : 'paper_sell',
+          notes.push({ event_type: reason === 'STOP_LOSS' ? 'stop_loss' : reason === 'TAKE_PROFIT' ? 'take_profit' : reason === 'TRAILING_STOP' ? 'trailing_stop' : 'paper_sell',
             dedupe_key: `close:${pos.id}`, message: messages.paperSell({ pair_id: pos.pair_id, reason, qty: Number(pos.qty), fill, pnl: Number(r.realized_pnl) }) });
         } else {
           actions.push(`close ${pos.pair_id} rejected: ${r?.reason}`);

@@ -45,6 +45,7 @@ export function Badge({ color = 'gray', children }: { color?: keyof typeof badge
 export function statusColor(s: string | undefined): string {
   switch (s) {
     case 'RUNNING': case 'SUCCESS': case 'SENT': case 'BUY': case 'TAKE_PROFIT': case 'ok': return 'green';
+    case 'TRAILING_STOP': return 'blue';
     case 'KILLED': case 'FAILED': case 'SELL': case 'STOP_LOSS': case 'MAX_DRAWDOWN': case 'KILL_SWITCH': return 'red';
     case 'PARTIAL': case 'SKIPPED': case 'PENDING': case 'STOPPED': return 'yellow';
     default: return 'gray';

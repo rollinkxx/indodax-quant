@@ -222,7 +222,7 @@ export function simulate(
     if (pos) {
       // The entry candle is deliberately processed on the next loop iteration;
       // if both protective levels are touched, stop loss takes precedence.
-      const protectiveExit = resolveProtectiveExit(pos.sl, pos.tp, c);
+      const protectiveExit = resolveProtectiveExit(pos.sl, pos.tp, c, pos.entry);
       let exit: number | null = protectiveExit?.price ?? null;
       let reason = protectiveExit?.reason ?? '';
       if (exit === null) {

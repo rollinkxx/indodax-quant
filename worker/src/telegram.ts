@@ -63,8 +63,11 @@ export const messages = {
     ].join('\n');
   },
   paperSell(o: { pair_id: string; reason: string; qty: number; fill: number; pnl: number }) {
-    const icon = o.reason === 'STOP_LOSS' ? '🛑' : o.reason === 'TAKE_PROFIT' ? '🎯' : '📤';
-    const title = o.reason === 'STOP_LOSS' ? 'STOP LOSS' : o.reason === 'TAKE_PROFIT' ? 'TAKE PROFIT' : `PAPER SELL (${o.reason})`;
+    const icon = o.reason === 'STOP_LOSS' ? '🛑' : o.reason === 'TAKE_PROFIT' ? '🎯' : o.reason === 'TRAILING_STOP' ? '🔒' : '📤';
+    const title = o.reason === 'STOP_LOSS' ? 'STOP LOSS'
+      : o.reason === 'TAKE_PROFIT' ? 'TAKE PROFIT'
+      : o.reason === 'TRAILING_STOP' ? 'TRAILING STOP'
+      : `PAPER SELL (${o.reason})`;
     return [
       `${icon} <b>${title}</b> ${pairLabel(o.pair_id)} <i>(simulasi)</i>`,
       `Qty: ${o.qty} @ ${idr(o.fill)}`,

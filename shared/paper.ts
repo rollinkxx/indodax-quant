@@ -244,7 +244,7 @@ export function netRewardRiskGate(i: NetRewardRiskInput): string | null {
   return netRewardRiskDiagnostics(i).reason;
 }
 
-export type ExitReason = 'STOP_LOSS' | 'TAKE_PROFIT';
+export type ExitReason = 'STOP_LOSS' | 'TRAILING_STOP' | 'TAKE_PROFIT';
 
 /** Ratchets the stop up (never down) once price is far enough above entry. Returns the new stop or null. */
 export function trailingStop(
@@ -272,11 +272,23 @@ export function exposureAllows(openCost: number, newCost: number, equity: number
   return equity > 0 && openCost + newCost <= equity * p.maxTotalExposurePct / 100;
 }
 
-export function exitReason(pos: { stop_loss: number | string | null; take_profit: number | string | null }, bid: number): ExitReason | null {
-  const sl = pos.stop_loss === null ? null : Number(pos.stop_loss);
-  const tp = pos.take_profit === null ? null : Number(pos.take_profit);
-  if (sl !== null && bid <= sl) return 'STOP_LOSS';
+/**
+ * Protective exit for the current quote. A stop that has been ratcheted above entry by the
+ * trailing stop is reported as TRAILING_STOP, not STOP_LOSS: the exit is still protective, but
+ * the trade is a winner and must not be counted as a loss in win-rate or expectancy.
+ * TAKE_PROFIT is checked first so a gap through both levels is attributed to the target.
+ */
+export function exitReason(
+  pos: { entry_price?: number | string; stop_loss: number | string | null; take_profit: number | string | null },
+  bid: number,
+): ExitReason | null {
+  const sl = pos.stop_loss === null || pos.stop_loss === undefined ? null : Number(pos.stop_loss);
+  const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
   if (tp !== null && bid >= tp) return 'TAKE_PROFIT';
+  if (sl !== null && bid <= sl) {
+    const entry = pos.entry_price === undefined ? null : Number(pos.entry_price);
+    return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';
+  }
   return null;
 }
 
