@@ -34,6 +34,33 @@ export interface EngineEntryRejection {
   metrics: Record<string, number>;
 }
 
+/**
+ * Rejection reasons that mean "the engine could not evaluate this pair", not "the engine looked and
+ * declined". A run made entirely of these is not a healthy idle HOLD: it is a run where missing or
+ * malformed inputs blocked every candidate, and it must be visible as such rather than blending into
+ * normal filtering.
+ */
+export const STRUCTURAL_REJECTION_REASONS: readonly string[] = [
+  'stale_ticker',
+  'missing_pair_fee',
+  'invalid_reward_risk_inputs',
+  'stop_out_of_bounds',
+  // Sizing returns these when the inputs themselves are unusable. `below_min_notional` and
+  // `insufficient_cash` are deliberately absent: those are the engine declining a valid setup.
+  'invalid_inputs',
+  'invalid_stop',
+  // paper_open_position() rejects a malformed order; the other RPC reasons (duplicate,
+  // position_already_open, account_not_running) describe account/race state, not bad inputs.
+  'invalid_order',
+  // Fallbacks used when the callee returns no reason of its own.
+  'sizing_rejected',
+  'paper_open_rejected',
+];
+
+export function isStructuralRejection(reason: string): boolean {
+  return STRUCTURAL_REJECTION_REASONS.includes(reason);
+}
+
 export interface EngineDecisions {
   scheduledTime: string | null;
   status: string | null;
@@ -49,6 +76,10 @@ export interface EngineDecisions {
   mtfBlocked: Record<string, string>;
   entryRejections: EngineEntryRejection[];
   entryRejectionCounts: Record<string, number>;
+  /** Rejections caused by unusable inputs rather than by the strategy declining to trade. */
+  structuralRejections: number;
+  /** True when at least one candidate was rejected for a structural reason this run. */
+  structurallyBlocked: boolean;
   riskBlockReasons: string[];
   actions: string[];
   degraded: string[];
@@ -132,6 +163,11 @@ export function buildEngineDecisions(row: unknown): EngineDecisions {
     .map(entryRejection)
     .filter((x): x is EngineEntryRejection => x !== null);
 
+  // The pipeline records the count itself; fall back to classifying the rejection list so an older
+  // stored run (before WP1g) still renders correctly.
+  const recordedStructural = asNumber(paperInfo.structural_rejections);
+  const structuralRejections = recordedStructural ?? entryRejections.filter((r) => isStructuralRejection(r.reason)).length;
+
   const entryRejectionCounts: Record<string, number> = {};
   if (isRecord(paperInfo.entry_rejection_counts)) {
     for (const [k, v] of Object.entries(paperInfo.entry_rejection_counts)) { const n = asNumber(v); if (n !== null) entryRejectionCounts[k] = n; }
@@ -151,6 +187,8 @@ export function buildEngineDecisions(row: unknown): EngineDecisions {
     mtfBlocked,
     entryRejections,
     entryRejectionCounts,
+    structuralRejections,
+    structurallyBlocked: structuralRejections > 0,
     riskBlockReasons: stringList(paperInfo.risk_block_reasons),
     actions: stringList(paperInfo.actions),
     degraded: stringList(paperInfo.degraded),

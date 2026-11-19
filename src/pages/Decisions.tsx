@@ -19,6 +19,7 @@ interface Decisions {
   pairs: PairDecision[]; stageCounts: Record<string, number>;
   mtfBlocked: Record<string, string>; entryRejections: EntryRejection[];
   entryRejectionCounts: Record<string, number>; riskBlockReasons: string[];
+  structuralRejections?: number; structurallyBlocked?: boolean;
   actions: string[]; degraded: string[];
 }
 
@@ -138,11 +139,16 @@ export default function Decisions() {
               sub={`${active.entriesOpened} entri dibuka • ${active.openPositions} posisi terbuka`} />
             <Stat label="Alasan ditolak" value={num(Object.values(active.entryRejectionCounts).reduce((a, b) => a + b, 0), 0)}
               sub={Object.keys(active.entryRejectionCounts)[0] ? humanize(Object.keys(active.entryRejectionCounts)[0]) : 'tidak ada penolakan entri'} />
+            <Stat label="Ditolak karena data" value={num(active.structuralRejections ?? 0, 0)}
+              sub={(active.structuralRejections ?? 0) > 0 ? 'input tidak bisa dipakai — bukan HOLD normal' : 'semua input valid'} />
           </div>
 
-          {(active.riskBlockReasons.length > 0 || active.degraded.length > 0) && (
+          {(active.riskBlockReasons.length > 0 || active.degraded.length > 0 || active.structurallyBlocked) && (
             <Card title="Peringatan run">
               <ul className="space-y-1 text-sm">
+                {active.structurallyBlocked && (
+                  <li className="flex gap-2 text-amber-300"><Icon name="alert" className="mt-0.5 size-4 shrink-0" />{active.structuralRejections} entri ditolak karena data tidak valid (ticker/fee/bracket); ini bukan HOLD biasa.</li>
+                )}
                 {active.riskBlockReasons.map((r, i) => (
                   <li key={`r${i}`} className="flex gap-2 text-amber-300"><Icon name="alert" className="mt-0.5 size-4 shrink-0" />Risiko portofolio memblokir entri: {humanize(r)}</li>
                 ))}

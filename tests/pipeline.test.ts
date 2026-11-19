@@ -406,3 +406,108 @@ describe('pipeline: persisted SELL exits (F3)', () => {
     expect(r.errors).toContainEqual(expect.stringContaining('pending sell lookup failed'));
   });
 });
+
+describe('pipeline: config hygiene telemetry (WP1b)', () => {
+  const run = (o: ReturnType<typeof setup>) => runPipeline(env(), {
+    scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000,
+  });
+
+  it('reports a rejected stored key and makes the run PARTIAL instead of silently using the default', async () => {
+    // TP=25 exceeds the 20 cap. Before WP1b this became the default 3 with no trace and the run
+    // still reported SUCCESS, so a bracket that could never pass the gate looked healthy.
+    const o = setup({ mtfMode: 'off', newSignals: [], strategyParams: { atrStopMultiplier: 9, atrTakeProfitMultiplier: 25 } });
+    const result = await run(o);
+    expect(result.status).toBe('PARTIAL');
+    expect((result.errors ?? []).some((e) => e.includes('atrTakeProfitMultiplier'))).toBe(true);
+    const config = (result.steps as any).config;
+    expect(config.info.rejectedKeys.some((r: any) => r.key === 'atrTakeProfitMultiplier')).toBe(true);
+  });
+
+  it('reports a cross-field conflict as a full reset and makes the run PARTIAL', async () => {
+    const o = setup({ mtfMode: 'off', newSignals: [], strategyParams: { emaFast: 15, emaSlow: 12 } });
+    const result = await run(o);
+    expect(result.status).toBe('PARTIAL');
+    expect((result.steps as any).config.info.fullReset).toBe(true);
+    expect((result.errors ?? []).some((e) => e.includes('config_full_reset'))).toBe(true);
+  });
+
+  it('warns about impossible bracket economics without changing the run status', async () => {
+    // gross TP/SL = 0.5/9 << minRR, so no entry can pass the net reward/risk gate. This is a warning:
+    // the engine still computed everything it was asked to compute.
+    const o = setup({ mtfMode: 'off', newSignals: [], strategyParams: { atrStopMultiplier: 9, atrTakeProfitMultiplier: 0.5 } });
+    const result = await run(o);
+    expect(result.status).toBe('SUCCESS');
+    expect((result.steps as any).config.ok).toBe(false);
+    expect((result.steps as any).config.error).toContain('bracket_economics_warning');
+  });
+
+  it('leaves a clean config untouched', async () => {
+    const o = setup({ mtfMode: 'off', newSignals: [], strategyParams: { crossLookback: 2, atrStopMultiplier: 1.5, atrTakeProfitMultiplier: 3 } });
+    const result = await run(o);
+    expect(result.status).toBe('SUCCESS');
+    expect((result.steps as any).config.info.rejectedKeys).toEqual([]);
+    expect((result.steps as any).config.info.fullReset).toBe(false);
+  });
+});
+
+describe('pipeline: stop_out_of_bounds rejection (WP1h, default off)', () => {
+  const run = (o: ReturnType<typeof setup>) => runPipeline(env(), {
+    scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000,
+  });
+  const wideAtrSignal = {
+    id: 301, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+    indicators: { atr14: 100 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+  };
+
+  it('records stop_out_of_bounds and opens nothing when the flag is on', async () => {
+    const o = setup({
+      mtfMode: 'off', newSignals: [wideAtrSignal],
+      strategyParams: { atrStopMultiplier: 9, rejectOutOfBoundsStops: true },
+    });
+    const result = await run(o);
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    const info = (result.steps as any).paper_trading.info;
+    expect(info.entry_rejections.some((r: any) => r.stage === 'stop_out_of_bounds')).toBe(true);
+  });
+
+  it('keeps the legacy percent fallback when the flag is off', async () => {
+    const o = setup({
+      mtfMode: 'off', newSignals: [wideAtrSignal],
+      strategyParams: { atrStopMultiplier: 9, rejectOutOfBoundsStops: false },
+      openResult: { ok: true, position_id: 77, cash_after: 9_700_000 },
+    });
+    const result = await run(o);
+    const info = (result.steps as any).paper_trading.info;
+    expect(info.entry_rejections.some((r: any) => r.stage === 'stop_out_of_bounds')).toBe(false);
+  });
+});
+
+describe('pipeline: 5m quote capture (WP1c)', () => {
+  it('writes one quote per tracked pair per closed 5m bucket', async () => {
+    const { f, rpcs } = setup();
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+    expect(r.errors).toEqual([]);
+
+    const call = rpcs.find((x) => x.fn === 'ingest_quotes_5m');
+    expect(call).toBeTruthy();
+    const quotes = call!.body.p_quotes as any[];
+    expect(quotes.length).toBeGreaterThan(0);
+
+    // Every bucket is aligned to a 5m boundary, and every spread is consistent with its own book.
+    for (const q of quotes) {
+      expect(Date.parse(q.open_time) / 1000 % 300).toBe(0);
+      const mid = (q.bid_close + q.ask_close) / 2;
+      expect(q.ask_close).toBeGreaterThanOrEqual(q.bid_close);
+      expect(q.spread_pct).toBeCloseTo((q.ask_close - q.bid_close) / mid * 100, 8);
+    }
+  });
+
+  it('does not invent a quote for a pair with a stale or crossed ticker', async () => {
+    const { f, rpcs } = setup({ staleTicker: true });
+    await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+    // Every ticker in this fixture is an hour old, so freshTicker rejects all of them and no quote
+    // may be stamped into the current bucket.
+    const quotes = (rpcs.find((x) => x.fn === 'ingest_quotes_5m')?.body.p_quotes ?? []) as any[];
+    expect(quotes).toEqual([]);
+  });
+});

@@ -7,7 +7,8 @@ import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage, HttpError } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
-import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
+import { isStructuralRejection } from '../../shared/engineDecisions';
+import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParamsDetailed, validateBracketEconomics } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
@@ -129,7 +130,18 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   const steps: Record<string, unknown> = {};
   const errors: string[] = [];
   const notes: NotificationItem[] = [];
-  const params = mergeParams(ctx.config);
+  // Config hygiene is reported, not hidden. mergeParams() used to substitute the code default for an
+  // out-of-range stored key and silently reset the whole config on a cross-field conflict, so a
+  // stored bracket that could never pass the net reward/risk gate still reported SUCCESS.
+  const merged = mergeParamsDetailed(ctx.config);
+  const params = merged.params;
+  const configDegraded: string[] = [];
+  if (merged.rejectedKeys.length) {
+    for (const r of merged.rejectedKeys) configDegraded.push(`config_rejected_key:${r.key}:${r.reason}`);
+  }
+  if (merged.fullReset) configDegraded.push('config_full_reset:cross_field_conflict');
+  const bracketProblems = validateBracketEconomics(params);
+  for (const problem of bracketProblems) configDegraded.push(`bracket_economics_warning:${problem}`);
   const nowSec = Math.floor(now() / 1000);
   const nowMin = floorTo(nowSec, 60);
   const account = ctx.account;
@@ -387,6 +399,28 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         p_candles: ingestPayload.candles,
         p_sync: ingestPayload.sync,
       });
+    }, (r) => r);
+
+    // WP1c: persist one quote per pair per closed 5m bucket so backtests can charge the real spread.
+    // market_tickers is pruned at 8 days, far shorter than any meaningful backtest window.
+    await step('store_quotes', async () => {
+      // freshTicker, not the raw map: a stale quote must not be stamped into the current bucket.
+      const bucket = floorTo(nowSec, 300);
+      const quotes = tracked
+        .map(freshTicker)
+        .filter((t): t is ParsedTicker => t !== null)
+        .map((t) => {
+          const mid = (t.bid + t.ask) / 2;
+          return {
+            pair_id: t.pair_id,
+            open_time: iso(bucket),
+            bid_close: t.bid,
+            ask_close: t.ask,
+            spread_pct: mid > 0 ? (t.ask - t.bid) / mid * 100 : 0,
+            captured_at: iso(t.server_time),
+          };
+        });
+      return quotes.length ? db.rpc('ingest_quotes_5m', { p_quotes: quotes }) : { quotes_5m: 0 };
     }, (r) => r);
 
     // 4+5. Indicators + signals on COMPLETED 5m candles only
@@ -729,6 +763,17 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const fill = buyFillPrice(t.ask, slip);
           const atrValue = s.indicators?.atr14 ?? lastIndicators.get(s.pair_id)?.atr14 ?? null;
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);
+          if (stops.method === 'rejected') {
+            // The ATR stop is outside [0.2%, 30%] and the operator asked to refuse rather than
+            // swap in the cost-dominated percent fallback (WP1h, default off).
+            rejectEntry(s, 'stop_out_of_bounds', stops.rejectReason ?? 'stop_out_of_bounds', {
+              entry_price: fill,
+              atr: Number(atrValue ?? 0),
+              atr_stop_multiplier: params.atrStopMultiplier,
+              stop_distance_pct: fill > 0 ? Number(atrValue ?? 0) * params.atrStopMultiplier / fill * 100 : 0,
+            });
+            continue;
+          }
           const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, params);
           if (gate) {
             const mid = (t.ask + t.bid) / 2;
@@ -808,6 +853,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         counts[rejection.reason] = (counts[rejection.reason] ?? 0) + 1;
         return counts;
       }, {});
+      // A structural rejection means the engine could not evaluate the candidate at all (no ticker,
+      // no fee, impossible bracket). Those must be distinguishable from the strategy declining to
+      // trade, otherwise a run where every candidate was structurally blocked looks like a healthy HOLD.
+      const structuralRejections = entryRejections.filter((r) => isStructuralRejection(r.reason));
       return {
         status: accountStatus,
         equity: Number(mtm.equity),
@@ -820,6 +869,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         opened_entries: openedEntries,
         entry_rejections: entryRejections,
         entry_rejection_counts: entryRejectionCounts,
+        structural_rejections: structuralRejections.length,
+        structural_rejection_reasons: [...new Set(structuralRejections.map((r) => r.reason))],
         risk_block_reasons: risk.blockEntries ? risk.reasons : [],
       };
     }, (r) => r);
@@ -827,6 +878,23 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // A degraded safety net leaves positions unprotected; escalate it to a run error so the status
     // becomes PARTIAL and the hourly system-error notification fires (see the `degraded` comment above).
     for (const failure of paperTrading?.degraded ?? []) errors.push(`paper_trading: ${failure}`);
+
+    // Config hygiene: a rejected key or a full reset changes trading behaviour silently, so it must
+    // make the run PARTIAL. A bracket-economics problem is a warning only — it does not alter what
+    // the engine computed, it flags that no entry can pass the gate with this stored bracket.
+    const bracketWarnings = configDegraded.filter((i) => i.startsWith('bracket_economics_warning:'));
+    steps.config = {
+      ok: bracketWarnings.length === 0,
+      info: {
+        rejectedKeys: merged.rejectedKeys,
+        fullReset: merged.fullReset,
+        bracketEconomics: bracketProblems,
+      },
+      ...(bracketWarnings.length ? { error: bracketWarnings.join('; ') } : {}),
+    };
+    for (const item of configDegraded) {
+      if (!item.startsWith('bracket_economics_warning:')) errors.push(item);
+    }
 
     // Daily P/L report at 00:00-00:14 WIB (17:00 UTC)
     const jakartaNow = new Date((nowSec + 7 * 3600) * 1000);
