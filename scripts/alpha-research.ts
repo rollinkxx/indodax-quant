@@ -15,7 +15,8 @@ import {
 import type { Candle } from '../shared/candles';
 import { resolveResearchPairs } from './pairUniverse';
 import {
-  contiguousSegments, evaluateHypothesis, forwardReturns, holdoutStartIndex, meanForwardVector,
+  contiguousSegments, evaluateHypothesis, evaluateHypothesisWalkForward, foldOfIndex,
+  forwardReturns, holdoutStartIndex, meanForwardVector,
   pctChange, quantileCuts, type AlphaSample,
 } from '../shared/alphaResearch';
 
@@ -29,6 +30,7 @@ const FEE_ROUND_TRIP_PCT = 0.4; // 0.2%/side pair taker, the live model
 const HORIZONS = [6, 12, 24, 48, 288] as const; // bars of 5m: 30m, 1h, 2h, 4h, 24h
 const MAX_HORIZON = Math.max(...HORIZONS);
 const VERDICT_HORIZON = HORIZONS.indexOf(48);
+const WALK_FORWARD_FOLDS = 5;
 const MAX_PAIRS = Math.max(1, Math.min(500, Number(process.argv[2] ?? process.env.ALPHA_MAX_PAIRS ?? 60)));
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
@@ -92,7 +94,7 @@ function buildSamples(pair: string, seg: Candle[], P: StrategyParams): AlphaSamp
     const prodBuy = finalAction.signal?.side === 'BUY' ? 1 : 0;
 
     out.push({
-      pair, isHoldout: i >= splitAt, close: c.c, forward: fwd,
+      pair, isHoldout: i >= splitAt, fold: foldOfIndex(i, seg.length), close: c.c, forward: fwd,
       features: {
         rsi14: r.rsi14,
         emaSpreadPct: pctChange(r.ema9, r.ema21),
@@ -176,6 +178,17 @@ async function main(): Promise<void> {
       r.trainMean.map((v) => fmt(v, 9)).join('') +
       `  ${String(r.trainCount).padStart(5)} ${String(r.holdoutCount).padStart(5)}   ${r.verdict}` +
       `  (net@${HORIZONS[VERDICT_HORIZON]}: train ${r.netTrainPct >= 0 ? '+' : ''}${r.netTrainPct.toFixed(3)} / holdout ${r.netHoldoutPct >= 0 ? '+' : ''}${r.netHoldoutPct.toFixed(3)}%)`,
+    );
+  }
+
+  console.log(`\nWalk-forward (${WALK_FORWARD_FOLDS} chronological folds; a rule must be net-positive in EVERY test fold):`);
+  console.log('  ' + 'rule'.padEnd(32) + ' posFolds  meanNetTest%  verdict');
+  for (const hyp of HYPOTHESES) {
+    const wf = evaluateHypothesisWalkForward(all, hyp.test, VERDICT_HORIZON, H, WALK_FORWARD_FOLDS, { feeRoundTripPct: FEE_ROUND_TRIP_PCT, minHoldout: 30 });
+    console.log(
+      `  ${hyp.name.padEnd(32)} ${String(wf.positiveTestFolds).padStart(3)}/${wf.totalTestFolds}` +
+      `   ${(wf.meanNetTestPct >= 0 ? '+' : '') + wf.meanNetTestPct.toFixed(3)}`.padStart(13) +
+      `   ${wf.verdict}`,
     );
   }
 
