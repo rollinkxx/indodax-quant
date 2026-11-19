@@ -274,8 +274,9 @@ export function exposureAllows(openCost: number, newCost: number, equity: number
 
 /**
  * Protective exit for the current quote. A stop that has been ratcheted above entry by the
- * trailing stop is reported as TRAILING_STOP, not STOP_LOSS: the exit is still protective, but
- * the trade is a winner and must not be counted as a loss in win-rate or expectancy.
+ * trailing stop is reported as TRAILING_STOP, not STOP_LOSS, so the exit is attributed to the
+ * trail rather than to the original stop. This is an attribution fix, not a win/loss claim:
+ * the stop sits above entry, but fees and slippage can still leave the trade net negative.
  * TAKE_PROFIT is checked first so a gap through both levels is attributed to the target.
  */
 export function exitReason(

@@ -86,7 +86,7 @@ export function resolveProtectiveExit(
   ) throw new Error('Invalid protective exit inputs');
 
   if (candle.l <= stopLoss) {
-    // A stop ratcheted above entry is a trailing stop: protective, but a winner.
+    // A stop ratcheted above entry is attributed to the trailing stop, not the original stop.
     const trailed = entry !== undefined && Number.isFinite(entry) && stopLoss > entry;
     return { price: candle.o < stopLoss ? candle.o : stopLoss, reason: trailed ? 'TRAILING_STOP' : 'STOP_LOSS' };
   }
