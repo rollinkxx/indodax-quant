@@ -182,3 +182,49 @@ information; it amplifies the loss.
 measure what it is given. What it measures is that this entry rule has no edge at any timeframe
 tested, after real costs. Making the engine "usable" is therefore not a bug-fix problem — it
 needs a different entry signal, which is a research decision, not a repair.
+
+## Finding 6 (verified, not a bug): the paper ledger is internally exact
+
+Audited all 16 closed positions against `paper_accounts.cash_balance`. Per position the identity
+`realized_pnl = qty * exit_price - exit_fee - cost_basis` holds to 0.0000, and
+`cost_basis = qty * entry_price + entry_fee` holds to 0.0000. Summing the ledger gives
+−298,941.42 while cash moved −238,041.69; the Rp60,900 gap is exactly the three positions
+(id 2–4) opened before `paper_accounts.reset_at`, which the reset correctly wrote off. No drift.
+
+Two things that looked like bugs and are not:
+
+- **Trailing stop can be set above the take-profit.** `trailingStop()` has no TP ceiling, so
+  calling it with a bid above the target returns a stop above the target. It cannot happen: the
+  caller only reaches it when `exitReason()` returned null, which means `bid < takeProfit`.
+  The invariant holds by construction, so no ceiling was added — a defensive clamp would hide
+  the real contract instead of enforcing it.
+- **Historical fees of 0.00555%/side on positions 5–13.** Real, already diagnosed and fixed by
+  `supabase/migrations/20261118120000_fix_undercharged_paper_fee.sql`: a 2026-11-16 migration set
+  that assumption, nine trades were 36× under-charged, and the same value fed the reward/risk
+  gate so entries the gate should have rejected were opened. `feeModel` is now `pair_taker` and
+  `feePct` is a fallback pinned at the real 0.2%.
+
+## Finding 7 (fixed): an impossible bracket could be saved and would silently kill the engine
+
+The entry gate rejects any signal whose *net* reward/risk is below `minNetRewardRiskRatio`. Costs
+only ever reduce that ratio, so a bracket whose **gross** `TP/SL` is already below the minimum can
+never pass — every signal is rejected forever, with no error, no alert, and a healthy run status.
+
+On 2026-11-19 the live config was 9 ATR stop / 5 ATR target (gross 0.556) against a 0.4 floor.
+It was not quite impossible, but it was close enough to be nearly inert: at the median 5m ATR of
+0.201% the net ratio is 0.087, and the bracket only clears 0.4 once ATR reaches ~0.78%, i.e. 3.9×
+the median. That is why 100 BUY signals in six days produced 16 positions, and why the last one
+(run 8962, 10:25) was rejected as `net_reward_risk_below_minimum`.
+
+`validateBracketEconomics()` now rejects such a config at save time. It is deliberately **not**
+part of `validateParams()`: `mergeParams()` validates the whole stored set and falls back to
+`DEFAULT_PARAMS` on any error, so folding this rule in would silently reset every other parameter
+of a config that already had an impossible bracket. The check runs only on the admin PUT path.
+
+## Verification of the live system
+
+- `GET /api/health` → `{"ok":true,"liveTrading":false}`.
+- Last three cron runs: `SUCCESS` in 10–18s.
+- Run 8962 end-to-end: 1 BUY signal created → received by `paper_trading` → rejected at
+  `net_reward_risk_below_minimum`. Signal generation, gating, and rejection telemetry all work.
+- Supabase reachable; `market_pairs` carries `trade_fee_percent_taker = 0.2` for all 438 pairs.

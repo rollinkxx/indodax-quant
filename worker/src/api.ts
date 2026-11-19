@@ -8,7 +8,7 @@ import { errorMessage } from './http';
 import { runPipeline } from './pipeline';
 import { sendTelegram, telegramConfigured, messages, jakarta } from './telegram';
 import { dynamicSlippageBps, effectiveFeePct, sellFillPrice, feeFor, computeStats } from '../../shared/paper';
-import { DEFAULT_PARAMS, mergeParams, validateParams } from '../../shared/strategy';
+import { DEFAULT_PARAMS, mergeParams, validateBracketEconomics, validateParams, type StrategyParams } from '../../shared/strategy';
 import { buildEngineDecisions } from '../../shared/engineDecisions';
 
 const MAX_TRACKED_PAIRS = 10;
@@ -205,7 +205,7 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       const rows = await db.select<{ id: number; params: Record<string, unknown> }>('strategy_configs', 'select=id,params&is_active=eq.true&limit=1');
       if (!rows[0]) return bad('no active strategy', 404);
       const merged = { ...DEFAULT_PARAMS, ...rows[0].params, ...params };
-      const all = validateParams(merged);
+      const all = [...validateParams(merged), ...validateBracketEconomics(merged as unknown as StrategyParams)];
       if (all.length) return bad('invalid strategy parameters', 422, all);
       const updated = await db.update('strategy_configs', `id=eq.${rows[0].id}`, { params: merged, updated_by: user.email, updated_at: new Date().toISOString() });
       return json({ ok: true, strategy: updated[0] });

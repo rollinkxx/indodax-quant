@@ -248,6 +248,28 @@ export function validateParams(input: Record<string, unknown>): string[] {
   return errors;
 }
 
+/**
+ * Cross-field economics check that only makes sense on a complete parameter set.
+ *
+ * Costs only ever lower reward/risk, so a bracket whose *gross* ratio is under the net minimum
+ * can never pass the entry gate: every signal is rejected as net_reward_risk_below_minimum and
+ * the engine silently stops trading. On 2026-11-19 the active 9/5 bracket sat at 0.556 gross
+ * against a 0.4 floor and could only trade on the 16% of bars whose ATR was high enough for
+ * costs to matter less than the ratio gap.
+ *
+ * Deliberately not part of validateParams: mergeParams() validates the full stored set and
+ * falls back to DEFAULT_PARAMS on any error, so an impossible stored bracket would silently
+ * reset every other parameter instead of surfacing. This runs where a human saves a config.
+ */
+export function validateBracketEconomics(merged: StrategyParams): string[] {
+  if (!(merged.atrStopMultiplier > 0)) return ['atrStopMultiplier must be positive'];
+  const grossRatio = merged.atrTakeProfitMultiplier / merged.atrStopMultiplier;
+  if (grossRatio < merged.minNetRewardRiskRatio) {
+    return [`atrTakeProfitMultiplier / atrStopMultiplier (${grossRatio.toFixed(3)}) is below minNetRewardRiskRatio (${merged.minNetRewardRiskRatio}); no entry can pass the net reward/risk gate`];
+  }
+  return [];
+}
+
 /** Merge stored params with defaults, ignoring invalid values. */
 export function mergeParams(stored: unknown): StrategyParams {
   const out: StrategyParams = { ...DEFAULT_PARAMS };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignal, evaluateSignalWindow, evaluateMarketAction, mergeParams, validateParams, type IndicatorRow } from '../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, DEFAULT_PARAMS, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateSignal, evaluateSignalWindow, evaluateMarketAction, mergeParams, validateBracketEconomics, validateParams, type IndicatorRow } from '../shared/strategy';
 import type { Candle } from '../shared/candles';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
@@ -265,6 +265,21 @@ describe('params validation', () => {
     expect(p.emaFast).toBe(9);
     expect(p.feePct).toBe(0.2);
     expect(mergeParams(null)).toEqual(DEFAULT_PARAMS);
+  });
+
+  it('rejects a bracket whose gross reward/risk cannot clear the net minimum', () => {
+    // Costs only lower reward/risk, so a gross ratio under minNetRewardRiskRatio rejects every
+    // entry as net_reward_risk_below_minimum and the engine silently stops trading.
+    expect(validateBracketEconomics(mergeParams({
+      atrStopMultiplier: 9, atrTakeProfitMultiplier: 5, minNetRewardRiskRatio: 0.8,
+    })).join()).toMatch(/no entry can pass the net reward\/risk gate/);
+    // The live 9/5 bracket against its 0.4 floor is permissible, if marginal.
+    expect(validateBracketEconomics(mergeParams({
+      atrStopMultiplier: 9, atrTakeProfitMultiplier: 5, minNetRewardRiskRatio: 0.4,
+    }))).toEqual([]);
+    expect(validateBracketEconomics(DEFAULT_PARAMS)).toEqual([]);
+    // mergeParams must keep accepting the bracket so a stored config is never reset wholesale.
+    expect(mergeParams({ atrStopMultiplier: 9, atrTakeProfitMultiplier: 5, minNetRewardRiskRatio: 0.8 }).atrStopMultiplier).toBe(9);
   });
 });
 
