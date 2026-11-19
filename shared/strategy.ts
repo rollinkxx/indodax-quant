@@ -118,8 +118,10 @@ export const DEFAULT_PARAMS: StrategyParams = {
   timeStopMinutes: 720,
   closeOnDailyLoss: true,
   dynamicSlippage: true,
-  feeModel: 'assumption',
-  feePct: 0.00555,
+  feeModel: 'pair_taker',
+  // Conservative fallback only. With feeModel='pair_taker' the real per-pair taker fee is charged
+  // and a missing catalog value rejects the entry, so this value can never silently under-charge.
+  feePct: 0.2,
   slippageBps: 10,
   dailyLossLimitPct: 3,
   maxDrawdownPct: 15,

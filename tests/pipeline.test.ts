@@ -30,7 +30,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
             ok: true, run_id: 7, config: { ...(opts.strategyParams ?? {}), ...(opts.mtfMode ? { mtfMode: opts.mtfMode } : {}) },
             account: { id: 1, status: 'RUNNING', kill_switch: false, cash_balance: 1e7, equity: 1e7, peak_equity: 1e7, max_drawdown_pct: 0, reset_at: '2026-01-01T00:00:00Z' },
             pairs: [{ id: 'btcidr', symbol: 'BTCIDR', ticker_id: 'btc_idr', is_maintenance: false, is_tracked: true, in_universe: false, trade_min_base_currency: 10000,
-              trade_fee_percent_taker: opts.pairTakerFee ?? null,
+              trade_fee_percent_taker: opts.pairTakerFee === undefined ? 0.2 : opts.pairTakerFee,
               covered_until: new Date((Math.floor(NOW / 60) * 60 - 60) * 1000).toISOString(), last_trade_time: null, last_trade_tid: null,
               htf_backfilled_at: opts.htfBackfilled ? '2026-01-01T00:00:00Z' : null }],
             catalog: { btcidr: false, pepeidr: false, usdtidr: false, dogeidr: false },
@@ -157,14 +157,16 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(r.status).toBe('SUCCESS');
     expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
     const actions = (r.steps as any)?.paper_trading?.info?.actions as string[];
-    expect(actions).toContain('skip btcidr: net_reward_risk_below_minimum');
+    // At the real 0.2% taker fee a 0.5xATR target cannot even cover the round trip, so the
+    // economics gate rejects it as net_reward_non_positive (stronger than below_minimum).
+    expect(actions).toContain('skip btcidr: net_reward_non_positive');
     const paperInfo = (r.steps as any)?.paper_trading?.info;
     expect(paperInfo).toMatchObject({ buy_signals_received: 1, entries_opened: 0 });
     expect(paperInfo.entry_rejections).toContainEqual(expect.objectContaining({
-      pair_id: 'btcidr', signal_id: 99, stage: 'economics_gate', reason: 'net_reward_risk_below_minimum',
+      pair_id: 'btcidr', signal_id: 99, stage: 'economics_gate', reason: 'net_reward_non_positive',
     }));
-    expect(paperInfo.entry_rejection_counts.net_reward_risk_below_minimum).toBe(1);
-    expect(paperInfo.entry_rejections[0].metrics.net_reward_risk_ratio).toBeGreaterThan(0);
+    expect(paperInfo.entry_rejection_counts.net_reward_non_positive).toBe(1);
+    expect(paperInfo.entry_rejections[0].metrics.net_reward_risk_ratio).toBeLessThan(0);
     expect(paperInfo.entry_rejections[0].metrics.net_reward_per_unit).toBeDefined();
     expect(paperInfo.entry_rejections[0].metrics.net_risk_per_unit).toBeDefined();
   });
@@ -320,7 +322,7 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
       id: 203, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
       indicators: { atr14: 3 }, candle_time: new Date(expectedLast * 1000).toISOString(),
     };
-    const assumption = setup({ mtfMode: 'off', newSignals: [signal], strategyParams: { feeModel: 'assumption' }, openResult: { ok: true, position_id: 57, cash_after: 9_700_000 } });
+    const assumption = setup({ mtfMode: 'off', newSignals: [signal], strategyParams: { feeModel: 'assumption', feePct: 0.00555 }, openResult: { ok: true, position_id: 57, cash_after: 9_700_000 } });
     await run(assumption);
     expect(assumption.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(true);
 
@@ -329,6 +331,19 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
     expect(taker.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
     expect((rt.steps as any).paper_trading.info.entry_rejections).toContainEqual(expect.objectContaining({
       pair_id: 'btcidr', signal_id: 203, stage: 'economics_gate', reason: 'net_reward_risk_below_minimum',
+    }));
+  });
+
+  it('rejects an entry under pair_taker when the pair taker fee is missing, instead of falling back', async () => {
+    const signal = {
+      id: 204, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 8 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const o = setup({ mtfMode: 'off', newSignals: [signal], pairTakerFee: null, strategyParams: { feeModel: 'pair_taker' } });
+    const result = await run(o);
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    expect((result.steps as any).paper_trading.info.entry_rejections).toContainEqual(expect.objectContaining({
+      pair_id: 'btcidr', signal_id: 204, stage: 'fee_gate', reason: 'missing_pair_fee',
     }));
   });
 });

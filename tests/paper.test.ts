@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buyFillPrice, computeStats, computeStops, effectiveFeePct, exitReason, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundDown, roundTripPnl, sellFillPrice } from '../shared/paper';
+import { buyFillPrice, computeStats, computeStops, effectiveFeePct, entryFeePct, exitReason, feeFor, netRewardRiskDiagnostics, positionSize, riskState, round, roundDown, roundTripPnl, sellFillPrice } from '../shared/paper';
 import { DEFAULT_PARAMS } from '../shared/strategy';
 
 const P = DEFAULT_PARAMS;
@@ -27,14 +27,33 @@ describe('effective per-pair fee', () => {
   });
 });
 
+describe('strict entry fee', () => {
+  it('rejects an entry under pair_taker when the pair fee is missing or invalid', () => {
+    for (const bad of [null, undefined, -1, NaN]) {
+      expect(entryFeePct({ feeModel: 'pair_taker', feePct: 0.2 }, bad)).toEqual({ reason: 'missing_pair_fee' });
+    }
+  });
+  it('charges the pair taker fee, honours zero, and only falls back under assumption', () => {
+    expect(entryFeePct({ feeModel: 'pair_taker', feePct: 0.2 }, 0.06)).toEqual({ pct: 0.06 });
+    expect(entryFeePct({ feeModel: 'pair_taker', feePct: 0.2 }, 0)).toEqual({ pct: 0 });
+    expect(entryFeePct({ feeModel: 'assumption', feePct: 0.2 }, null)).toEqual({ pct: 0.2 });
+  });
+});
+
 describe('fills, fees, slippage', () => {
   it('BUY fills above ask and SELL below bid by slippage bps', () => {
     expect(buyFillPrice(1_000_000, 10)).toBeCloseTo(1_001_000, 6);
     expect(sellFillPrice(1_000_000, 10)).toBeCloseTo(999_000, 6);
   });
-  it('uses the requested maker/taker fee assumption as a percentage and rounds to 2 decimals', () => {
-    expect(P.feePct).toBe(0.00555);
-    expect(feeFor(1_234_567, P.feePct)).toBe(68.52);
+  it('charges the fee assumption as percentage points and rounds to 2 decimals', () => {
+    expect(feeFor(1_234_567, 0.2)).toBe(2469.13);
+    expect(feeFor(1_234_567, 0.00555)).toBe(68.52);
+  });
+  it('defaults to the real taker fee model, never a 36x-cheap assumption', () => {
+    // A fail-open default silently under-charged 9 live paper trades in Nov 2026: the fee was
+    // 0.00555%/side instead of 0.2%, which defeated the net reward/risk entry gate.
+    expect(P.feeModel).toBe('pair_taker');
+    expect(P.feePct).toBeGreaterThanOrEqual(0.2);
   });
   it('roundDown never rounds up', () => {
     expect(roundDown(0.123456789)).toBe(0.12345678);
@@ -56,16 +75,16 @@ describe('stops', () => {
 describe('position sizing', () => {
   it('risks 1% of equity to the stop, capped at 25% of equity', () => {
     const r = positionSize({ equity: 10_000_000, cash: 10_000_000, entry: 1_000_000, stopLoss: 985_000, params: P });
-    // risk 100k / (15k + 6k fees) = 4.76 units -> capped by 25% (2.5M) = 2.5 units
+    // risk 100k / (15k stop + round-trip fee + exit slippage) is far above the 25% cap (2.5M) = 2.5 units
     expect(r.qty).toBe(2.5);
     expect(r.notional).toBe(2_500_000);
-    expect(r.fee).toBe(138.75);
-    expect(r.cost).toBe(2_500_138.75);
+    expect(r.fee).toBe(round(2_500_000 * P.feePct / 100));
+    expect(r.cost).toBe(2_500_000 + r.fee);
   });
   it('risk-limited when the stop is wide', () => {
     const r = positionSize({ equity: 10_000_000, cash: 10_000_000, entry: 100, stopLoss: 80, params: P });
-    const expectedQty = roundDown(100_000 / (20 + 0.0111));
-    expect(r.qty).toBe(expectedQty);
+    const perUnitRisk = 20 + 100 * (P.feePct / 100) * 2; // no exitSlippageBps passed
+    expect(r.qty).toBe(roundDown(100_000 / perUnitRisk));
     expect(r.cost).toBeLessThanOrEqual(10_000_000);
   });
   it('never spends more cash than available', () => {
