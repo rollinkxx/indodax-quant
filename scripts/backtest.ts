@@ -14,7 +14,7 @@ import {
 import { applyBacktestOverrides, parseBacktestOverrides } from '../shared/backtestOverrides';
 import {
   buyFillPrice, computeStats, computeStops, dynamicSlippageBps, effectiveFeePct, feeFor,
-  netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, trailingStop,
+  netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, signalExitCoversCosts, trailingStop,
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
@@ -236,7 +236,9 @@ export function simulate(
         const sell = evaluateSignalWindow(
           rows.slice(i - win + 1, i + 1), series.slice(i - win + 1, i + 1).map((x) => x.v), p,
         );
-        if (sell?.side === 'SELL') { exit = c.c; reason = 'SIGNAL'; }
+        if (sell?.side === 'SELL' && signalExitCoversCosts({
+          entryPrice: pos.entry, qty: pos.qty, costBasis: pos.cost, bid: c.c, feePct, slippageBps: slip,
+        })) { exit = c.c; reason = 'SIGNAL'; }
       }
       if (exit !== null) {
         const fill = sellFillPrice(exit, slip);
