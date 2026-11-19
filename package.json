@@ -14,6 +14,7 @@
     "verify:indodax": "tsx scripts/verify-indodax.ts",
     "backtest": "tsx scripts/backtest.ts",
     "fee:sensitivity": "tsx scripts/fee-sensitivity.ts",
+    "alpha:research": "tsx scripts/alpha-research.ts",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
     "paper:report": "tsx scripts/paper-report.ts",
