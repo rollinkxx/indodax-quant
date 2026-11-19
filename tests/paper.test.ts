@@ -108,6 +108,22 @@ describe('exits and PnL', () => {
     expect(exitReason(pos, 100)).toBeNull();
     expect(exitReason({ stop_loss: null, take_profit: null }, 1)).toBeNull();
   });
+  it('labels a stop ratcheted above entry as TRAILING_STOP, not STOP_LOSS', () => {
+    // Trade 14 in production: entry 333.33, trailed stop 342.62, exited 339.76 for a profit but was
+    // booked as STOP_LOSS, which counted a winner as a loser in win rate and expectancy.
+    const trailed = { entry_price: '333.331999', stop_loss: '342.62402751145373', take_profit: '358.20831507107255' };
+    expect(exitReason(trailed, 339.762897)).toBe('TRAILING_STOP');
+    // A stop at or below entry is still a genuine stop loss.
+    const original = { entry_price: '1000', stop_loss: '985', take_profit: '1030' };
+    expect(exitReason(original, 984)).toBe('STOP_LOSS');
+    expect(exitReason(original, 985)).toBe('STOP_LOSS');
+    // Missing entry price must not be guessed: fall back to the protective label.
+    expect(exitReason({ stop_loss: '342', take_profit: '358' }, 341)).toBe('STOP_LOSS');
+  });
+  it('attributes a gap through both levels to TAKE_PROFIT', () => {
+    const pos = { entry_price: '100', stop_loss: '99', take_profit: '101' };
+    expect(exitReason(pos, 105)).toBe('TAKE_PROFIT');
+  });
   it('round-trip PnL nets both fees', () => {
     // buy 2 @ 1001 fee 6.01, sell 2 @ 1099 fee 6.59 -> (2198 - 6.59) - (2002 + 6.01) = 183.4
     expect(roundTripPnl(2, 1001, 6.01, 1099, 6.59)).toBeCloseTo(183.4, 6);

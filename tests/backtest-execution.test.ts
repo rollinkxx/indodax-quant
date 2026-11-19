@@ -75,3 +75,20 @@ describe('resolveProtectiveExit', () => {
       .toThrow('Invalid protective exit inputs');
   });
 });
+
+describe('resolveProtectiveExit trailing stop attribution', () => {
+  it('reports a stop ratcheted above entry as TRAILING_STOP', () => {
+    const result = resolveProtectiveExit(102, 120, finalCandle({ o: 104, h: 105, l: 101, c: 103 }), 100);
+    expect(result).toEqual({ price: 102, reason: 'TRAILING_STOP' });
+  });
+
+  it('keeps a stop at or below entry as STOP_LOSS', () => {
+    expect(resolveProtectiveExit(95, 120, finalCandle({ o: 96, h: 99, l: 94, c: 97 }), 100))
+      .toEqual({ price: 95, reason: 'STOP_LOSS' });
+  });
+
+  it('defaults to STOP_LOSS when no entry is supplied', () => {
+    expect(resolveProtectiveExit(95, 120, finalCandle({ o: 96, h: 99, l: 94, c: 97 })))
+      .toEqual({ price: 95, reason: 'STOP_LOSS' });
+  });
+});

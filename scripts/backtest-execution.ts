@@ -65,7 +65,7 @@ export function finalizeEndOfDataTrade(
 
 export interface ProtectiveExit {
   price: number;
-  reason: 'STOP_LOSS' | 'TAKE_PROFIT';
+  reason: 'STOP_LOSS' | 'TRAILING_STOP' | 'TAKE_PROFIT';
 }
 
 /**
@@ -77,6 +77,7 @@ export function resolveProtectiveExit(
   stopLoss: number,
   takeProfit: number,
   candle: Candle,
+  entry?: number,
 ): ProtectiveExit | null {
   if (
     !Number.isFinite(stopLoss) || stopLoss <= 0 ||
@@ -85,7 +86,9 @@ export function resolveProtectiveExit(
   ) throw new Error('Invalid protective exit inputs');
 
   if (candle.l <= stopLoss) {
-    return { price: candle.o < stopLoss ? candle.o : stopLoss, reason: 'STOP_LOSS' };
+    // A stop ratcheted above entry is a trailing stop: protective, but a winner.
+    const trailed = entry !== undefined && Number.isFinite(entry) && stopLoss > entry;
+    return { price: candle.o < stopLoss ? candle.o : stopLoss, reason: trailed ? 'TRAILING_STOP' : 'STOP_LOSS' };
   }
   if (candle.h >= takeProfit) {
     return { price: candle.o > takeProfit ? candle.o : takeProfit, reason: 'TAKE_PROFIT' };
