@@ -6,7 +6,7 @@ import type { Candle } from '../shared/candles';
 // itself is pure and never touches the network, so dummy values are enough here.
 process.env.SUPABASE_URL = process.env.SUPABASE_URL ?? 'http://127.0.0.1:1';
 process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'test-key';
-const { simulate } = await import('../scripts/backtest');
+const { simulate, inferIntervalSec } = await import('../scripts/backtest');
 
 /** Oscillating series that forces repeated EMA9/EMA21 crossovers so entries actually fire. */
 function oscillator(n: number, periodBars: number, amp: number, seed = 1): Candle[] {
@@ -76,5 +76,26 @@ describe('backtest causality (no lookahead)', () => {
       expect(t.entryTime).toBeLessThan(cutTime);
       expect(t.exitTime).toBeLessThanOrEqual(cutTime);
     }
+  });
+});
+
+describe('backtest bar interval handling', () => {
+  it('infers the bar interval from the series rather than assuming 5m', () => {
+    const bars = (sec: number, n: number): Candle[] => Array.from({ length: n }, (_, i) => ({
+      t: i * sec, o: 100, h: 101, l: 99, c: 100, v: 1, n: 0, source: 'history',
+    }));
+    expect(inferIntervalSec(bars(300, 50))).toBe(300);
+    expect(inferIntervalSec(bars(3600, 50))).toBe(3600);
+    expect(inferIntervalSec(bars(14400, 50))).toBe(14400);
+    // Too short to measure: fall back to the 5m default rather than guessing.
+    expect(inferIntervalSec(bars(3600, 2))).toBe(300);
+  });
+
+  it('trades a higher-timeframe series instead of filling it with synthetic bars', () => {
+    // Regression: the gap filler and the warm-up check both assumed 300s bars. On a 1h series
+    // that injected 11 synthetic bars between every real candle, so every bar failed the
+    // observed-contiguity check and the run returned zero trades with no error.
+    const hourly = oscillator(1200, 60, 0.03).map((c, i) => ({ ...c, t: i * 3600 }));
+    expect(simulate('xidr', hourly, LOOSE, 10_000_000, 5e9, 'crossover', 0, 0.2).length).toBeGreaterThan(0);
   });
 });

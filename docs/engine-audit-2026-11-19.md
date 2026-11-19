@@ -125,3 +125,60 @@ live quote and 2 new tests covering the floor behaviour. 387 tests pass, typeche
 
 Findings 2 and 3 are documented, not changed: the bracket has no defensible alternative at
 n=57, and the backtest spread model needs data the exchange does not provide historically.
+
+## Finding 4 (fixed): the backtest could not simulate any timeframe but 5m
+
+`simulate()` called `fillGaps(candles, 300)` and `hasBacktestDataQuality(series, i, minCandles)`
+with the default `intervalSec = 300`. Fed a 1h or 4h series — which the 4h research cache and
+any aggregated series produce — both assumed every bar was 5 minutes apart:
+
+- `fillGaps` injected **11 synthetic bars between every real 1h candle**.
+- The warm-up check then saw a synthetic bar as its immediate predecessor on every real bar,
+  reset `contiguous` to 1, and failed `contiguous >= minCandles`.
+
+Result: **zero trades, no error, no warning.** Every higher-timeframe research run in this
+repository before this fix silently measured nothing. The `timeStopMinutes` check was hardcoded
+to 5 minutes per bar for the same reason, and MTF aggregation tried to build 15m/1h buckets out
+of an already-1h series.
+
+Fixed by inferring the interval from the data (`inferIntervalSec`, snapped to a standard bar
+size) and threading it through the gap filler, the warm-up check, the time stop, and the MTF
+guard (MTF is disabled when the base series is coarser than the bucket). Three regression tests
+cover it, including one that asserts a 1h series produces trades.
+
+## Finding 5: with the timeframe bug fixed, higher timeframes are worse, not better
+
+The structural argument for higher timeframes is real. Round-trip cost is roughly fixed at
+0.6% (fee+slippage) plus the spread, while ATR grows with the bar:
+
+| timeframe | median ATR % of price | cost / ATR |
+|---|---|---|
+| 5m | 0.201% | **3.88×** |
+| 15m | 0.465% | 1.68× |
+| 1h | 1.159% | 0.67× |
+| 4h | 3.657% | 0.21× |
+
+A 5m trade must travel 3.88 ATR just to break even. And the gate agrees: the share of BUY
+signals clearing `minNetRewardRiskRatio` rises from **11.6% at 5m to 65.9% at 1h**.
+
+So the hypothesis was that 1h would trade more *and* better. It trades more. It is much worse:
+
+| timeframe | n | win% | mean net | median net | PF | positive folds |
+|---|---|---|---|---|---|---|
+| **5m** | 57 | **68.4%** | **+615** | +36,474 | **1.02** | 2/5 |
+| 15m | 73 | 49.3% | −25,404 | −856 | 0.42 | 0/5 |
+| 30m | 93 | 46.2% | −28,011 | −10,775 | 0.40 | 0/5 |
+| 1h | 77 | 39.0% | −39,201 | −67,867 | 0.28 | 0/5 |
+
+(Live params, real per-pair spread charged, spread-eligible pairs only.)
+
+The interpretation is uncomfortable but clear: the EMA-crossover entry carries no directional
+edge, so widening the bracket just makes each losing trade bigger. The 5m result only looks best
+because the 9/5 bracket manufactures a high win rate at zero gross expectancy — its PF of 1.02 is
+noise around break-even on 57 trades, not an edge. Larger ATR does not rescue a signal with no
+information; it amplifies the loss.
+
+**Conclusion for the engine's usability:** the machinery is now correct and can be trusted to
+measure what it is given. What it measures is that this entry rule has no edge at any timeframe
+tested, after real costs. Making the engine "usable" is therefore not a bug-fix problem — it
+needs a different entry signal, which is a research decision, not a repair.

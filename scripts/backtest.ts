@@ -148,10 +148,33 @@ async function loadCandles(pair: string, officialHistory?: OfficialHistoryResult
   const scoped = officialHistory
     ? filterBacktestCandlesToRange(merged, officialHistory.metrics.fromSec, officialHistory.metrics.toSec)
     : merged;
-  return fillGaps(scoped, 300);
+  return fillGaps(scoped, inferIntervalSec(scoped));
 }
 
 export type ExperimentMode = 'crossover' | 'trend_continuation';
+
+/**
+ * Median gap between consecutive candle opens, snapped to a standard bar size.
+ *
+ * Research runs are not all 5m: the 4h cache and any aggregated series carry their own
+ * interval, and treating them as 5m corrupts gap filling, MTF buckets and the time stop.
+ */
+export function inferIntervalSec(candles: { t: number }[]): number {
+  if (candles.length < 3) return 300;
+  const gaps: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const d = candles[i].t - candles[i - 1].t;
+    if (d > 0) gaps.push(d);
+  }
+  if (!gaps.length) return 300;
+  gaps.sort((a, b) => a - b);
+  const median = gaps[Math.floor(gaps.length / 2)];
+  const standard = [60, 180, 300, 600, 900, 1800, 3600, 7200, 14400, 86400];
+  let best = standard[0];
+  for (const s of standard) if (Math.abs(s - median) < Math.abs(best - median)) best = s;
+  return best;
+}
+
 export interface SimTrade {
   pair: string;
   entry: number;
@@ -179,7 +202,11 @@ export function simulate(
   startIndex = 0,
   pairTakerFeePct: number | null = null,
 ): SimTrade[] {
-  const series = fillGaps(candles, 300);
+  // Infer the bar interval from the data instead of assuming 5m. The gap filler, the MTF bucket
+  // aggregation, and the time stop all scale with it, so hardcoding 300 silently injected 11
+  // synthetic bars between every real 1h candle and made every higher-timeframe run trade nothing.
+  const intervalSec = inferIntervalSec(candles);
+  const series = fillGaps(candles, intervalSec);
   // Charge the pair's real taker fee when feeModel='pair_taker', mirroring the paper pipeline.
   const feePct = effectiveFeePct(p, pairTakerFeePct);
   const rows = computeIndicators(series, p);
@@ -191,9 +218,12 @@ export function simulate(
   // candles are aggregated once from the full 5m series (the whole sample is present here, so the stored
   // HTF backfill the pipeline uses for older history is unnecessary), then each bar's state is served
   // from a cache keyed by bucket boundary, so cost stays ~O(bars) instead of recomputing per bar.
-  const mtfOn = p.mtfMode !== 'off';
+  // MTF confirmation only makes sense when the base series is finer than the bucket. A 4h or 1h
+  // series cannot be aggregated down to 15m, so MTF is disabled rather than fed a meaningless
+  // one-bar-per-bucket series.
+  const mtfOn = p.mtfMode !== 'off' && intervalSec < Math.min(...HIGHER_TFS.map((h) => h.sec));
   const htfAggregated = mtfOn
-    ? HIGHER_TFS.map((h) => ({ tf: h.tf, sec: h.sec, candles: aggregateComplete(series, h.sec) }))
+    ? HIGHER_TFS.filter((h) => h.sec > intervalSec).map((h) => ({ tf: h.tf, sec: h.sec, candles: aggregateComplete(series, h.sec) }))
     : [];
   const tfStateCache = new Map<string, TfState>();
   const mtfStatesAt = (idx: number): TfState[] => htfAggregated.map((h) => {
@@ -228,11 +258,11 @@ export function simulate(
       if (exit === null) {
         const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p, roundTripCostPct(feePct, slip));
         if (nsl !== null) pos.sl = nsl;
-        if (p.timeStopMinutes > 0 && (i - pos.openedIdx) * 5 >= p.timeStopMinutes) {
+        if (p.timeStopMinutes > 0 && (i - pos.openedIdx) * (intervalSec / 60) >= p.timeStopMinutes) {
           exit = c.c; reason = 'TIME_STOP';
         }
       }
-      if (exit === null && hasBacktestDataQuality(series, i, p.minCandles)) {
+      if (exit === null && hasBacktestDataQuality(series, i, p.minCandles, intervalSec)) {
         const sell = evaluateSignalWindow(
           rows.slice(i - win + 1, i + 1), series.slice(i - win + 1, i + 1).map((x) => x.v), p,
         );
@@ -254,7 +284,7 @@ export function simulate(
       continue;
     }
 
-    if (!hasBacktestDataQuality(series, i, p.minCandles) || i + 1 >= series.length) continue;
+    if (!hasBacktestDataQuality(series, i, p.minCandles, intervalSec) || i + 1 >= series.length) continue;
     const windowRows = rows.slice(i - win + 1, i + 1);
     const windowVolumes = series.slice(i - win + 1, i + 1).map((x) => x.v);
     let isBuy: boolean;

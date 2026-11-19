@@ -77,6 +77,16 @@ describe('backtest scope warnings', () => {
     expect(hasBacktestDataQuality(series, 59, 49)).toBe(true);
   });
 
+  it('measures warm-up contiguity in the series bar interval, not a hardcoded 5m', () => {
+    // A 1h series spaced 3600s apart must pass when told the interval; assuming 300s would call
+    // every bar a gap, reset the warm-up each time, and silently produce zero trades.
+    const hourly: Candle[] = Array.from({ length: 60 }, (_, i) => ({
+      t: i * 3600, o: 100, h: 101, l: 99, c: 100, v: 1, n: 0, source: 'history',
+    }));
+    expect(hasBacktestDataQuality(hourly, 59, 60, 3600)).toBe(true);
+    expect(hasBacktestDataQuality(hourly, 59, 60)).toBe(false);
+  });
+
   it('requires a contiguous suffix after a gap and allows a later full warm-up', () => {
     const series: Candle[] = Array.from({ length: 90 }, (_, i) => ({
       t: i * 300, o: 100, h: 101, l: 99, c: 100, v: 1, n: 0, source: 'history',
