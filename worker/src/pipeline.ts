@@ -648,7 +648,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         let reason: string | null = exitReason(pos, t.bid);
         if (!reason) {
           // Trailing stop: ratchet the stop up with price (takes effect from the next run).
-          const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id));
+          // The break-even floor must cover the spread too: the exit fills at the bid, so a stop
+          // set only above fees+slippage can still close net negative on a wide pair.
+          const spreadPct = t.bid > 0 ? (t.ask - t.bid) / t.bid * 100 : 0;
+          const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id), spreadPct);
           const newStop = trailingStop(pos, t.bid, lastIndicators.get(pos.pair_id)?.atr14 ?? null, params, trailCostPct);
           if (newStop !== null) {
             try {

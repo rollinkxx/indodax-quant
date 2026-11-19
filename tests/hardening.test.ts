@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PARAMS, evaluateSignalWindow, validateParams, type IndicatorRow } from '../shared/strategy';
-import { dynamicSlippageBps, exposureAllows, riskState, timeStopHit, trailingStop } from '../shared/paper';
+import { dynamicSlippageBps, exposureAllows, riskState, roundTripCostPct, timeStopHit, trailingStop } from '../shared/paper';
 
 const row = (o: Partial<IndicatorRow>): IndicatorRow => ({
   t: 0, close: 100, ema9: 100, ema21: 100, ema50: 95, rsi14: 60, macd: 0, macdSignal: 0, macdHist: 1, atr14: 2, volMa20: 10, support: 90, resistance: 120, ...o,
@@ -50,6 +50,23 @@ describe('strategy hardening helpers', () => {
     expect(trailingStop(pos, 101, 0.5, tight, 0.4)).toBeCloseTo(100.5, 10);
     // Without a cost the same quote trails to the old level.
     expect(trailingStop(pos, 100.75, 0.5, tight)).toBeCloseTo(100.25, 10);
+  });
+
+  it('charges the quoted spread in the round-trip cost, so the break-even floor rises with it', () => {
+    // fees 0.2 x 2 + slippage 10bps x 2 = 0.6pp; a 2% spread is the dominant term.
+    expect(roundTripCostPct(0.2, 10)).toBeCloseTo(0.6, 10);
+    expect(roundTripCostPct(0.2, 10, 2)).toBeCloseTo(2.6, 10);
+    expect(roundTripCostPct(0.2, 10, 0)).toBeCloseTo(0.6, 10);
+    // A missing/negative spread must not lower the cost below the fee+slippage floor.
+    expect(roundTripCostPct(0.2, 10, Number.NaN)).toBeCloseTo(0.6, 10);
+    expect(roundTripCostPct(0.2, 10, -1)).toBeCloseTo(0.6, 10);
+
+    // The floor tracks it: on a 2% spread the trail may not sit under entry x 1.026.
+    const pos = { entry_price: 100, stop_loss: 97 };
+    const tight = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1 };
+    const wide = roundTripCostPct(0.2, 10, 2);
+    expect(trailingStop(pos, 103, 1, tight, wide)).toBeNull(); // 102 < 102.6 break-even
+    expect(trailingStop(pos, 104, 1, tight, wide)).toBeCloseTo(103, 10);
   });
   it('time stop', () => {
     expect(timeStopHit(0, 60 * 60_000, { timeStopMinutes: 60 })).toBe(true);
