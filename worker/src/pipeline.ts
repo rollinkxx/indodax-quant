@@ -10,7 +10,7 @@ import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../..
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -648,7 +648,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         let reason: string | null = exitReason(pos, t.bid);
         if (!reason) {
           // Trailing stop: ratchet the stop up with price (takes effect from the next run).
-          const newStop = trailingStop(pos, t.bid, lastIndicators.get(pos.pair_id)?.atr14 ?? null, params);
+          const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id));
+          const newStop = trailingStop(pos, t.bid, lastIndicators.get(pos.pair_id)?.atr14 ?? null, params, trailCostPct);
           if (newStop !== null) {
             try {
               await db.update('paper_positions', `id=eq.${pos.id}&status=eq.OPEN`, { stop_loss: newStop });
@@ -746,7 +747,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           }
           const economics = netRewardRiskDiagnostics({
             entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
-            feePct, exitSlippageBps: slip,
+            feePct, exitSlippageBps: slip, minRatio: params.minNetRewardRiskRatio,
           });
           if (economics.reason) {
             rejectEntry(s, 'economics_gate', economics.reason, {

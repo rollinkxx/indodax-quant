@@ -69,6 +69,18 @@ describe('net reward/risk gate', () => {
     })).toBeNull();
   });
 
+  it('admits a nearer target only when the caller lowers the minimum ratio', () => {
+    const setup = { entry: 100, stopLoss: 97, takeProfit: 101.5, feePct: 0.2, exitSlippageBps: 10 };
+    const ratio = netRewardRiskDiagnostics(setup).metrics.net_reward_risk_ratio;
+
+    // The default 1:1 floor rejects a target nearer than the stop.
+    expect(netRewardRiskGate(setup)).toBe('net_reward_risk_below_minimum');
+    // A floor just under this trade's own ratio admits it.
+    expect(netRewardRiskGate({ ...setup, minRatio: ratio - 0.01 })).toBeNull();
+    // A floor just above it rejects the same trade.
+    expect(netRewardRiskGate({ ...setup, minRatio: ratio + 0.01 })).toBe('net_reward_risk_below_minimum');
+  });
+
   it('blocks a take-profit that cannot cover round-trip fees and slippage', () => {
     expect(netRewardRiskGate({
       entry: 100,

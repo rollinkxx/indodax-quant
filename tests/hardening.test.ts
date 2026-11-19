@@ -40,6 +40,17 @@ describe('strategy hardening helpers', () => {
     expect(trailingStop(pos, 110, 2, { ...T, trailingStopEnabled: false })).toBeNull();
     expect(trailingStop(pos, 110, null, T)).toBeNull();
   });
+
+  it('never ratchets the stop below break-even, where the round trip is already lost', () => {
+    const pos = { entry_price: 100, stop_loss: 97 };
+    const tight = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1 };
+    // Armed at 100.75 (entry + 1.5 x 0.5 ATR) and trails to 100.25, below the 100.4 break-even.
+    expect(trailingStop(pos, 100.75, 0.5, tight, 0.4)).toBeNull();
+    // At 101 the trail sits exactly on the break-even price, so it may be set.
+    expect(trailingStop(pos, 101, 0.5, tight, 0.4)).toBeCloseTo(100.5, 10);
+    // Without a cost the same quote trails to the old level.
+    expect(trailingStop(pos, 100.75, 0.5, tight)).toBeCloseTo(100.25, 10);
+  });
   it('time stop', () => {
     expect(timeStopHit(0, 60 * 60_000, { timeStopMinutes: 60 })).toBe(true);
     expect(timeStopHit(0, 59 * 60_000, { timeStopMinutes: 60 })).toBe(false);
