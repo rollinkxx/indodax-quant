@@ -10,7 +10,7 @@ import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../..
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, sellFillPrice, timeStopHit, trailingStop } from '../../shared/paper';
 
 export interface Account {
   id: number;
@@ -709,7 +709,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const t = freshTicker(s.pair_id);
           if (!t) { rejectEntry(s, 'market_data_gate', 'stale_ticker'); continue; }
           const slip = slipFor(s.pair_id);
-          const feePct = feePctFor(s.pair_id);
+          // Entry-side fee must be the real per-pair taker fee; a missing catalog value rejects the
+          // entry instead of falling back, so the economics gate below cannot be fed a cheap fee.
+          const feeRes = entryFeePct(params, pairFee.get(s.pair_id));
+          if ('reason' in feeRes) { rejectEntry(s, 'fee_gate', feeRes.reason); continue; }
+          const feePct = feeRes.pct;
           const fill = buyFillPrice(t.ask, slip);
           const atrValue = s.indicators?.atr14 ?? lastIndicators.get(s.pair_id)?.atr14 ?? null;
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);

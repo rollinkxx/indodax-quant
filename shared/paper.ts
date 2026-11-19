@@ -39,8 +39,9 @@ export function feeFor(notional: number, feePct: number): number {
 /**
  * Per-side fee (percentage points) actually charged for a pair.
  * 'assumption' always uses `feePct`. 'pair_taker' uses the pair's real INDODAX taker fee when it
- * is a valid non-negative number, otherwise falls back to `feePct` so a missing catalog value can
- * never silently zero out the cost. A taker fee of exactly 0 is honoured (some zero-fee campaigns).
+ * is a valid non-negative number, otherwise falls back to `feePct`. Exit-side callers use this so a
+ * missing catalog value cannot abort a close that must happen; entries use `entryFeePct`, which
+ * rejects instead of falling back. A taker fee of exactly 0 is honoured (some zero-fee campaigns).
  */
 export function effectiveFeePct(
   p: Pick<StrategyParams, 'feeModel' | 'feePct'>,
@@ -50,6 +51,21 @@ export function effectiveFeePct(
   if (pairTakerFeePct === null || pairTakerFeePct === undefined) return p.feePct;
   const taker = Number(pairTakerFeePct);
   return Number.isFinite(taker) && taker >= 0 ? taker : p.feePct;
+}
+
+/**
+ * Entry-side fee resolution. Unlike `effectiveFeePct`, a missing/invalid per-pair taker fee is a
+ * hard rejection under 'pair_taker' instead of a silent fallback: falling back would under-charge
+ * the round trip and let the net reward/risk gate pass trades that cannot pay for themselves.
+ */
+export function entryFeePct(
+  p: Pick<StrategyParams, 'feeModel' | 'feePct'>,
+  pairTakerFeePct: number | null | undefined,
+): { pct: number } | { reason: 'missing_pair_fee' } {
+  if (p.feeModel !== 'pair_taker') return { pct: p.feePct };
+  if (pairTakerFeePct === null || pairTakerFeePct === undefined) return { reason: 'missing_pair_fee' };
+  const taker = Number(pairTakerFeePct);
+  return Number.isFinite(taker) && taker >= 0 ? { pct: taker } : { reason: 'missing_pair_fee' };
 }
 
 export interface Stops {

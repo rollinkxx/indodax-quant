@@ -1,9 +1,9 @@
 // Read-only fee-sensitivity report (audit finding F1).
 //
-// The paper engine's active assumption is feePct = 0.00555 percentage points (0.00555% per side),
-// while INDODAX's public pair catalog reports trade_fee_percent_taker = 0.2% for 438/438 IDR pairs.
-// This script replays the stored 5m candles through the same per-pair simulation under two fee
-// scenarios and prints the difference, so the owner can quantify the cost of the mismatch.
+// The paper engine charges the real per-pair taker fee (feeModel 'pair_taker'); INDODAX's public
+// pair catalog reports trade_fee_percent_taker = 0.2% per side for 438/438 IDR pairs. The retired
+// 0.00555% assumption under-charged by ~36x, so this script replays the stored 5m candles under
+// both models and prints the difference, quantifying what the mismatch was costing.
 //
 // It is strictly read-only: it loads candles and the active config, runs the in-memory simulation,
 // and prints a JSON report. It submits no orders and writes nothing to the database.
@@ -108,7 +108,7 @@ async function main() {
     generatedAt: new Date().toISOString(),
     activeConfigUpdatedAt: cfg[0].updated_at,
     assumptionFeePct: live.feePct,
-    assumptionFeeUnit: 'percentage points; 0.00555 means 0.00555% per side',
+    assumptionFeeUnit: 'percentage points; e.g. 0.2 means 0.2% per side',
     note: 'Per-pair taker fees come from market_pairs.trade_fee_percent_taker (INDODAX /api/pairs). The active paper config is NOT modified by this report.',
     pairsEvaluated: evaluated,
     perPairIdr10mIndependentAccounts: {

@@ -35,7 +35,7 @@ if (!accounts[0] || accounts[0].status !== 'RUNNING' || accounts[0].kill_switch 
   throw new Error('Paper account is not RUNNING with kill switch off');
 }
 const p = configs[0]?.params;
-if (!p || Number(p.feePct) !== 0.00555 || p.mtfMode !== 'score'
+if (!p || Number(p.feePct) !== 0.2 || p.feeModel !== 'pair_taker' || p.mtfMode !== 'score'
   || Number(p.riskPerTradePct) !== 1 || Number(p.maxEntrySpreadPct) !== 0.6
   || Number(p.maxEntryDriftPct) !== 0.5 || Number(p.maxOpenPositions) !== 10
   || Number(p.maxTotalExposurePct) !== 60) {

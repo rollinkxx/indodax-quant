@@ -504,7 +504,7 @@ async function main() {
         parameters: {
           timeframe: live.timeframe,
           feePct: live.feePct,
-          feeUnit: 'percentage points; 0.00555 means 0.00555% per side',
+          feeUnit: 'percentage points; e.g. 0.2 means 0.2% per side',
           slippageBps: live.slippageBps,
           dynamicSlippage: live.dynamicSlippage,
           mtfMode: live.mtfMode,

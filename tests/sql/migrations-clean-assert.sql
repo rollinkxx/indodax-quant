@@ -5,6 +5,7 @@ DECLARE
   v_signature text;
   v_function regprocedure;
   v_fee numeric;
+  v_fee_model text;
   v_active_count integer;
 BEGIN
   -- Every public application table must have RLS enabled.
@@ -71,15 +72,19 @@ BEGIN
     RAISE EXCEPTION 'is_app_user must be SECURITY INVOKER';
   END IF;
 
-  -- The clean migration chain must create exactly one active paper strategy and the
-  -- explicitly requested fee-model assumption, without starting a paper account.
-  SELECT count(*), max((params->>'feePct')::numeric)
-    INTO v_active_count, v_fee
+  -- The clean migration chain must create exactly one active paper strategy that charges
+  -- the real per-pair taker fee, without starting a paper account. feePct is only the
+  -- fallback, and it must match the catalog rate so a fallback can never under-charge.
+  SELECT count(*), max((params->>'feePct')::numeric), max(params->>'feeModel')
+    INTO v_active_count, v_fee, v_fee_model
     FROM public.strategy_configs
     WHERE is_active;
   IF v_active_count <> 1 THEN RAISE EXCEPTION 'Expected exactly one active strategy config, got %', v_active_count; END IF;
-  IF v_fee IS DISTINCT FROM 0.00555::numeric THEN
+  IF v_fee IS DISTINCT FROM 0.2::numeric THEN
     RAISE EXCEPTION 'Unexpected feePct in clean migration seed: %', v_fee;
+  END IF;
+  IF v_fee_model IS DISTINCT FROM 'pair_taker' THEN
+    RAISE EXCEPTION 'Expected feeModel pair_taker in clean migration seed, got %', v_fee_model;
   END IF;
   IF EXISTS (SELECT 1 FROM public.paper_accounts WHERE status <> 'STOPPED' OR kill_switch) THEN
     RAISE EXCEPTION 'A clean database must seed paper accounts STOPPED with kill switch off';

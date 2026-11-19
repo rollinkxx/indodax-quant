@@ -142,7 +142,7 @@ async function main() {
         timeframe: activeConfig.params.timeframe ?? null,
         feeModel: activeConfig.params.feeModel ?? 'assumption',
         feePct: activeConfig.params.feePct ?? null,
-        feeUnit: 'percentage points; 0.00555 means 0.00555% per side',
+        feeUnit: 'percentage points; e.g. 0.2 means 0.2% per side',
         slippageBps: activeConfig.params.slippageBps ?? null,
         dynamicSlippage: activeConfig.params.dynamicSlippage ?? null,
         mtfMode: activeConfig.params.mtfMode ?? null,
