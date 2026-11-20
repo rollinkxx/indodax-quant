@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -33,6 +33,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
             account: { id: 1, status: 'RUNNING', kill_switch: false, cash_balance: 1e7, equity: 1e7, peak_equity: 1e7, max_drawdown_pct: 0, reset_at: '2026-01-01T00:00:00Z' },
             pairs: [{ id: 'btcidr', symbol: 'BTCIDR', ticker_id: 'btc_idr', is_maintenance: false, is_tracked: true, in_universe: false, trade_min_base_currency: 10000,
               trade_fee_percent_taker: opts.pairTakerFee === undefined ? 0.2 : opts.pairTakerFee,
+              price_precision: opts.pairPricePrecision ?? null,
               covered_until: new Date((Math.floor(NOW / 60) * 60 - 60) * 1000).toISOString(), last_trade_time: null, last_trade_tid: null,
               htf_backfilled_at: opts.htfBackfilled ? '2026-01-01T00:00:00Z' : null }],
             catalog: { btcidr: false, pepeidr: false, usdtidr: false, dogeidr: false },
@@ -289,6 +290,30 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
       buy_signals_received: 1, entries_opened: 1, open: 1,
     });
     expect(o.indodax.every((path) => !/\/api\/(private|order|orders)(\/|$)/i.test(path))).toBe(true);
+  });
+
+  it('persists the normalized order, not the requested one, when precision rounds it down', async () => {
+    // price_precision 0 makes normalizePrice round the 1000.x fill to a whole rupiah, and the 8dp qty
+    // step rounds the quantity down. The stored position and the RPC payload must agree with each
+    // other, otherwise in-memory exposure/MTM drifts from the database for the rest of the cycle.
+    const signal = {
+      id: 202, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 10 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const o = setup({ mtfMode: 'off', newSignals: [signal], pairPricePrecision: 0, tickerBid: 1000 });
+    const result = await run(o);
+    expect(result.status).toBe('SUCCESS');
+    const opens = o.rpcs.filter((x) => x.fn === 'paper_open_position');
+    expect(opens).toHaveLength(1);
+    const body = opens[0].body;
+    expect(Number.isInteger(body.p_fill_price)).toBe(true);
+    // The fee must be charged on the normalized notional, not on the pre-rounding size.
+    expect(body.p_fee).toBeCloseTo(body.p_qty * body.p_fill_price * 0.002, 6);
+    const entry = (result.steps as any).paper_trading.info.opened_entries[0];
+    expect(entry.qty).toBe(body.p_qty);
+    expect(entry.fill_price).toBe(body.p_fill_price);
+    expect(entry.notional).toBeCloseTo(body.p_qty * body.p_fill_price, 6);
+    expect(entry.fee).toBeCloseTo(body.p_fee, 6);
   });
 
   it('keeps HOLD cycles idle: no simulated order is opened or closed', async () => {

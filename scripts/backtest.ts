@@ -19,6 +19,16 @@ import {
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
 import { evaluateStrategyEvidence } from '../shared/strategyEvidence';
+import { DEFAULT_FILL_MODEL, simulatePortfolio, type PortfolioFillModel } from '../shared/portfolioBacktest';
+import {
+  buildWalkForwardFolds, clusterBootstrap, DEFAULT_PROMOTION_CRITERIA, embargoSeconds, evaluatePromotion,
+  maxPairContributionSharePct, maxRegimeContributionSharePct, netPnlExcludingTopTrades, walkForwardReport,
+  type TradeObservation,
+} from '../shared/walkForward';
+import { scenarioSpreadBps, SPREAD_SCENARIOS } from '../shared/fillModel';
+import { indexQuotes, observedSpreads as observedSpreadsOf, type QuotePoint } from '../shared/quoteHistory';
+import { normalizeIntervals, type UniverseInterval } from '../shared/universe';
+import { TIMEFRAME_SPECS } from '../shared/timeframes';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
 import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, createRequestStartLimiter, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
@@ -52,7 +62,10 @@ const indodax = new IndodaxClient(withIndodaxRelay(rateLimitedFetch, proxyUrl, K
 const HISTORY_CHUNK_SECONDS = 12 * 60 * 60;
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
-interface StoredPair { id: string; symbol: string; is_tracked: boolean; in_universe: boolean; trade_fee_percent_taker: number | null }
+interface StoredPair {
+  id: string; symbol: string; is_tracked: boolean; in_universe: boolean;
+  trade_fee_percent_taker: number | null; trade_min_base_currency?: number | null;
+}
 interface OfficialHistoryResult {
   candles: Candle[];
   metrics: {
@@ -152,6 +165,52 @@ async function loadCandles(pair: string, officialHistory?: OfficialHistoryResult
 }
 
 export type ExperimentMode = 'crossover' | 'trend_continuation';
+
+/**
+ * Timestamped universe membership for one pair, as half-open `[from, to)` second ranges.
+ *
+ * Returns undefined when the table is empty or unreachable, which makes the caller fall back to the
+ * static `in_universe` flag and report the run as non-timestamped rather than silently pretending
+ * the universe was known historically.
+ */
+async function loadUniverseIntervals(pair: string): Promise<UniverseInterval[] | undefined> {
+  try {
+    const rows = await get<{ effective_from: string; effective_to: string | null }[]>(
+      `market_universe_history?select=effective_from,effective_to&pair_id=eq.${pair}&order=effective_from.asc`,
+    );
+    if (!rows.length) return undefined;
+    return normalizeIntervals(rows.map((r) => ({
+      from: Math.floor(Date.parse(r.effective_from) / 1000),
+      to: r.effective_to === null ? null : Math.floor(Date.parse(r.effective_to) / 1000),
+    })));
+  } catch (e) {
+    console.warn(`[UNIVERSE] ${pair}: ${(e as Error).message}; falling back to current membership flags`);
+    return undefined;
+  }
+}
+
+/**
+ * Stored bid/ask captures for a pair. This is the quote history the pipeline already writes, so a
+ * backtest can price fills against what was actually available instead of the candle open.
+ *
+ * `market_tickers` is retained for 8 days, so a longer window is quote-covered only at its tail; the
+ * caller labels the run CANDLE_ONLY_OPTIMISTIC unless every pair had quotes.
+ */
+async function loadQuotes(pair: string, fromSec?: number, toSec?: number): Promise<QuotePoint[]> {
+  const rows: { captured_at: string; bid: number; ask: number }[] = [];
+  const filters = [`pair_id=eq.${pair}`];
+  if (fromSec !== undefined) filters.push(`captured_at=gte.${new Date(fromSec * 1000).toISOString()}`);
+  if (toSec !== undefined) filters.push(`captured_at=lte.${new Date(toSec * 1000).toISOString()}`);
+  const base = `market_tickers?select=captured_at,bid,ask&${filters.join('&')}&order=captured_at.asc`;
+  const MAX_ROWS = 20_000;
+  for (let offset = 0; offset < MAX_ROWS; offset += 1_000) {
+    const page = await get<typeof rows>(`${base}&limit=1000&offset=${offset}`);
+    rows.push(...page);
+    if (page.length < 1_000) break;
+  }
+  if (rows.length >= MAX_ROWS) console.warn(`[QUOTES] ${pair}: truncated at ${MAX_ROWS} rows`);
+  return indexQuotes(rows.map((r) => ({ t: Math.floor(Date.parse(r.captured_at) / 1000), bid: +r.bid, ask: +r.ask })));
+}
 
 /**
  * Median gap between consecutive candle opens, snapped to a standard bar size.
@@ -420,7 +479,7 @@ async function main() {
 
   const cliPairs: string[] = argv.filter((a) => !a.startsWith('--'));
   const marketPairs = await get<StoredPair[]>(
-    'market_pairs?select=id,symbol,is_tracked,in_universe,trade_fee_percent_taker&is_maintenance=eq.false&limit=1000',
+    'market_pairs?select=id,symbol,is_tracked,in_universe,trade_fee_percent_taker,trade_min_base_currency&is_maintenance=eq.false&limit=1000',
   );
   const marketById = new Map(marketPairs.map((row) => [row.id, row]));
   // Compare only the active production scan universe, not unrelated high-volume IDR pairs.
@@ -458,6 +517,8 @@ async function main() {
     cross_lookback_4: [],
     ema21_continuation_shadow: [],
   };
+  // Retained for the shared-cash portfolio run and the walk-forward folds below.
+  const portfolioInputs: { pair: string; candles: Candle[]; volIdr: number | null; pairTakerFeePct: number | null; minNotional: number | null; inUniverse: boolean; universeIntervals?: UniverseInterval[]; quotes?: QuotePoint[] }[] = [];
   let usablePairs = 0;
   for (const pair of selectedPairs) {
     const history = officialHistory.get(pair.id);
@@ -473,6 +534,19 @@ async function main() {
       continue;
     }
     usablePairs++;
+    const quotes = await loadQuotes(pair.id, history?.metrics.fromSec, history?.metrics.toSec).catch((e) => {
+      console.warn(`[QUOTES] ${pair.id}: ${(e as Error).message}; falling back to candle-only fills`);
+      return [] as QuotePoint[];
+    });
+    const universeIntervals = await loadUniverseIntervals(pair.id);
+    portfolioInputs.push({
+      pair: pair.id, candles, volIdr: vols[pair.id] ?? null,
+      pairTakerFeePct: pair.trade_fee_percent_taker,
+      minNotional: pair.trade_min_base_currency ?? null,
+      inUniverse: pair.in_universe,
+      ...(universeIntervals ? { universeIntervals } : {}),
+      ...(quotes.length ? { quotes } : {}),
+    });
     const variants = [
       { key: 'cross_lookback_2', params: params2, mode: 'crossover' as const },
       { key: 'cross_lookback_4', params: params4, mode: 'crossover' as const },
@@ -525,6 +599,147 @@ async function main() {
   const evidenceGateByVariant = Object.fromEntries(
     Object.entries(aggregateOutOfSample).map(([key, metrics]) => [key, evaluateStrategyEvidence(metrics)]),
   );
+
+  // ---- Shared-cash portfolio chronology + walk-forward + spread scenarios (audit §2, §3, §10) ----
+  // The per-pair `simulate()` above gives every pair its own IDR 10,000,000, which hides the shared
+  // cash pool, the concurrency cap, the exposure ceiling and the daily-loss/kill-switch interaction.
+  // This run uses ONE account across all pairs on a single timeline.
+  const portfolioSignal = (p: StrategyParams) => (pair: string, candles: Candle[], index: number): 'BUY' | 'SELL' | 'HOLD' => {
+    const win = Math.max(3, p.crossLookback + 1);
+    const from = index - win + 1;
+    if (from < 0) return 'HOLD';
+    const interval = inferIntervalSec(candles);
+    if (!hasBacktestDataQuality(candles, index, p.minCandles, interval)) return 'HOLD';
+    const window = candles.slice(from, index + 1);
+    const rows = computeIndicators(window, p);
+    if (rows.length !== window.length) return 'HOLD';
+    const action = evaluateMarketAction(rows, window.map((c) => c.v), p);
+    return action.signal?.side ?? evaluateSignalWindow(rows, window.map((c) => c.v), p)?.side ?? 'HOLD';
+  };
+
+  // Spread scenarios: without historical bid/ask depth the spread is a scenario, not a measurement,
+  // so every row is labelled and the promotion gate is evaluated at the conservative scenario only.
+  // The sample combines every stored quote with the latest tickers; the floor keeps a scenario from
+  // collapsing to zero when the sample is empty, which would make P99 as optimistic as P50.
+  const latestTickerSpreads = await get<{ pair_id: string; bid: number; ask: number }[]>(
+    'market_tickers_latest?select=pair_id,bid,ask',
+  ).then((rows) => rows.map((r) => {
+    const bid = Number(r.bid), ask = Number(r.ask);
+    const mid = (bid + ask) / 2;
+    return mid > 0 && ask >= bid ? (ask - bid) / mid * 10_000 : null;
+  }).filter((v): v is number => v !== null)).catch(() => [] as number[]);
+  const spreadSample = [...latestTickerSpreads, ...portfolioInputs.flatMap((p) => observedSpreadsOf(p.quotes ?? []))];
+  const spreadFloorBps = Math.max(1, live.slippageBps);
+
+  const portfolioByScenario: Record<string, unknown> = {};
+  const portfolioTradesByScenario: Record<string, TradeObservation[]> = {};
+  // False when any pair in any scenario lacked membership intervals, i.e. the run fell back to
+  // today's flags applied to the whole history.
+  let universeTimestamped = true;
+  for (const scenario of SPREAD_SCENARIOS) {
+    const spreadBps = scenarioSpreadBps(spreadSample, scenario, spreadFloorBps);
+    const quotePairs = portfolioInputs.filter((p) => p.quotes?.length).length;
+    const fillModel: PortfolioFillModel = {
+      ...DEFAULT_FILL_MODEL,
+      spreadBps,
+      // A run is only QUOTE_BASED when every evaluated pair had quote history to price against.
+      label: quotePairs > 0 && quotePairs === portfolioInputs.length ? 'QUOTE_BASED' : 'CANDLE_ONLY_OPTIMISTIC',
+      maxQuoteAgeSec: 120,
+    };
+    const run = simulatePortfolio(portfolioInputs, params2, {
+      initialCash: 10_000_000, fillModel, signal: portfolioSignal(params2),
+    });
+    universeTimestamped = universeTimestamped && run.universeIsTimestamped;
+    const obs: TradeObservation[] = run.trades.map((t) => ({
+      pnl: t.pnl, costBasis: t.cost, pair: t.pair, entryTime: t.entryTime, exitTime: t.exitTime, reason: t.reason,
+      regime: t.regime,
+    }));
+    portfolioTradesByScenario[scenario] = obs;
+    const perPair: Record<string, number> = {};
+    for (const t of run.trades) perPair[t.pair] = (perPair[t.pair] ?? 0) + t.pnl;
+    portfolioByScenario[scenario] = {
+      spreadBps: Number(spreadBps.toFixed(2)),
+      label: run.effectiveFillLabel,
+      universeIsTimestamped: run.universeIsTimestamped,
+      quoteFills: run.quoteFills,
+      quoteRejections: run.quoteRejections,
+      trades: run.trades.length,
+      netPnlIdr: Math.round(run.finalEquity - run.initialCash),
+      finalEquity: Math.round(run.finalEquity),
+      maxDrawdownPct: Number(run.maxDrawdownPct.toFixed(2)),
+      maxConcurrentPositions: run.maxConcurrentPositions,
+      turnoverIdr: Math.round(run.turnoverIdr),
+      forcedEodExits: run.forcedEodExits,
+      partialFills: run.partialFills,
+      rejectedOrders: run.rejectedOrders,
+      killSwitchTripped: run.killSwitchTripped,
+      dailyLossFlattens: run.dailyLossFlattens,
+      timeUnderWaterBars: run.timeUnderWaterBars,
+      topPairContributionSharePct: (() => {
+        const total = Object.values(perPair).reduce((a, b) => a + Math.abs(b), 0);
+        const top = Object.values(perPair).reduce((a, b) => Math.max(a, Math.abs(b)), 0);
+        return total > 0 ? Number((top / total * 100).toFixed(2)) : 0;
+      })(),
+      perPairContributionIdr: Object.fromEntries(Object.entries(perPair).map(([k, v]) => [k, Math.round(v)])),
+      perRegimeContributionIdr: Object.fromEntries(Object.entries(
+        run.trades.reduce<Record<string, number>>((acc, t) => {
+          acc[t.regime] = (acc[t.regime] ?? 0) + t.pnl;
+          return acc;
+        }, {}),
+      ).map(([k, v]) => [k, Math.round(v)])),
+      rejectionsByReason: run.rejections.reduce<Record<string, number>>((acc, r) => {
+        const key = `${r.stage}:${r.reason}`;
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {}),
+    };
+  }
+
+  // Walk-forward: 6 chronological folds with an embargo covering holding + indicator + HTF lookback.
+  const allTimes = portfolioInputs.flatMap((p) => p.candles.filter((c) => c.source !== 'synthetic').map((c) => c.t));
+  const wfStart = allTimes.length ? Math.min(...allTimes) : 0;
+  const wfEnd = allTimes.length ? Math.max(...allTimes) + 300 : 0;
+  const spec5m = TIMEFRAME_SPECS['5m'];
+  const embargoSec = embargoSeconds({
+    maxHoldingSeconds: spec5m.maxHoldingBars * spec5m.baseSeconds,
+    indicatorLookbackBars: live.minCandles,
+    higherTimeframeLookbackBars: 120 * 12, // MTF_WINDOW 1h buckets expressed in 5m bars
+    barSeconds: spec5m.baseSeconds,
+  });
+  const folds = buildWalkForwardFolds({ startSec: wfStart, endSec: wfEnd, folds: 7, embargoSec });
+  const wfTrades = portfolioTradesByScenario.P50 ?? [];
+  const wf = walkForwardReport({ trades: wfTrades, folds, minFoldTrades: 10, bootstrap: { key: 'pair', resamples: 2000, seed: 11 } });
+  const p50 = portfolioByScenario.P50 as { maxDrawdownPct: number; label: 'CANDLE_ONLY_OPTIMISTIC' | 'QUOTE_BASED' };
+  const promotion = evaluatePromotion(wf, Number(p50.maxDrawdownPct), DEFAULT_PROMOTION_CRITERIA, {
+    maxSinglePairContributionSharePct: maxPairContributionSharePct(wfTrades),
+    maxSingleRegimeContributionSharePct: maxRegimeContributionSharePct(wfTrades),
+    exTopTradeNetPnlIdr: netPnlExcludingTopTrades(wfTrades, DEFAULT_PROMOTION_CRITERIA.topTradeCount),
+    // Parameters come from the active row and are not re-tuned inside this run.
+    configFrozen: overrideKeys.length === 0,
+    fillModelLabel: p50.label,
+    portfolioConstraintsActive: true,
+    universeIsTimestamped: universeTimestamped,
+  });
+  const bootstrapByCluster = {
+    pair: clusterBootstrap(wfTrades, 'pair', { resamples: 2000, seed: 11 }),
+    day: clusterBootstrap(wfTrades, 'day', { resamples: 2000, seed: 11 }),
+    regime: clusterBootstrap(wfTrades, 'regime', { resamples: 2000, seed: 11 }),
+  };
+  const portfolioChronology = {
+    note: 'One shared IDR 10,000,000 account across all pairs on a single timeline; exits precede entries, then daily-loss and drawdown kill switch, then ranked entries capped by maxOpenPositions and maxTotalExposurePct.',
+    initialCashIdr: 10_000_000,
+    observedSpreadSampleCount: spreadSample.length,
+    universeIsTimestamped: universeTimestamped,
+    spreadFloorBps,
+    spreadIsScenarioNotMeasurement: true,
+    embargoSeconds: embargoSec,
+    folds,
+    walkForward: wf,
+    bootstrapByCluster,
+    promotionDecision: promotion,
+    promotionPolicy: 'NO_GO unless >=4 material folds, majority positive, no materially negative fold, PF>1, bootstrap lower-95 expectancy >0, drawdown within budget, no single pair >60% or single regime >80% of gross PnL, quote-based fills, timestamped universe, frozen config. Human review required; never auto-promoted.',
+    byScenario: portfolioByScenario,
+  };
 
   console.log(JSON.stringify({
     experiment: {
@@ -592,13 +807,14 @@ async function main() {
       pairsRequested: selectedPairs.length,
       pairsEvaluated: usablePairs,
       initialEquityPerPairIdr: 10_000_000,
-      sharedPortfolio: false,
+      sharedPortfolio: true,
     },
     scopeWarnings: backtestScopeWarnings(base),
     aggregateOutOfSampleIndependentPairAccounts: aggregateOutOfSample,
     evidenceGateByVariant,
     evidenceGatePolicy: 'NO_GO unless holdout has >=100 trades, Wilson 95% lower win-rate bound >=70%, profit factor >1 and net expectancy >0; eligible results require human review and are never auto-promoted',
-    aggregateAccountMeaning: 'sum of independent per-pair simulations; each evaluated pair starts with its own IDR 10,000,000; not a shared-cash portfolio',
+    aggregateAccountMeaning: 'sum of independent per-pair simulations; each evaluated pair starts with its own IDR 10,000,000. See portfolioChronology for the shared-cash account and the promotion decision.',
+    portfolioChronology,
     results: summary,
   }, null, 2));
 }

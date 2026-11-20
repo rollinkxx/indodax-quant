@@ -96,3 +96,49 @@ export function universeDue(nowSec: number, currentCount: number, mode: Strategy
   if (currentCount === 0) return true;
   return Math.floor(nowSec / 60) * 60 % everySec === 0;
 }
+
+/** A universe membership interval in seconds: a pair is a member while `from <= t < to`. */
+export interface UniverseInterval {
+  from: number;
+  /** Null = still a member at the end of the data. */
+  to: number | null;
+}
+
+/**
+ * Membership lookup for a timestamped universe.
+ *
+ * The backtest used to apply today's `in_universe` flag to the entire history, so a pair that became
+ * liquid last week was tradable months earlier. With intervals the question becomes "was this pair a
+ * member at time T?", which is the only answer that does not leak the future.
+ */
+export function memberAt(intervals: readonly UniverseInterval[] | undefined, t: number): boolean {
+  if (!intervals || !intervals.length) return false;
+  for (const iv of intervals) {
+    if (t >= iv.from && (iv.to === null || t < iv.to)) return true;
+  }
+  return false;
+}
+
+/**
+ * Normalize interval rows into sorted, merged, half-open ranges.
+ *
+ * Overlapping rows are merged rather than treated as an error: membership is a boolean, so two
+ * overlapping intervals mean the same thing as their union. Rows with `from >= to` are dropped.
+ */
+export function normalizeIntervals(rows: readonly { from: number; to: number | null }[]): UniverseInterval[] {
+  const clean = rows
+    .filter((r) => Number.isFinite(r.from) && (r.to === null || Number.isFinite(r.to)))
+    .filter((r) => r.to === null || r.to > r.from)
+    .sort((a, b) => a.from - b.from);
+  const out: UniverseInterval[] = [];
+  for (const r of clean) {
+    const last = out[out.length - 1];
+    if (last && (last.to === null || r.from <= last.to)) {
+      if (last.to === null || r.to === null) last.to = null;
+      else last.to = Math.max(last.to, r.to);
+    } else {
+      out.push({ from: r.from, to: r.to });
+    }
+  }
+  return out;
+}

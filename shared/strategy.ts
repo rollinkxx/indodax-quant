@@ -270,6 +270,63 @@ export function validateBracketEconomics(merged: StrategyParams): string[] {
   return [];
 }
 
+/**
+ * Cross-field consistency checks that only make sense on a complete parameter set.
+ *
+ * These catch combinations that are individually valid but jointly broken: a BUY/SELL RSI band that
+ * overlaps, volume confirmation silently disabled, an inverted net reward/risk bracket, or a holdout
+ * / evidence threshold that can never be met. They are warnings or errors, never silent rewrites.
+ */
+export interface CrossFieldFinding {
+  level: 'warn' | 'error';
+  code: string;
+  message: string;
+}
+
+export function validateCrossFieldParams(p: StrategyParams): CrossFieldFinding[] {
+  const out: CrossFieldFinding[] = [];
+  if (p.rsiBuyMin <= p.rsiSellMax) {
+    out.push({ level: 'warn', code: 'BUY_AND_SELL_RSI_REGIMES_OVERLAP', message: `rsiBuyMin (${p.rsiBuyMin}) <= rsiSellMax (${p.rsiSellMax}); BUY and SELL regimes overlap` });
+  }
+  if (!(p.volumeMultiplier > 0)) {
+    out.push({ level: 'warn', code: 'VOLUME_CONFIRMATION_DISABLED', message: 'volumeMultiplier <= 0 disables volume confirmation' });
+  }
+  if (!(p.atrTakeProfitMultiplier > p.atrStopMultiplier)) {
+    out.push({ level: 'error', code: 'INVALID_NET_REWARD_RISK', message: `takeProfit (${p.atrTakeProfitMultiplier}x) <= stopLoss (${p.atrStopMultiplier}x); net reward cannot exceed risk` });
+  }
+  if (!(p.minNetRewardRiskRatio > 0)) {
+    out.push({ level: 'error', code: 'INVALID_NET_REWARD_RISK', message: 'minNetRewardRiskRatio must be positive' });
+  }
+  return out;
+}
+
+/** Whether a strategy-evidence requirement set is internally satisfiable. */
+export function validateEvidenceRequirements(req: {
+  minHoldoutTrades: number;
+  minWinRateLower95Pct: number;
+  minProfitFactorExclusive: number;
+}): CrossFieldFinding[] {
+  const out: CrossFieldFinding[] = [];
+  if (!(req.minHoldoutTrades >= 1)) out.push({ level: 'error', code: 'INVALID_HOLDOUT_SIZE', message: 'minHoldoutTrades must be at least 1' });
+  if (!(req.minWinRateLower95Pct >= 0) || req.minWinRateLower95Pct > 100) out.push({ level: 'error', code: 'INVALID_WIN_RATE_THRESHOLD', message: 'minWinRateLower95Pct must be between 0 and 100' });
+  if (!(req.minProfitFactorExclusive >= 0)) out.push({ level: 'error', code: 'INVALID_PROFIT_FACTOR_THRESHOLD', message: 'minProfitFactorExclusive must be non-negative' });
+  return out;
+}
+
+/**
+ * Warn when a caller supplies a win rate that disagrees with wins/trades. Accepts `null`/`undefined`
+ * as "not supplied". Tolerance is 0.01 percentage points.
+ */
+export function checkReportedWinRate(wins: number, trades: number, reportedWinRatePct: number | null | undefined): CrossFieldFinding | null {
+  if (reportedWinRatePct === null || reportedWinRatePct === undefined || !Number.isFinite(reportedWinRatePct)) return null;
+  if (!(trades > 0)) return null;
+  const calculated = wins / trades * 100;
+  if (Math.abs(reportedWinRatePct - calculated) > 0.01) {
+    return { level: 'warn', code: 'WIN_RATE_INPUT_MISMATCH', message: `reported win rate ${reportedWinRatePct.toFixed(2)}% disagrees with ${calculated.toFixed(2)}% from wins/trades` };
+  }
+  return null;
+}
+
 /** Merge stored params with defaults, ignoring invalid values. */
 export function mergeParams(stored: unknown): StrategyParams {
   const out: StrategyParams = { ...DEFAULT_PARAMS };

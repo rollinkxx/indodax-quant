@@ -11,6 +11,10 @@ import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagn
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
+import { assessQuote, valuationHealth, killSwitchState, type KillSwitchState } from '../../shared/quote';
+import { createLeaseKeeper } from '../../shared/lease';
+import { normalizeOrder } from '../../shared/orderNormalize';
+import { combineDecision, emptyDecisionCounters, tallyDecision, type DecisionCounters } from '../../shared/decisionPipeline';
 
 export interface Account {
   id: number;
@@ -43,6 +47,7 @@ interface PairCtx {
   in_universe?: boolean;
   trade_min_base_currency: number | null;
   trade_fee_percent_taker: number | null;
+  price_precision?: number | null;
   covered_until: string | null;
   last_trade_time: string | null;
   last_trade_tid: string | null;
@@ -64,6 +69,8 @@ interface BeginRun {
   ok: boolean;
   reason?: string;
   run_id: number;
+  fence_token?: number;
+  lease_expires_at?: string;
   config: unknown;
   account: Account;
   pairs: PairCtx[];
@@ -72,6 +79,9 @@ interface BeginRun {
   day_start_equity: number | string | null;
   pair_catalog_age_seconds: number | null;
 }
+
+/** Lease TTL. Must exceed the worst-case run (the CI smoke shows p99 ~350ms; the cron cadence is 60s). */
+export const LEASE_TTL_SECONDS = 55;
 
 interface SignalRow {
   id: number;
@@ -126,6 +136,36 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   const ctx = await db.rpc<BeginRun>('begin_run', { p_scheduled: scheduledIso, p_trigger: opts.trigger, p_lock_ttl_seconds: 55 });
   if (!ctx?.ok) return { status: 'SKIPPED', reason: ctx?.reason ?? 'unknown', runId: ctx?.run_id };
 
+  // Fencing token for this lease. Every heartbeat renewal and the final release must present it, so a
+  // run that overran its TTL can never mutate state or free a lease another run now owns.
+  const fenceToken = Number.isFinite(ctx.fence_token) ? Number(ctx.fence_token) : null;
+  const leaseKeeper = fenceToken === null ? null : createLeaseKeeper({
+    runId: String(ctx.run_id),
+    token: fenceToken,
+    ttlSeconds: LEASE_TTL_SECONDS,
+    now,
+    renew: async (runId, token, ttl) => {
+      const r = await db.rpc<{ ok: boolean; reason?: string; token?: number; expires_at_ms?: number }>(
+        'renew_pipeline_lease', { p_run_id: Number(runId), p_fence_token: token, p_lock_ttl_seconds: ttl },
+      );
+      return { ok: !!r?.ok, token: r?.token === undefined ? undefined : Number(r.token), expiresAtMs: r?.expires_at_ms === undefined ? undefined : Number(r.expires_at_ms) };
+    },
+  });
+  const leaseLost: { reason: string | null } = { reason: null };
+  // Called before every state mutation that can place/close an order. If the fence is gone, the run
+  // must stop instead of writing to an account another run now controls.
+  async function guardLease(): Promise<boolean> {
+    if (!leaseKeeper) return true;
+    try {
+      await leaseKeeper.ensure();
+      return true;
+    } catch (e) {
+      leaseLost.reason = e instanceof Error ? e.message : String(e);
+      errors.push(`lease: ${leaseLost.reason}`);
+      return false;
+    }
+  }
+
   const steps: Record<string, unknown> = {};
   const errors: string[] = [];
   const notes: NotificationItem[] = [];
@@ -167,11 +207,13 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     }, (r) => ({ tickers: r.tickers.length, catalog: r.catalog?.length ?? null }));
 
     const tickers = new Map<string, ParsedTicker>((market?.tickers ?? []).map((t) => [t.pair_id, t]));
-    const freshTicker = (pairId: string): ParsedTicker | null => {
+    // Freshness is decided in one place (shared/quote.ts): a crossed, non-positive, stale or
+    // future-dated quote is not tradable. `assessQuote` reports which of those failed.
+    const quoteAssessment = (pairId: string) => {
       const t = tickers.get(pairId);
-      if (!t || t.bid <= 0 || t.ask <= 0 || t.ask < t.bid) return null;
-      return nowSec - t.server_time <= params.maxTickerAgeSeconds ? t : null;
+      return assessQuote(t ? { bid: t.bid, ask: t.ask, serverTimeSec: t.server_time } : null, nowSec, { maxAgeSec: params.maxTickerAgeSeconds });
     };
+    const freshTicker = (pairId: string): ParsedTicker | null => (quoteAssessment(pairId).ok ? tickers.get(pairId)! : null);
 
     // 1b. Dynamic universe (from the summaries already fetched; takes effect on the next run)
     const currentUniverse = new Set(pairs.filter((p) => p.in_universe).map((p) => p.id));
@@ -596,6 +638,16 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
       const pairFee = new Map(pairs.map((p) => [p.id, p.trade_fee_percent_taker]));
+      const pairPrecision = new Map(pairs.map((p) => [p.id, p.price_precision ?? null]));
+      const decisionCounters: DecisionCounters = emptyDecisionCounters();
+
+      // Valuation health: a single open position without a fresh quote makes equity unverifiable, so
+      // new entries are blocked and the run is flagged instead of sizing against a stale mark.
+      const freshQuotePairs = new Set(tracked.filter((id) => quoteAssessment(id).ok));
+      const valuation = valuationHealth([...open.keys()], freshQuotePairs);
+      if (valuation.status === 'UNKNOWN') {
+        for (const pair of valuation.unpricedPairs) actions.push(`unpriced open position ${pair}: valuation UNKNOWN`);
+      }
 
       const slipFor = (pairId: string) => (params.dynamicSlippage ? dynamicSlippageBps(params.slippageBps, tickers.get(pairId)?.vol_idr) : params.slippageBps);
       // Per-side fee charged for a pair; 'pair_taker' uses the real INDODAX taker fee (see effectiveFeePct).
@@ -607,6 +659,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       };
 
       const close = async (pos: Position, reason: string, bid: number) => {
+        // Never close against a lease we no longer hold: a superseded run must not mutate the account.
+        if (!(await guardLease())) { actions.push(`close ${pos.pair_id} skipped: lease lost`); return false; }
         const slip = slipFor(pos.pair_id);
         const fill = sellFillPrice(bid, slip);
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
@@ -680,13 +734,23 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
 
       // c) Risk management
       const risk = riskState({ equity: Number(mtm.equity), peakEquity: Number(mtm.peak_equity), dayStartEquity: ctx.day_start_equity === null ? null : Number(ctx.day_start_equity), params });
+      let killState: KillSwitchState = killSwitchState({ status: accountStatus, killSwitch: account.kill_switch, openPositions: open.size });
       if (accountStatus === 'RUNNING' && risk.killSwitch) {
         await db.rpc('paper_set_status', { p_account_id: account.id, p_status: 'KILLED', p_reason: risk.reasons.join('; ') });
         accountStatus = 'KILLED';
         let closed = 0;
+        let failures = 0;
         for (const pos of [...open.values()]) {
           const t = freshTicker(pos.pair_id);
-          if (t && (await close(pos, 'MAX_DRAWDOWN', t.bid))) closed++;
+          if (t) { if (await close(pos, 'MAX_DRAWDOWN', t.bid)) closed++; else failures++; }
+          else failures++; // no fresh quote => cannot prove the position is flat
+        }
+        killState = killSwitchState({ status: accountStatus, killSwitch: true, openPositions: open.size, closeFailures: failures });
+        // A kill switch that leaves a position open is not "ok": surface it in the run so an operator sees it.
+        if (killState === 'KILLED_NOT_FLAT' || killState === 'KILL_CLOSE_FAILED') {
+          const msg = `kill switch ${killState}: ${open.size} position(s) still open after flatten`;
+          actions.push(msg);
+          degraded.push(msg);
         }
         notes.push({ event_type: 'kill_switch', dedupe_key: `kill:${account.id}:${nowMin}`, message: messages.killSwitch(risk.reasons.join('; '), closed) });
         mtm = await db.rpc<MtmResult>('paper_mark_to_market', { p_account_id: account.id, p_prices: bids, p_snapshot_time: iso(nowMin) });
@@ -709,7 +773,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // d) Entries on new BUY signals. Shadow continuation diagnostics are intentionally not used here.
       let entries = 0;
       const buys = newSignals.filter((s) => s.side === 'BUY').sort((a, b) => Number(b.strength) - Number(a.strength));
-      if (accountStatus === 'RUNNING' && !account.kill_switch && !risk.blockEntries) {
+      // An unverifiable equity (unpriced open position) blocks new risk, on top of the account/risk gates.
+      if (accountStatus === 'RUNNING' && !account.kill_switch && !risk.blockEntries && !valuation.blockEntries) {
         let cash = Number(mtm.cash);
         for (let i = 0; i < buys.length; i++) {
           const s = buys[i];
@@ -771,20 +836,36 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           }
           const size = positionSize({ equity: Number(mtm.equity), cash, entry: fill, stopLoss: stops.stopLoss, exitSlippageBps: slip, params: { ...params, feePct }, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 });
           if (size.qty <= 0) { rejectEntry(s, 'sizing_gate', size.reason ?? 'sizing_rejected'); continue; }
+          // Normalize to the pair's tick/step/min-notional before persisting: an order INDODAX would
+          // reject must be rejected here, not silently rounded into a position that cannot exist.
+          const norm = normalizeOrder({
+            qty: size.qty, price: fill,
+            rules: { pricePrecision: pairPrecision.get(s.pair_id) ?? null, minNotional: Number(pairMin.get(s.pair_id) ?? 10000) || 10000 },
+          });
+          if (!norm.ok) { rejectEntry(s, 'normalization_gate', norm.reason ?? 'normalization_rejected', { requested_qty: size.qty, notional: norm.notional }); continue; }
+          if (norm.qtyReduced > 0) actions.push(`normalize ${s.pair_id}: qty ${size.qty} -> ${norm.qty}`);
+          // Everything downstream must use the normalized order: the stored position is norm.qty at
+          // norm.price, so sizing/exposure/MTM from the requested qty would drift from the database.
+          const fillPrice = norm.price;
+          const normNotional = norm.qty * fillPrice;
+          const normFee = feeFor(normNotional, feePct);
+          const normCost = normNotional + normFee;
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
-          if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { rejectEntry(s, 'portfolio_gate', 'max_total_exposure'); continue; }
+          if (!exposureAllows(openCost, normCost, Number(mtm.equity), params)) { rejectEntry(s, 'portfolio_gate', 'max_total_exposure'); continue; }
+          if (normCost > cash) { rejectEntry(s, 'sizing_gate', 'insufficient_cash'); continue; }
+          if (!(await guardLease())) { rejectEntry(s, 'lease_gate', 'lease_lost'); break; }
           const r = await db.rpc<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number }>('paper_open_position', {
-            p_account_id: account.id, p_pair_id: s.pair_id, p_qty: size.qty, p_requested_price: t.ask, p_fill_price: fill,
-            p_fee: size.fee, p_slippage_bps: slip, p_stop_loss: stops.stopLoss, p_take_profit: stops.takeProfit,
+            p_account_id: account.id, p_pair_id: s.pair_id, p_qty: norm.qty, p_requested_price: t.ask, p_fill_price: fillPrice,
+            p_fee: normFee, p_slippage_bps: slip, p_stop_loss: stops.stopLoss, p_take_profit: stops.takeProfit,
             p_signal_id: s.id, p_idempotency_key: `open:${account.id}:${s.id}`, p_reason: 'SIGNAL',
           });
           if (r?.ok) {
             entries++;
             cash = Number(r.cash_after);
-            open.set(s.pair_id, { id: r.position_id!, pair_id: s.pair_id, qty: size.qty, entry_price: fill, cost_basis: size.cost, stop_loss: stops.stopLoss, take_profit: stops.takeProfit });
-            openedEntries.push({ pair_id: s.pair_id, signal_id: s.id, position_id: r.position_id!, qty: size.qty, fill_price: fill, notional: size.notional, fee: size.fee });
+            open.set(s.pair_id, { id: r.position_id!, pair_id: s.pair_id, qty: norm.qty, entry_price: fillPrice, cost_basis: normCost, stop_loss: stops.stopLoss, take_profit: stops.takeProfit });
+            openedEntries.push({ pair_id: s.pair_id, signal_id: s.id, position_id: r.position_id!, qty: norm.qty, fill_price: fillPrice, notional: normNotional, fee: normFee });
             actions.push(`open ${s.pair_id}`);
-            notes.push({ event_type: 'paper_buy', dedupe_key: `open:${r.position_id}`, message: messages.paperBuy({ pair_id: s.pair_id, qty: size.qty, fill, fee: size.fee, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, cashAfter: cash }) });
+            notes.push({ event_type: 'paper_buy', dedupe_key: `open:${r.position_id}`, message: messages.paperBuy({ pair_id: s.pair_id, qty: norm.qty, fill: fillPrice, fee: normFee, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, cashAfter: cash }) });
           } else {
             rejectEntry(s, 'persistence', r?.reason ?? 'paper_open_rejected');
           }
@@ -808,6 +889,31 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         counts[rejection.reason] = (counts[rejection.reason] ?? 0) + 1;
         return counts;
       }, {});
+      // Structured decision counters: what the signal stage proposed vs. what the gates allowed.
+      // Each gate is attributed independently so an operator can tell "no setup" apart from "spread
+      // too wide" or "risk budget spent" instead of seeing one undifferentiated HOLD.
+      const quoteByPair = new Map<string, ReturnType<typeof quoteAssessment>>();
+      for (const s of newSignals) if (!quoteByPair.has(s.pair_id)) quoteByPair.set(s.pair_id, quoteAssessment(s.pair_id));
+      for (const s of newSignals) {
+        const q = quoteByPair.get(s.pair_id)!;
+        const rejection = entryRejections.find((x) => x.signal_id === s.id);
+        const rawDecision = {
+          action: s.side,
+          reason: s.side === 'BUY' ? 'signal_buy' : 'signal_sell',
+          signal: { side: s.side, strength: Number(s.strength), reasons: s.reasons ?? [] },
+        };
+        tallyDecision(decisionCounters, combineDecision({
+          raw: rawDecision,
+          economics: rejection?.stage === 'economics_gate' ? { reason: rejection.reason } : undefined,
+          risk: rejection?.stage === 'risk_gate' || rejection?.stage === 'portfolio_gate'
+            ? { blockEntries: true, reasons: [rejection.reason] } : undefined,
+          quote: { ok: q.ok, ageSec: q.ageSec, spreadBps: q.spreadBps, ...(q.reason ? { reason: q.reason } : {}) },
+          feePct: feePctFor(s.pair_id),
+          slippageBps: slipFor(s.pair_id),
+        }));
+      }
+      // final_buy_count is authoritative from the fills that actually landed.
+      decisionCounters.final_buy_count = openedEntries.length;
       return {
         status: accountStatus,
         equity: Number(mtm.equity),
@@ -821,6 +927,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         entry_rejections: entryRejections,
         entry_rejection_counts: entryRejectionCounts,
         risk_block_reasons: risk.blockEntries ? risk.reasons : [],
+        kill_state: killState,
+        valuation_status: valuation.status,
+        unpriced_pairs: valuation.unpricedPairs,
+        decision_counters: decisionCounters,
       };
     }, (r) => r);
 
@@ -856,6 +966,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     const failedCore = ['fetch_market', 'store_market'].every((k) => (steps[k] as { ok?: boolean } | undefined)?.ok === false);
     finalStatus = errors.length === 0 ? 'SUCCESS' : failedCore ? 'FAILED' : 'PARTIAL';
 
+    // A lost lease means part of the run was abandoned mid-flight; record it for the operator.
+    if (leaseLost.reason) {
+      steps.lease = { ok: false, reason: leaseLost.reason, fence_token: fenceToken, abandoned: true };
+      if (finalStatus === 'SUCCESS') finalStatus = 'PARTIAL';
+    } else if (fenceToken !== null) {
+      steps.lease = { ok: true, fence_token: fenceToken };
+    }
+
     // 8. Telegram: system errors (max one per hour per error set) and hourly worker status
     if (errors.length) {
       const sig = errors.map((e) => e.split(':')[0]).sort().join(',');
@@ -872,9 +990,13 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       if (finalStatus === 'SUCCESS') finalStatus = 'PARTIAL';
     }
 
-    // 9. Execution log + release lock
+    // 9. Execution log + release lock (only if this run still owns the fence)
     try {
-      await db.rpc('finish_run', { p_run_id: ctx.run_id, p_status: finalStatus, p_steps: steps, p_error: errors.length ? errors.join('\n').slice(0, 4000) : null });
+      await db.rpc('finish_run', {
+        p_run_id: ctx.run_id, p_status: finalStatus, p_steps: steps,
+        p_error: errors.length ? errors.join('\n').slice(0, 4000) : null,
+        p_fence_token: fenceToken,
+      });
     } catch (e) {
       console.error('[pipeline] finish_run failed', errorMessage(e));
     }
