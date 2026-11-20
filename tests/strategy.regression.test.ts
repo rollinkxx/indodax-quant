@@ -3,7 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import { dynamicSlippageBps, exitReason, positionSize, shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
-import { computeIndicatorsTail, DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
+import { combineDecision } from '../shared/decisionPipeline';
+import { computeIndicatorsTail, DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketAction, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 import { ema } from '../shared/indicators';
 import type { Candle } from '../shared/candles';
 
@@ -227,5 +228,77 @@ describe('FIX-11 exit-side slippage cap', () => {
     expect(dynamicSlippageBps(10, 1e8, { maxMultiplier: 2 })).toBe(20);
     expect(dynamicSlippageBps(10, 1e8)).toBe(40);
     expect(dynamicSlippageBps(10, 5e10, { maxMultiplier: 2 })).toBe(10);
+  });
+});
+
+describe('property tests (T29-T31)', () => {
+  // Deterministic PRNG so a failure is reproducible.
+  const rng = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  const randomSeries = (r: () => number): { rows: IndicatorRow[]; volumes: number[] } => {
+    const n = 1 + Math.floor(r() * 60);
+    const pick = () => {
+      const k = r();
+      if (k < 0.05) return Number.NaN;
+      if (k < 0.1) return null;
+      if (k < 0.15) return -1;
+      return r() * 200;
+    };
+    const rows: IndicatorRow[] = Array.from({ length: n }, (_, i) => ({
+      t: i * 300, close: r() < 0.1 ? pick() as number : 50 + r() * 100,
+      ema9: pick(), ema21: pick(), ema50: pick(), rsi14: r() < 0.2 ? r() * 100 : pick(),
+      macd: pick(), macdSignal: pick(), macdHist: pick(), atr14: pick(), volMa20: pick(),
+      support: pick(), resistance: pick(),
+    }));
+    return { rows, volumes: Array.from({ length: n }, () => (r() < 0.1 ? Number.NaN : r() * 100)) };
+  };
+
+  it('T29 evaluateMarketAction only ever returns BUY/SELL/HOLD and never throws', () => {
+    const r = rng(20261120);
+    for (let i = 0; i < 1000; i++) {
+      const { rows, volumes } = randomSeries(r);
+      const out = evaluateMarketAction(rows, volumes);
+      expect(['BUY', 'SELL', 'HOLD']).toContain(out.action);
+      if (out.action === 'HOLD') expect(out.signal).toBeNull();
+      else expect(out.signal).not.toBeNull();
+    }
+  });
+
+  it('T30 combineDecision never returns BUY when economics failed or entries are blocked', () => {
+    const r = rng(7);
+    const actions: MarketAction[] = ['BUY', 'SELL', 'HOLD'];
+    for (let i = 0; i < 1000; i++) {
+      const rawAction = actions[Math.floor(r() * 3)];
+      const econFailed = r() < 0.5;
+      const riskBlocked = r() < 0.5;
+      const quoteOk = r() < 0.9;
+      const d = combineDecision({
+        raw: {
+          action: rawAction,
+          reason: 'x',
+          signal: rawAction === 'HOLD' ? null : { side: rawAction, strength: Math.floor(r() * 100), reasons: [] },
+        },
+        economics: { reason: econFailed ? 'net_reward_risk_below_minimum' : null },
+        risk: { blockEntries: riskBlocked, reasons: riskBlocked ? ['kill_switch'] : [] },
+        quote: { ok: quoteOk, ageSec: 1, spreadBps: 10 },
+      });
+      expect(['BUY', 'SELL', 'HOLD']).toContain(d.final_action);
+      // A failed quote already forces HOLD; otherwise the BUY vetoes must hold on their own.
+      if (econFailed || riskBlocked) expect(d.final_action).not.toBe('BUY');
+    }
+  });
+
+  it('T31 evaluateMarketAction is a pure function of its inputs', () => {
+    const r = rng(99);
+    for (let i = 0; i < 100; i++) {
+      const { rows, volumes } = randomSeries(r);
+      expect(evaluateMarketAction(rows, volumes)).toEqual(evaluateMarketAction(rows, volumes));
+    }
   });
 });
