@@ -16,6 +16,11 @@ export interface StrategyParams {
   useTrendFilter: boolean;
   /** BUY may fire up to N-1 completed candles after the EMA cross (1 = only on the cross candle itself). */
   crossLookback: number;
+  /**
+   * How many 5m candles a BUY rejected by a transient gate (spread, drift, stale ticker, sizing,
+   * lease) stays eligible for a retry. The setup itself is re-validated before the retry fires.
+   */
+  entryRetryTtlCandles: number;
   /** BUY is skipped when close is more than N% above the slow EMA (anti chasing). 0 = disabled. */
   maxEntryExtensionPct: number;
   /** false = every fresh EMA cross-down exits/signals SELL; true = RSI and volume must confirm too. */
@@ -104,6 +109,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   volumeMultiplier: 1.2,
   useTrendFilter: true,
   crossLookback: 2,
+  entryRetryTtlCandles: 3,
   maxEntryExtensionPct: 1.5,
   sellRequireConfirm: false,
   atrPeriod: 14,
@@ -163,6 +169,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   volumeMaPeriod: [2, 100, true],
   volumeMultiplier: [0, 10],
   crossLookback: [1, 10, true],
+  entryRetryTtlCandles: [1, 12, true],
   maxEntryExtensionPct: [0, 20],
   atrPeriod: [2, 50, true],
   atrStopMultiplier: [0.1, 10],
@@ -494,6 +501,10 @@ export interface BuySignalDiagnostics {
   volumeOk: boolean | null;
   extensionOk: boolean | null;
   alreadyQualified: boolean;
+  /** The trend structure a queued retry is allowed to still rely on (EMA9 > EMA21 and, with the
+   *  trend filter on, close above EMA50). Deliberately excludes the transient filters: a retry is
+   *  only invalidated by the setup breaking, never by a spread or RSI reading at retry time. */
+  setupValid: boolean;
   rsi: number | null;
   volumeRatio: number | null;
   extensionPct: number | null;
@@ -511,7 +522,7 @@ export function diagnoseBuySignalWindow(
   const unavailable: BuySignalDiagnostics = {
     stage: 'indicators_not_ready', ready: false, crossFound: false, barsSinceCross: null,
     trendOk: null, rsiOk: null, volumeOk: null, extensionOk: null, alreadyQualified: false,
-    rsi: null, volumeRatio: null, extensionPct: null,
+    setupValid: false, rsi: null, volumeRatio: null, extensionPct: null,
   };
   const n = rows.length;
   if (n < 2 || volumes.length !== n) return unavailable;
@@ -566,9 +577,12 @@ export function diagnoseBuySignalWindow(
   else if (alreadyQualified) stage = 'already_qualified';
   else stage = 'ready';
 
+  const setupValid = last.ema9 > last.ema21 &&
+    (!p.useTrendFilter || (last.ema50 !== null && last.close > last.ema50));
+
   return {
     stage, ready: stage === 'ready', crossFound, barsSinceCross, trendOk, rsiOk, volumeOk, extensionOk,
-    alreadyQualified, rsi: last.rsi14, volumeRatio, extensionPct,
+    alreadyQualified, setupValid, rsi: last.rsi14, volumeRatio, extensionPct,
   };
 }
 

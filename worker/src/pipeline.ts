@@ -195,6 +195,57 @@ interface SignalRow {
   reasons: string[];
   indicators: { atr14?: number | null };
   candle_time: string;
+  /** True for a BUY replayed from pending_entries instead of a freshly stored signal. */
+  retried?: boolean;
+}
+
+interface PendingEntryRow {
+  pair_id: string;
+  signal_id: number;
+  candle_time: string;
+  expires_at: string;
+  strength: number | string;
+  price: number | string;
+  indicators: { atr14?: number | null };
+  attempts: number;
+}
+
+/**
+ * Entry rejections a later run may still act on. A gate that depends on the quote (spread, drift,
+ * stale ticker) or on portfolio state (positions, cash, exposure, lease) is transient; the same
+ * signal can be valid a minute later. Anything structural is not retried: the bracket economics of
+ * a stored signal do not change, a missing fee catalog entry is a configuration gap, and the
+ * strategy params / signal strength are fixed at signal time.
+ */
+const RETRYABLE_ENTRY_STAGES = new Set([
+  'entry_gate',
+  'market_data_gate',
+  'sizing_gate',
+  'normalization_gate',
+  'lease_gate',
+  'portfolio_gate',
+]);
+const NON_RETRYABLE_ENTRY_STAGES = new Set([
+  'economics_gate',
+  'fee_gate',
+  'strength_gate',
+  'strategy_params_gate',
+  'account_gate',
+  'risk_gate',
+]);
+/** Rejections inside a retryable stage that are still structural for that signal. */
+const NON_RETRYABLE_ENTRY_REASONS = new Set(['already_open']);
+
+/**
+ * Stages whose rejection proves the stored signal can never fill: its bracket, fee, strength or the
+ * strategy parameters will not change before the claim expires. Those also drop the queued claim.
+ */
+const PURGE_PENDING_STAGES = new Set(['economics_gate', 'fee_gate', 'strength_gate', 'strategy_params_gate']);
+
+export function isRetryableEntryRejection(stage: string, reason: string): boolean {
+  return RETRYABLE_ENTRY_STAGES.has(stage)
+    && !NON_RETRYABLE_ENTRY_STAGES.has(stage)
+    && !NON_RETRYABLE_ENTRY_REASONS.has(reason);
 }
 
 interface MtmResult {
@@ -756,6 +807,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           stage: buyDiag.stage,
           candidate_5m: buyDiag.ready,
           bars_since_cross: buyDiag.barsSinceCross,
+          setup_valid: buyDiag.setupValid,
           filters: {
             trend: buyDiag.trendOk, rsi: buyDiag.rsiOk, volume: buyDiag.volumeOk, extension: buyDiag.extensionOk,
           },
@@ -855,6 +907,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const degraded: string[] = [];
       const openedEntries: { pair_id: string; signal_id: number; position_id: number; qty: number; fill_price: number; notional: number; fee: number }[] = [];
       const entryRejections: { pair_id: string; signal_id: number; stage: string; reason: string; metrics?: Record<string, number> }[] = [];
+      const purgeSignalIds: number[] = [];
       const rejectEntry = (signal: SignalRow, stage: string, reason: string, metrics?: Record<string, number>) => {
         entryRejections.push({
           pair_id: signal.pair_id,
@@ -864,6 +917,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           ...(metrics ? { metrics } : {}),
         });
         actions.push(`skip ${signal.pair_id}: ${reason}`);
+        if (PURGE_PENDING_STAGES.has(stage)) purgeSignalIds.push(signal.id);
       };
       const open = new Map<string, Position>(ctx.open_positions.map((p) => [p.pair_id, p]));
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
@@ -1023,18 +1077,79 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // d) Entries on new BUY signals. Shadow continuation diagnostics are intentionally not used here.
       let entries = 0;
       const buys = newSignals.filter((s) => s.side === 'BUY').sort((a, b) => Number(b.strength) - Number(a.strength));
+
+      // d0) Retry BUYs a transient gate rejected in an earlier run. A stored signal is only "new" in
+      // the run that saved it and the BUY diagnostic never re-emits an already-qualified cross, so
+      // without this queue a wide spread at the wrong second dropped the entry permanently.
+      // Only the signal phase has fresh diagnostics: on a mark-phase run the setup cannot be
+      // re-validated, and consuming the queue blind would delete live claims.
+      let pendingBuys: PendingEntryRow[] = [];
+      if (analysis) {
+        try {
+          const rows = await db.rpc<PendingEntryRow[]>('get_pending_entries', {
+            p_account_id: account.id, p_pairs: tracked, p_now: iso(nowMin),
+          });
+          // The RPC already filters on expiry; re-check it here so a Worker running against an older
+          // function definition still cannot act on an expired claim.
+          if (Array.isArray(rows)) {
+            pendingBuys = rows.filter((r) => {
+              const expiresAt = Date.parse(r.expires_at);
+              return Number.isFinite(expiresAt) && expiresAt > nowMin * 1000;
+            });
+          }
+        } catch (e) {
+          const msg = `pending entry lookup failed: ${errorMessage(e)}`;
+          actions.push(msg);
+          degraded.push(msg);
+        }
+      }
+      const stillValid = pendingBuys.filter((s) => analysis?.buyDiagnostics?.[s.pair_id]?.setup_valid === true);
+      const invalidated = pendingBuys.filter((s) => analysis?.buyDiagnostics?.[s.pair_id]?.setup_valid !== true);
+      if (invalidated.length > 0) {
+        try {
+          await db.rpc('delete_pending_entries', {
+            p_account_id: account.id,
+            p_signal_ids: invalidated.map((s) => Number(s.signal_id)),
+          });
+          actions.push(`pending entry invalidated: ${invalidated.map((s) => s.pair_id).join(',')}`);
+        } catch (e) {
+          const msg = `pending entry cleanup failed: ${errorMessage(e)}`;
+          actions.push(msg);
+          degraded.push(msg);
+        }
+      }
+      // A fresh signal for the same pair wins: it carries the current candle's price and strength.
+      const seenPairs = new Set(buys.map((s) => s.pair_id));
+      const mergedBuys: SignalRow[] = [
+        ...buys,
+        ...stillValid
+          .filter((s) => !seenPairs.has(s.pair_id))
+          .map((s) => ({
+            id: Number(s.signal_id),
+            pair_id: s.pair_id,
+            side: 'BUY' as const,
+            price: s.price,
+            strength: s.strength,
+            reasons: [],
+            candle_time: s.candle_time,
+            indicators: s.indicators,
+            retried: true,
+          })),
+      ].sort((a, b) => Number(b.strength) - Number(a.strength));
+      for (const s of mergedBuys) if (s.retried) actions.push(`retry queued entry ${s.pair_id}`);
+
       // An invalid parameter set is rejected here, at the entry gate, and not earlier: exits must keep
       // running so an already-open position can still hit its stop.
       if (entriesBlocked) {
-        for (const s of buys) rejectEntry(s, 'strategy_params_gate', 'invalid_strategy_params');
+        for (const s of mergedBuys) rejectEntry(s, 'strategy_params_gate', 'invalid_strategy_params');
       } else
       // An unverifiable equity (unpriced open position) blocks new risk, on top of the account/risk gates.
       if (accountStatus === 'RUNNING' && !account.kill_switch && !risk.blockEntries && !valuation.blockEntries) {
         let cash = Number(mtm.cash);
-        for (let i = 0; i < buys.length; i++) {
-          const s = buys[i];
+        for (let i = 0; i < mergedBuys.length; i++) {
+          const s = mergedBuys[i];
           if (open.size >= params.maxOpenPositions) {
-            for (const queued of buys.slice(i)) rejectEntry(queued, 'portfolio_gate', 'max_positions');
+            for (const queued of mergedBuys.slice(i)) rejectEntry(queued, 'portfolio_gate', 'max_positions');
             break;
           }
           if (open.has(s.pair_id)) { rejectEntry(s, 'portfolio_gate', 'already_open'); continue; }
@@ -1121,6 +1236,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             openedEntries.push({ pair_id: s.pair_id, signal_id: s.id, position_id: r.position_id!, qty: norm.qty, fill_price: fillPrice, notional: normNotional, fee: normFee });
             actions.push(`open ${s.pair_id}`);
             notes.push({ event_type: 'paper_buy', dedupe_key: `open:${r.position_id}`, message: messages.paperBuy({ pair_id: s.pair_id, qty: norm.qty, fill: fillPrice, fee: normFee, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, cashAfter: cash }) });
+            if (s.retried) {
+              try {
+                await db.rpc('delete_pending_entries', { p_account_id: account.id, p_signal_ids: [s.id] });
+              } catch { /* the claim expires on its own; a filled entry must not fail on cleanup */ }
+            }
           } else {
             rejectEntry(s, 'persistence', r?.reason ?? 'paper_open_rejected');
           }
@@ -1139,6 +1259,39 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       if (entries > 0) {
         mtm = await db.rpc<MtmResult>('paper_mark_to_market', { p_account_id: account.id, p_prices: bids, p_snapshot_time: iso(nowMin) });
         lastEquity = Number(mtm.equity);
+      }
+      // e) Queue the rejections a later run may still fill, and drop the claims that can never fill.
+      // A signal that fails on the quote now may be fine on the next tick; one that fails on its own
+      // bracket economics never will be.
+      if (purgeSignalIds.length > 0) {
+        try {
+          await db.rpc('delete_pending_entries', { p_account_id: account.id, p_signal_ids: purgeSignalIds });
+        } catch (e) {
+          degraded.push(`pending entry purge failed: ${errorMessage(e)}`);
+        }
+      }
+      const retryable = entryRejections.filter((r) => isRetryableEntryRejection(r.stage, r.reason));
+      if (retryable.length > 0) {
+        const ttlSec = Math.max(1, Math.floor(params.entryRetryTtlCandles)) * 300;
+        const payload = retryable.map((r) => {
+          const sig = mergedBuys.find((s) => s.id === r.signal_id);
+          return {
+            pair_id: r.pair_id,
+            signal_id: r.signal_id,
+            candle_time: sig?.candle_time ?? iso(nowMin),
+            expires_at: iso(nowMin + ttlSec),
+            strength: Number(sig?.strength ?? 0),
+            price: Number(sig?.price ?? 0),
+            indicators: sig?.indicators ?? {},
+          };
+        });
+        try {
+          await db.rpc('upsert_pending_entries', { p_account_id: account.id, p_entries: payload });
+        } catch (e) {
+          const msg = `pending entry persist failed: ${errorMessage(e)}`;
+          actions.push(msg);
+          degraded.push(msg);
+        }
       }
       const entryRejectionCounts = entryRejections.reduce<Record<string, number>>((counts, rejection) => {
         counts[rejection.reason] = (counts[rejection.reason] ?? 0) + 1;
