@@ -92,7 +92,12 @@ interface BeginRun {
   pair_catalog_age_seconds: number | null;
 }
 
-/** Lease TTL. Must exceed the worst-case run (the CI smoke shows p99 ~350ms; the cron cadence is 60s). */
+/**
+ * Lease TTL. Must exceed the worst-case *real* run. Measured on production (2026-11-20, post-fix):
+ * SUCCESS runs p99 = 22.5s, max = 24.2s; the 240s rows are watchdog finalizations of zombie runs,
+ * not live execution. `guardLease()` renews via heartbeat before every order mutation, so 55s leaves
+ * >2x headroom over a real run and still fits inside the 60s cron cadence.
+ */
 export const LEASE_TTL_SECONDS = 55;
 
 interface SignalRow {

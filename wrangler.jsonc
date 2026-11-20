@@ -16,6 +16,18 @@
     "crons": ["* * * * *"]
   },
   "observability": { "enabled": true },
+  // Workers Builds runs `wrangler preview` on pull_request events (deploy on main is `wrangler deploy`).
+  // `preview` is an open beta that hard-fails without this block, so PR builds went red while main
+  // builds passed. Values mirror the generated defaults; previews stay non-observed on purpose.
+  "previews": {
+    "observability": {
+      "enabled": false,
+      "head_sampling_rate": 1,
+      "issues": { "enabled": false },
+      "logs": { "enabled": false, "head_sampling_rate": 1, "invocation_logs": true, "persist": true },
+      "traces": { "enabled": false, "head_sampling_rate": 1, "persist": true }
+    }
+  },
   // Public values only. Secrets are set with `wrangler secret put` (see README):
   //   SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, POSTHOG_PROJECT_TOKEN
   "vars": {
