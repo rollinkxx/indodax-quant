@@ -21,7 +21,8 @@
     "paper:report": "tsx scripts/paper-report.ts",
     "db:verify": "tsx scripts/verify-schema-contract.ts",
     "db:migrate": "tsx scripts/apply-migrations.ts",
-    "backtest:timeframes": "tsx scripts/backtest-timeframes.ts"
+    "backtest:timeframes": "tsx scripts/backtest-timeframes.ts",
+    "regime:study": "tsx scripts/regime-study.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.119.0",
