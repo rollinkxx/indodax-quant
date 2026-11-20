@@ -423,7 +423,7 @@ export function computeStats(closed: ClosedTrade[]): PerformanceStats {
     avgPnl: pnls.length ? round(total / pnls.length, 2) : 0,
     avgReturnPct: rets.length ? rets.reduce((a, b) => a + b, 0) / rets.length : 0,
     profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? null : 0,
-    best: pnls.length ? Math.max(...pnls) : 0,
-    worst: pnls.length ? Math.min(...pnls) : 0,
+    best: pnls.length ? pnls.reduce((a, b) => (b > a ? b : a), Number.NEGATIVE_INFINITY) : 0,
+    worst: pnls.length ? pnls.reduce((a, b) => (b < a ? b : a), Number.POSITIVE_INFINITY) : 0,
   };
 }

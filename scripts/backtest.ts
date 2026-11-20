@@ -33,6 +33,7 @@ import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
 import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, createRequestStartLimiter, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
 import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
+import { createIndicatorRowsCache, signalAtBar } from '../shared/backtestSignal';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -97,7 +98,10 @@ async function loadStoredCandles(pair: string): Promise<Candle[]> {
   const rows: Row[] = [];
   const base = `candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc`;
   // Respect PostgREST max_rows settings instead of silently accepting a truncated first page.
-  for (let offset = 0; offset < 10_000; offset += 1_000) {
+  // The cap must exceed the full stored history: an ascending scan bounded at 10k rows silently
+  // dropped the most recent ~3k bars of a 13k-bar pair, so the sample ended before the window
+  // where `market_universe_history` begins and every timestamped-universe entry was rejected.
+  for (let offset = 0; offset < 50_000; offset += 1_000) {
     const page = await get<Row[]>(`${base}&limit=1000&offset=${offset}`);
     rows.push(...page);
     if (page.length < 1_000) break;
@@ -604,17 +608,14 @@ async function main() {
   // The per-pair `simulate()` above gives every pair its own IDR 10,000,000, which hides the shared
   // cash pool, the concurrency cap, the exposure ceiling and the daily-loss/kill-switch interaction.
   // This run uses ONE account across all pairs on a single timeline.
+  // Indicators are recursive (EMA/RSI/ATR/volume MA), so they must be seeded from full history and
+  // then indexed at the signal bar. Computing them per call over a sliding window is both wrong (an
+  // unseeded window yields no signal) and O(bars x window); caching the full-series rows per pair is
+  // exact and O(bars). The per-pair `simulate()` above already does this.
+  const rowsFor = createIndicatorRowsCache();
   const portfolioSignal = (p: StrategyParams) => (pair: string, candles: Candle[], index: number): 'BUY' | 'SELL' | 'HOLD' => {
-    const win = Math.max(3, p.crossLookback + 1);
-    const from = index - win + 1;
-    if (from < 0) return 'HOLD';
-    const interval = inferIntervalSec(candles);
-    if (!hasBacktestDataQuality(candles, index, p.minCandles, interval)) return 'HOLD';
-    const window = candles.slice(from, index + 1);
-    const rows = computeIndicators(window, p);
-    if (rows.length !== window.length) return 'HOLD';
-    const action = evaluateMarketAction(rows, window.map((c) => c.v), p);
-    return action.signal?.side ?? evaluateSignalWindow(rows, window.map((c) => c.v), p)?.side ?? 'HOLD';
+    if (!hasBacktestDataQuality(candles, index, p.minCandles, inferIntervalSec(candles))) return 'HOLD';
+    return signalAtBar(pair, candles, index, p, rowsFor);
   };
 
   // Spread scenarios: without historical bid/ask depth the spread is a scenario, not a measurement,
@@ -696,9 +697,22 @@ async function main() {
   }
 
   // Walk-forward: 6 chronological folds with an embargo covering holding + indicator + HTF lookback.
-  const allTimes = portfolioInputs.flatMap((p) => p.candles.filter((c) => c.source !== 'synthetic').map((c) => c.t));
-  const wfStart = allTimes.length ? Math.min(...allTimes) : 0;
-  const wfEnd = allTimes.length ? Math.max(...allTimes) + 300 : 0;
+  // Bounds are folded rather than spread: `Math.min(...allTimes)` overflows the stack once the pooled
+  // 5m series across every pair runs into the hundreds of thousands of bars.
+  const wfBounds = portfolioInputs.reduce(
+    (acc, p) => {
+      for (const c of p.candles) {
+        if (c.source === 'synthetic') continue;
+        if (c.t < acc.start) acc.start = c.t;
+        if (c.t > acc.last) acc.last = c.t;
+      }
+      return acc;
+    },
+    { start: Number.POSITIVE_INFINITY, last: Number.NEGATIVE_INFINITY },
+  );
+  const hasBars = Number.isFinite(wfBounds.start) && Number.isFinite(wfBounds.last);
+  const wfStart = hasBars ? wfBounds.start : 0;
+  const wfEnd = hasBars ? wfBounds.last + 300 : 0;
   const spec5m = TIMEFRAME_SPECS['5m'];
   const embargoSec = embargoSeconds({
     maxHoldingSeconds: spec5m.maxHoldingBars * spec5m.baseSeconds,
