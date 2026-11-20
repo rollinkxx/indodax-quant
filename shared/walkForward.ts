@@ -104,7 +104,7 @@ export function tradeStats(trades: readonly TradeObservation[]): TradeStats {
   const rLosses = rs.filter((r) => r <= 0);
   const avgWinR = rWins.length ? rWins.reduce((a, b) => a + b, 0) / rWins.length : 0;
   const avgLossR = rLosses.length ? Math.abs(rLosses.reduce((a, b) => a + b, 0) / rLosses.length) : 0;
-  const worst = n ? Math.min(...pnls) : 0;
+  const worst = n ? pnls.reduce((a, b) => (b < a ? b : a), Number.POSITIVE_INFINITY) : 0;
   const sorted = [...pnls].sort((a, b) => a - b);
   // 5th-percentile tail loss, or the single worst trade for small samples.
   const tailIdx = Math.floor(sorted.length * 0.05);
@@ -245,7 +245,7 @@ export function walkForwardReport(input: {
   const material = foldResults.filter((f) => f.material);
   const positive = material.filter((f) => f.test.expectancyIdr > 0).length;
   const negative = material.filter((f) => f.test.expectancyIdr < 0).length;
-  const worst = material.length ? Math.min(...material.map((f) => f.test.expectancyIdr)) : 0;
+  const worst = material.length ? material.reduce((a, f) => (f.test.expectancyIdr < a ? f.test.expectancyIdr : a), Number.POSITIVE_INFINITY) : 0;
   const boot = clusterBootstrap(pooled, input.bootstrap?.key ?? 'day', { resamples: input.bootstrap?.resamples, seed: input.bootstrap?.seed });
   return {
     folds: foldResults,
