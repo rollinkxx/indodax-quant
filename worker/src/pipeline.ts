@@ -943,7 +943,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         for (const pair of valuation.unpricedPairs) actions.push(`unpriced open position ${pair}: valuation UNKNOWN`);
       }
 
-      const slipFor = (pairId: string) => (params.dynamicSlippage ? dynamicSlippageBps(params.slippageBps, tickers.get(pairId)?.vol_idr) : params.slippageBps);
+      // Exits cap the dynamic penalty at 2x: an unknown volume must not turn every stop into a 4x fill.
+      const slipFor = (pairId: string, exitSide = false) => (params.dynamicSlippage
+        ? dynamicSlippageBps(params.slippageBps, tickers.get(pairId)?.vol_idr, { maxMultiplier: exitSide ? 2 : 4 })
+        : params.slippageBps);
       // Per-side fee charged for a pair; 'pair_taker' uses the real INDODAX taker fee (see effectiveFeePct).
       const feePctFor = (pairId: string) => effectiveFeePct(params, pairFee.get(pairId));
 
@@ -955,7 +958,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const close = async (pos: Position, reason: string, bid: number) => {
         // Never close against a lease we no longer hold: a superseded run must not mutate the account.
         if (!(await guardLease())) { actions.push(`close ${pos.pair_id} skipped: lease lost`); return false; }
-        const slip = slipFor(pos.pair_id);
+        const slip = slipFor(pos.pair_id, true);
         const fill = sellFillPrice(bid, slip);
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
         const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
@@ -1019,7 +1022,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           // The break-even floor must cover the spread too: the exit fills at the bid, so a stop
           // set only above fees+slippage can still close net negative on a wide pair.
           const spreadPct = t.bid > 0 ? (t.ask - t.bid) / t.bid * 100 : 0;
-          const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id), spreadPct);
+          const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id, true), spreadPct);
           const newStop = trailingStop(pos, t.bid, lastIndicators.get(pos.pair_id)?.atr14 ?? null, params, trailCostPct);
           if (newStop !== null) {
             // The ratchet is a state mutation: never persist it under a lease we no longer hold.
@@ -1040,7 +1043,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (!reason && sellSignals.has(pos.pair_id)) {
           const covers = signalExitCoversCosts({
             entryPrice: Number(pos.entry_price), qty: Number(pos.qty), costBasis: Number(pos.cost_basis),
-            bid: t.bid, feePct: feePctFor(pos.pair_id), slippageBps: slipFor(pos.pair_id),
+            bid: t.bid, feePct: feePctFor(pos.pair_id), slippageBps: slipFor(pos.pair_id, true),
           });
           const verdict = shouldExitOnSignal({
             coversCosts: covers,

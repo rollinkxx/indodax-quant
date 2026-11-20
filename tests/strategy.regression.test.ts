@@ -1,7 +1,7 @@
 // Regression tests for the engine BUY/SELL/HOLD logic (FIX-02 .. FIX-10).
 // Each block names the spec acceptance case it covers.
 import { describe, expect, it } from 'vitest';
-import { exitReason, positionSize, shouldExitOnSignal } from '../shared/paper';
+import { dynamicSlippageBps, exitReason, positionSize, shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
 import { computeIndicatorsTail, DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 import { ema } from '../shared/indicators';
@@ -216,5 +216,16 @@ describe('FIX-10 position sizing charges the exit fee on the stop notional', () 
     });
     expect(sized.riskAmount).toBeCloseTo(100_000, 6);
     expect(sized.qty * 57.75).toBeCloseTo(100_000, 0);
+  });
+});
+
+describe('FIX-11 exit-side slippage cap', () => {
+  it('caps an unknown-volume penalty at the requested multiplier', () => {
+    expect(dynamicSlippageBps(10, null)).toBe(40);
+    expect(dynamicSlippageBps(10, null, { maxMultiplier: 2 })).toBe(20);
+    // A known thin volume is capped the same way; a deep pair is unaffected.
+    expect(dynamicSlippageBps(10, 1e8, { maxMultiplier: 2 })).toBe(20);
+    expect(dynamicSlippageBps(10, 1e8)).toBe(40);
+    expect(dynamicSlippageBps(10, 5e10, { maxMultiplier: 2 })).toBe(10);
   });
 });

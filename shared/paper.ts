@@ -23,13 +23,27 @@ export function sellFillPrice(bid: number, slippageBps: number): number {
   return bid * (1 - slippageBps / 10_000);
 }
 
-/** Thin pairs fill worse than the flat assumption: scale slippage by 24h IDR volume tier. */
-export function dynamicSlippageBps(base: number, volIdr: number | null | undefined): number {
-  if (volIdr === null || volIdr === undefined || !Number.isFinite(volIdr) || volIdr <= 0) return base * 4;
-  if (volIdr < 5e8) return base * 4;
-  if (volIdr < 2e9) return base * 2.5;
-  if (volIdr < 1e10) return base * 1.5;
-  return base;
+/**
+ * Thin pairs fill worse than the flat assumption: scale slippage by 24h IDR volume tier.
+ *
+ * `maxMultiplier` caps the penalty. Exits pass a lower cap than entries: when the volume is unknown
+ * the tier alone would apply the worst case, and marking every stop out at 4x slippage made the paper
+ * PnL worse than the market could deliver, which is just as misleading as being too optimistic.
+ */
+export function dynamicSlippageBps(
+  base: number,
+  volIdr: number | null | undefined,
+  opts: { maxMultiplier?: number } = {},
+): number {
+  const cap = Number.isFinite(opts.maxMultiplier) && (opts.maxMultiplier as number) > 0 ? (opts.maxMultiplier as number) : 4;
+  const tier = (() => {
+    if (volIdr === null || volIdr === undefined || !Number.isFinite(volIdr) || volIdr <= 0) return 4;
+    if (volIdr < 5e8) return 4;
+    if (volIdr < 2e9) return 2.5;
+    if (volIdr < 1e10) return 1.5;
+    return 1;
+  })();
+  return base * Math.min(tier, cap);
 }
 
 export function feeFor(notional: number, feePct: number): number {
