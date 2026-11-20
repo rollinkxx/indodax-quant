@@ -118,7 +118,9 @@ export const DEFAULT_PARAMS: StrategyParams = {
   emaSlow: 21,
   emaTrend: 50,
   rsiPeriod: 14,
-  rsiBuyMin: 50,
+  // 52, not 50: the default must not sit inside the SELL band (rsiSellMax 50) and trip its own
+  // BUY_AND_SELL_RSI_REGIMES_OVERLAP warning.
+  rsiBuyMin: 52,
   rsiBuyMax: 65,
   rsiSellMax: 50,
   volumeMaPeriod: 20,

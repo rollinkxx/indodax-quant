@@ -143,3 +143,10 @@ describe('FIX-06 bracket validation uses NET reward/risk', () => {
     expect(validateBracketEconomics(DEFAULT_PARAMS)).toEqual([]);
   });
 });
+
+describe('FIX-07 shipped defaults do not warn about themselves', () => {
+  it('T21 DEFAULT_PARAMS has no overlapping RSI regimes', () => {
+    expect(validateCrossFieldParams(DEFAULT_PARAMS).some((f) => f.code === 'BUY_AND_SELL_RSI_REGIMES_OVERLAP')).toBe(false);
+    expect(DEFAULT_PARAMS.rsiBuyMin).toBeGreaterThan(DEFAULT_PARAMS.rsiSellMax);
+  });
+});
