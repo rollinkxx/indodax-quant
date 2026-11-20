@@ -48,6 +48,40 @@ describe('evaluateStrategyEvidence', () => {
   });
 });
 
+describe('win-rate floor is advisory, not blocking', () => {
+  // 55% win rate on 200 trades: clears sample/PF/expectancy but fails a 70% floor.
+  const lowWinRate = { trades: 200, wins: 110, winRatePct: 55, profitFactor: 1.8, expectancyIdr: 2_500 };
+
+  it('lets a profitable low-win-rate strategy through to human review by default', () => {
+    const d = evaluateStrategyEvidence(lowWinRate);
+    expect(d.checks.winRateConfidence).toBe(false);
+    expect(d.winRateFloorEnforced).toBe(false);
+    expect(d.status).toBe('ELIGIBLE_FOR_MANUAL_REVIEW');
+    expect(d.reasons).toEqual([]);
+  });
+
+  it('still blocks on the win-rate floor when it is explicitly enforced', () => {
+    const d = evaluateStrategyEvidence(lowWinRate, {
+      ...DEFAULT_STRATEGY_EVIDENCE_REQUIREMENTS,
+      enforceWinRateFloor: true,
+    });
+    expect(d.winRateFloorEnforced).toBe(true);
+    expect(d.status).toBe('NO_GO');
+    expect(d.reasons).toContain('WIN_RATE_CONFIDENCE_BELOW_THRESHOLD');
+  });
+
+  it('keeps the expectancy and sample-size gates hard in both modes', () => {
+    for (const enforceWinRateFloor of [false, true]) {
+      const d = evaluateStrategyEvidence(
+        { ...lowWinRate, expectancyIdr: -1 },
+        { ...DEFAULT_STRATEGY_EVIDENCE_REQUIREMENTS, enforceWinRateFloor },
+      );
+      expect(d.status).toBe('NO_GO');
+      expect(d.reasons).toContain('NET_EXPECTANCY_NOT_POSITIVE');
+    }
+  });
+});
+
 describe('invalid evidence requirements', () => {
   const metrics = { trades: 400, wins: 380, winRatePct: 95, profitFactor: 1.8, expectancyIdr: 5_000 };
 

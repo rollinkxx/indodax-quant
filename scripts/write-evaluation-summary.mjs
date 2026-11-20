@@ -46,14 +46,17 @@ lines.push(
   '',
   '### Evidence gate (never auto-promotes a strategy)',
   '',
-  '| Variant | Decision | Wilson 95% win-rate lower bound | Rejection reasons |',
+  'Gate on sample size, profit factor and net expectancy. The Wilson 95% win-rate floor is shown for context and is **advisory only** — it does not block.',
+  '',
+  '| Variant | Decision | Wilson 95% win-rate lower bound (advisory) | Rejection reasons |',
   '|---|---|---:|---|',
 );
 for (const [key, decision] of Object.entries(backtest.evidenceGateByVariant || {})) {
+  const floor = decision.winRateFloorEnforced === true ? ' (enforced)' : ' (advisory)';
   lines.push(
     '|' + key +
     '|' + String(value(decision.status, 'NO_GO')) +
-    '|' + String(value(decision.lower95WinRatePct)) + '%' +
+    '|' + String(value(decision.lower95WinRatePct)) + '%' + floor +
     '|' + (Array.isArray(decision.reasons) ? decision.reasons.join(', ') : '') + '|',
   );
 }
