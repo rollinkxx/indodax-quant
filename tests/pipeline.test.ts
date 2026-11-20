@@ -494,6 +494,28 @@ describe('pipeline: unwarmed universe members must not break the run', () => {
     expect(a.some((x) => !b.includes(x))).toBe(true);
   });
 
+  // 2026-11-20 (third failure): rotation used `nowSec % length`. nowSec is a whole minute, so the
+  // offset repeats with period length/gcd(length,60) and freezes completely when the length divides
+  // 60. Production had 20 pairs wanting backfill, so the offset was always 0: qntidr and pepeidr sat
+  // 6h behind while the rest recovered. The queue must advance across *every* consecutive run.
+  it('advances the backfill queue across consecutive minutes even when its length divides 60', async () => {
+    // 19 extra + btcidr = 20 wanting backfill: 20 divides 60, the exact production shape.
+    const extraPairs = Array.from({ length: 19 }, (_, i) => `r${i}idr`);
+    const served: string[][] = [];
+    for (let m = 0; m < 3; m++) {
+      const o = setup({ extraPairs, nullCandlePairs: extraPairs, staleCoverage: true });
+      const at = (NOW + m * 60) * 1000;
+      await runPipeline(env(), { scheduledTime: at, trigger: 'cron', fetchImpl: o.f, now: () => at });
+      // Compare which *pairs* were served; the from/to window changes every minute either way.
+      served.push(o.indodax
+        .filter((p) => p.startsWith('/tradingview/history_v2') && new URLSearchParams(p.split('?')[1]).get('tf') === '1')
+        .map((p) => new URLSearchParams(p.split('?')[1]).get('symbol') ?? p));
+    }
+    // Every minute must serve a different slice; a frozen offset repeats the same pairs forever.
+    expect(served[0]).not.toEqual(served[1]);
+    expect(served[1]).not.toEqual(served[2]);
+  });
+
   // The real outage: Cloudflare rejects every subrequest past the cap. The invariant is that the run
   // still reaches store_market and finish_run, so the pipeline degrades to PARTIAL instead of dying
   // mid-flight and being killed by the lease watchdog.

@@ -366,7 +366,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     const dxOptional = new IndodaxClient(optional.fetch as FetchLike);
     const byPriority = [...pairs].sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id));
     // Rotate the tail so a capped queue does not permanently starve the same pairs.
-    const tradeOffset = byPriority.length ? nowSec % byPriority.length : 0;
+    // Divide by 60 first: nowSec is a whole minute, so `nowSec % n` repeats with period n/gcd(n,60)
+    // and freezes entirely when n divides 60 (a 20-pair queue always got offset 0).
+    const tradeOffset = byPriority.length ? Math.floor(nowSec / 60) % byPriority.length : 0;
     const tradeOrder = byPriority.length
       ? [...byPriority.slice(tradeOffset), ...byPriority.slice(0, tradeOffset)]
       : [];
@@ -432,7 +434,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // Rotate then cap: a pair that keeps failing cannot starve the queue, and the cap follows the
       // subrequests actually left. History is optional work; store_market/analyze/finish_run are not.
       const wanting = usable.filter((p) => plans.get(p.id)!.historyRange).map((p) => p.id);
-      const offset = wanting.length ? nowSec % wanting.length : 0;
+      // Minute index, not raw seconds: see the tradeOffset note. With `nowSec % n` a queue whose
+      // length divides 60 never moved, so qntidr/pepeidr stayed 6h behind while other pairs recovered.
+      const offset = wanting.length ? Math.floor(nowSec / 60) % wanting.length : 0;
       const affordable = Math.min(HISTORY_BACKFILL_PER_RUN, historyReserve);
       const budgeted = new Set([...wanting.slice(offset), ...wanting.slice(0, offset)].slice(0, Math.max(0, affordable)));
       const historyBudget = budget.child(Math.max(0, affordable));
