@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; closeHttpError?: number; mtmEquity?: number; pairTakerFee?: number | null; tickerBid?: number } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; openHttpError?: number; closeHttpError?: number; setStatusHttpError?: number; mtmEquity?: number; pairTakerFee?: number | null; tickerBid?: number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -57,12 +57,19 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
           return typeof opts.pendingSells === 'string'
             ? json({ code: 'PGRST202', message: opts.pendingSells }, 404)
             : json(opts.pendingSells ?? []);
-        case 'paper_open_position': return json(opts.openResult ?? { ok: true, position_id: 55, cash_after: 9_700_000 });
+        case 'paper_open_position':
+          return opts.openHttpError
+            ? json({ code: '23514', message: 'new row for relation "paper_orders" violates check constraint "paper_orders_reason_check"' }, opts.openHttpError)
+            : json(opts.openResult ?? { ok: true, position_id: 55, cash_after: 9_700_000 });
         case 'paper_close_position':
           return opts.closeHttpError
             ? json({ code: '23514', message: 'new row for relation "paper_orders" violates check constraint "paper_orders_reason_check"' }, opts.closeHttpError)
             : json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
         case 'paper_mark_to_market': return json({ ok: true, equity: opts.mtmEquity ?? 1e7, cash: opts.mtmEquity ?? 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
+        case 'paper_set_status':
+          return opts.setStatusHttpError
+            ? json({ code: 'XX000', message: 'status write failed' }, opts.setStatusHttpError)
+            : json({ ok: true });
         case 'claim_notifications': return json(body.p_items.map((x: any) => x.dedupe_key));
         default: return json({ ok: true });
       }
@@ -294,6 +301,24 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
     expect(o.indodax.every((path) => !/\/api\/(private|order|orders)(\/|$)/i.test(path))).toBe(true);
   });
 
+  it('keeps the run alive and keeps evaluating entries when one open is rejected by the database', async () => {
+    // paper_open_position can fail with a 4xx (insufficient_cash race, constraint violation).
+    // db.rpc throws, and before the guard that killed the whole run: no later candidate was tried,
+    // no mark-to-market, and the run reported a hard error instead of a degraded partial.
+    const signal = {
+      id: 201, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 10 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const o = setup({ mtfMode: 'off', newSignals: [signal], openHttpError: 400 });
+    const r = await run(o);
+    expect(r.status).toBe('PARTIAL');
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(true);
+    expect(o.rpcs.some((x) => x.fn === 'paper_mark_to_market')).toBe(true);
+    expect((r.steps as any).paper_trading.info.entry_rejections).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reason: 'paper_open_failed' })]),
+    );
+  });
+
   it('keeps HOLD cycles idle: no simulated order is opened or closed', async () => {
     const o = setup({ mtfMode: 'off', newSignals: [] });
     const result = await run(o);
@@ -397,6 +422,15 @@ describe('pipeline: persisted SELL exits (F3)', () => {
     expect(r.status).toBe('PARTIAL');
     expect(o.rpcs.some((x) => x.fn === 'paper_mark_to_market')).toBe(true);
     expect(JSON.stringify((r.steps as any)?.paper_trading)).toContain('close btcidr SIGNAL failed');
+  });
+
+  it('still flattens on the kill switch when the status write fails', async () => {
+    // The drawdown is already breached. If paper_set_status throws and is not guarded, the flatten
+    // loop never runs and the account keeps its positions, defeating the kill switch entirely.
+    const o = setup({ mtfMode: 'off', openPositions: [position], setStatusHttpError: 500, mtmEquity: 5e6, tickerBid: 1010 });
+    const r = await run(o);
+    expect(r.status).toBe('PARTIAL');
+    expect(o.rpcs.filter((x) => x.fn === 'paper_close_position').map((x) => x.body.p_reason)).toContain('MAX_DRAWDOWN');
   });
 
   it('still completes the kill-switch flatten when the close RPC throws', async () => {

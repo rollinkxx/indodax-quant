@@ -670,6 +670,27 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         return r?.ok ?? false;
       };
 
+      // Same contract as `close`: a 4xx from paper_open_position (insufficient_cash race, constraint
+      // violation) must reject this one candidate, not abort the run and skip the remaining entries.
+      const openPosition = async (o: {
+        qty: number; fee: number; notional: number; signalId: number; pairId: string;
+        requestedPrice: number; fill: number; slip: number;
+        stops: { stopLoss: number; takeProfit: number };
+      }): Promise<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number } | null> => {
+        try {
+          return await db.rpc<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number }>('paper_open_position', {
+            p_account_id: account.id, p_pair_id: o.pairId, p_qty: o.qty, p_requested_price: o.requestedPrice, p_fill_price: o.fill,
+            p_fee: o.fee, p_slippage_bps: o.slip, p_stop_loss: o.stops.stopLoss, p_take_profit: o.stops.takeProfit,
+            p_signal_id: o.signalId, p_idempotency_key: `open:${account.id}:${o.signalId}`, p_reason: 'SIGNAL',
+          });
+        } catch (e) {
+          const msg = `open ${o.pairId} failed: ${errorMessage(e)}`;
+          actions.push(msg);
+          degraded.push(msg);
+          return null;
+        }
+      };
+
       // a0) A SELL is stored once (ON CONFLICT DO NOTHING), so it is only "new" in the run that saved it. If that run skipped the
       // exit check (stale ticker, rejected close, orphaned run) the SELL would be lost. Re-read stored SELLs for open positions on
       // pairs that pass data quality; paper_close_position makes the close idempotent (duplicate / not OPEN is rejected).
@@ -727,7 +748,15 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // c) Risk management
       const risk = riskState({ equity: Number(mtm.equity), peakEquity: Number(mtm.peak_equity), dayStartEquity: ctx.day_start_equity === null ? null : Number(ctx.day_start_equity), params });
       if (accountStatus === 'RUNNING' && risk.killSwitch) {
-        await db.rpc('paper_set_status', { p_account_id: account.id, p_status: 'KILLED', p_reason: risk.reasons.join('; ') });
+        // Note the status write but do not let it gate the flatten: the drawdown has already been
+        // breached, so positions must be closed even if marking the account KILLED fails.
+        try {
+          await db.rpc('paper_set_status', { p_account_id: account.id, p_status: 'KILLED', p_reason: risk.reasons.join('; ') });
+        } catch (e) {
+          const msg = `paper_set_status KILLED failed: ${errorMessage(e)}`;
+          actions.push(msg);
+          degraded.push(msg);
+        }
         accountStatus = 'KILLED';
         let closed = 0;
         for (const pos of [...open.values()]) {
@@ -830,10 +859,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           if (size.qty <= 0) { rejectEntry(s, 'sizing_gate', size.reason ?? 'sizing_rejected'); continue; }
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
           if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { rejectEntry(s, 'portfolio_gate', 'max_total_exposure'); continue; }
-          const r = await db.rpc<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number }>('paper_open_position', {
-            p_account_id: account.id, p_pair_id: s.pair_id, p_qty: size.qty, p_requested_price: t.ask, p_fill_price: fill,
-            p_fee: size.fee, p_slippage_bps: slip, p_stop_loss: stops.stopLoss, p_take_profit: stops.takeProfit,
-            p_signal_id: s.id, p_idempotency_key: `open:${account.id}:${s.id}`, p_reason: 'SIGNAL',
+          const r = await openPosition({
+            qty: size.qty, fee: size.fee, notional: size.notional, signalId: s.id, pairId: s.pair_id,
+            requestedPrice: t.ask, fill, slip, stops,
           });
           if (r?.ok) {
             entries++;
@@ -843,7 +871,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             actions.push(`open ${s.pair_id}`);
             notes.push({ event_type: 'paper_buy', dedupe_key: `open:${r.position_id}`, message: messages.paperBuy({ pair_id: s.pair_id, qty: size.qty, fill, fee: size.fee, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, cashAfter: cash }) });
           } else {
-            rejectEntry(s, 'persistence', r?.reason ?? 'paper_open_rejected');
+            rejectEntry(s, 'persistence', r === null ? 'paper_open_failed' : r.reason ?? 'paper_open_rejected');
           }
         }
       } else {
