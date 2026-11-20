@@ -189,7 +189,9 @@ describe('pipeline: MTF + dynamic universe', () => {
       id: 99, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
       indicators: { atr14: 2.866 }, candle_time: new Date(expectedLast * 1000).toISOString(),
     };
-    const { f, rpcs } = setup({ mtfMode: 'off', strategyParams: { atrTakeProfitMultiplier: 0.5 }, newSignals: [signal] });
+    // 1.6xATR target on a 0.2866% ATR is ~0.46% gross, below the 0.6% round-trip cost. The bracket
+    // stays legal (1.6 > the 1.5 stop) so this exercises the economics gate, not the params gate.
+    const { f, rpcs } = setup({ mtfMode: 'off', strategyParams: { atrTakeProfitMultiplier: 1.6 }, newSignals: [signal] });
     const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
 
     expect(r.status).toBe('SUCCESS');
@@ -577,3 +579,48 @@ describe('pipeline: unwarmed universe members must not break the run', () => {
   });
 });
 
+
+describe('pipeline: invalid strategy config blocks entries', () => {
+  // The admin API refuses to save an inverted reward/risk bracket, but a row can still reach the
+  // pipeline via direct SQL or a migration. Entries must stop while exits keep running: withholding a
+  // SELL would trap an open position past its stop, which is worse than the bad bracket itself.
+  it('blocks every BUY and reports FAILED when take profit is not wider than the stop loss', async () => {
+    const signal = {
+      id: 77, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 2.866 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const { f, rpcs } = setup({ mtfMode: 'off', strategyParams: { atrStopMultiplier: 9, atrTakeProfitMultiplier: 5 }, newSignals: [signal] });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('FAILED');
+    expect((r.errors ?? []).join(' ')).toContain('invalid_strategy_params');
+    expect((r.errors ?? []).join(' ')).toContain('INVALID_NET_REWARD_RISK');
+    expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    const info = (r.steps as any)?.paper_trading?.info;
+    expect(info).toMatchObject({ buy_signals_received: 1, entries_opened: 0 });
+    expect(info.entry_rejections).toContainEqual(expect.objectContaining({
+      pair_id: 'btcidr', stage: 'strategy_params_gate', reason: 'invalid_strategy_params',
+    }));
+  });
+
+  it('still closes an open position while entries are blocked', async () => {
+    const { f, rpcs } = setup({
+      mtfMode: 'off',
+      strategyParams: { atrStopMultiplier: 9, atrTakeProfitMultiplier: 5 },
+      openPositions: [{
+        id: 5, pair_id: 'btcidr', status: 'OPEN', qty: 1, entry_price: 1000, entry_fee: 2,
+        stop_loss: 1050, take_profit: 900, opened_at: '2026-01-01T00:00:00Z',
+      }],
+    });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+    expect(r.status).toBe('FAILED');
+    // The exit path is independent of the entry gate.
+    expect(rpcs.some((x) => x.fn === 'paper_close_position')).toBe(true);
+  });
+
+  it('runs normally when the reward/risk bracket is valid', async () => {
+    const { f } = setup({ strategyParams: { atrStopMultiplier: 1.5, atrTakeProfitMultiplier: 3 } });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+    expect(r.status).toBe('SUCCESS');
+  });
+});

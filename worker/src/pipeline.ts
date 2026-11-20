@@ -7,7 +7,7 @@ import { dispatchNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage, HttpError } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
-import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams } from '../../shared/strategy';
+import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams, validateCrossFieldParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
 import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
@@ -230,6 +230,21 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   const errors: string[] = [];
   const notes: NotificationItem[] = [];
   const params = mergeParams(ctx.config);
+
+  // A strategy config that is individually valid but jointly broken must not open new risk. The admin
+  // API rejects such saves, yet the row can still reach the pipeline (direct SQL, a migration, or a
+  // save made before the check existed). `atrTakeProfitMultiplier <= atrStopMultiplier` puts the take
+  // profit closer than the stop loss, so no win rate below the implied breakeven can profit.
+  //
+  // Entries are blocked, exits are NOT: withholding a SELL to protect the config would trap open
+  // positions past their stop, which is strictly worse than the bad bracket itself.
+  const paramErrors = validateCrossFieldParams(params)
+    .filter((f) => f.level === 'error')
+    .map((f) => `${f.code}: ${f.message}`);
+  const entriesBlocked = paramErrors.length > 0;
+  if (entriesBlocked) {
+    for (const e of paramErrors) errors.push(`invalid_strategy_params: ${e}`);
+  }
   const nowSec = Math.floor(now() / 1000);
   const nowMin = floorTo(nowSec, 60);
   const account = ctx.account;
@@ -900,6 +915,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // d) Entries on new BUY signals. Shadow continuation diagnostics are intentionally not used here.
       let entries = 0;
       const buys = newSignals.filter((s) => s.side === 'BUY').sort((a, b) => Number(b.strength) - Number(a.strength));
+      // An invalid parameter set is rejected here, at the entry gate, and not earlier: exits must keep
+      // running so an already-open position can still hit its stop.
+      if (entriesBlocked) {
+        for (const s of buys) rejectEntry(s, 'strategy_params_gate', 'invalid_strategy_params');
+      } else
       // An unverifiable equity (unpriced open position) blocks new risk, on top of the account/risk gates.
       if (accountStatus === 'RUNNING' && !account.kill_switch && !risk.blockEntries && !valuation.blockEntries) {
         let cash = Number(mtm.cash);
@@ -1092,6 +1112,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   } finally {
     const failedCore = ['fetch_market', 'store_market'].every((k) => (steps[k] as { ok?: boolean } | undefined)?.ok === false);
     finalStatus = errors.length === 0 ? 'SUCCESS' : failedCore ? 'FAILED' : 'PARTIAL';
+    // A config that cannot legally trade is an operator error, not a transient degradation.
+    if (entriesBlocked && finalStatus !== 'FAILED') finalStatus = 'FAILED';
 
     // A lost lease means part of the run was abandoned mid-flight; record it for the operator.
     if (leaseLost.reason) {
