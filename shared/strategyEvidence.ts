@@ -52,11 +52,24 @@ export function wilsonLowerBoundPct(wins: number, trials: number, z = 1.96): num
   return Math.max(0, (center - margin) / denominator * 100);
 }
 
+/** Requirement sets that can never be satisfied, checked before they produce a misleading verdict. */
+export function invalidEvidenceRequirements(req: StrategyEvidenceRequirements): string[] {
+  const out: string[] = [];
+  if (!(req.minHoldoutTrades >= 1)) out.push('INVALID_HOLDOUT_SIZE: minHoldoutTrades must be at least 1');
+  if (!(req.minWinRateLower95Pct >= 0) || req.minWinRateLower95Pct > 100) out.push('INVALID_WIN_RATE_THRESHOLD: minWinRateLower95Pct must be between 0 and 100');
+  if (!(req.minProfitFactorExclusive >= 0)) out.push('INVALID_PROFIT_FACTOR_THRESHOLD: minProfitFactorExclusive must be non-negative');
+  return out;
+}
+
 export function evaluateStrategyEvidence(
   metrics: HoldoutEvidenceMetrics,
   requirements: StrategyEvidenceRequirements = DEFAULT_STRATEGY_EVIDENCE_REQUIREMENTS,
 ): StrategyEvidenceDecision {
-  const valid = Number.isInteger(metrics.trades) && metrics.trades >= 0 &&
+  // A broken threshold would report NO_GO with a reason that blames the strategy instead of the
+  // configuration, so it is reported as its own failure.
+  const badRequirements = invalidEvidenceRequirements(requirements);
+  const valid = badRequirements.length === 0 &&
+    Number.isInteger(metrics.trades) && metrics.trades >= 0 &&
     Number.isInteger(metrics.wins) && metrics.wins >= 0 && metrics.wins <= metrics.trades &&
     Number.isFinite(metrics.expectancyIdr) &&
     (metrics.profitFactor === null || Number.isFinite(metrics.profitFactor));
@@ -69,11 +82,17 @@ export function evaluateStrategyEvidence(
     positiveExpectancy: valid && metrics.expectancyIdr > requirements.minExpectancyIdrExclusive,
   };
   const reasons: string[] = [];
-  if (!valid) reasons.push('INVALID_HOLDOUT_METRICS');
-  if (!checks.sufficientSample) reasons.push('INSUFFICIENT_HOLDOUT_SAMPLE');
-  if (!checks.winRateConfidence) reasons.push('WIN_RATE_CONFIDENCE_BELOW_THRESHOLD');
-  if (!checks.profitableFactor) reasons.push('PROFIT_FACTOR_NOT_ABOVE_THRESHOLD');
-  if (!checks.positiveExpectancy) reasons.push('NET_EXPECTANCY_NOT_POSITIVE');
+  if (badRequirements.length) {
+    // Report the configuration problem only: the metric checks below cannot be trusted, and naming
+    // them would send an operator looking at the strategy instead of the threshold set.
+    reasons.push(...badRequirements);
+  } else {
+    if (!valid) reasons.push('INVALID_HOLDOUT_METRICS');
+    if (!checks.sufficientSample) reasons.push('INSUFFICIENT_HOLDOUT_SAMPLE');
+    if (!checks.winRateConfidence) reasons.push('WIN_RATE_CONFIDENCE_BELOW_THRESHOLD');
+    if (!checks.profitableFactor) reasons.push('PROFIT_FACTOR_NOT_ABOVE_THRESHOLD');
+    if (!checks.positiveExpectancy) reasons.push('NET_EXPECTANCY_NOT_POSITIVE');
+  }
 
   return {
     status: Object.values(checks).every(Boolean) ? 'ELIGIBLE_FOR_MANUAL_REVIEW' : 'NO_GO',

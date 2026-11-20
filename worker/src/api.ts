@@ -8,7 +8,7 @@ import { errorMessage } from './http';
 import { runPipeline } from './pipeline';
 import { sendTelegram, telegramConfigured, messages, jakarta } from './telegram';
 import { dynamicSlippageBps, effectiveFeePct, sellFillPrice, feeFor, computeStats } from '../../shared/paper';
-import { DEFAULT_PARAMS, mergeParams, validateBracketEconomics, validateParams, type StrategyParams } from '../../shared/strategy';
+import { DEFAULT_PARAMS, mergeParams, validateBracketEconomics, validateCrossFieldParams, validateParams, type StrategyParams } from '../../shared/strategy';
 import { buildEngineDecisions } from '../../shared/engineDecisions';
 
 const MAX_TRACKED_PAIRS = 10;
@@ -206,9 +206,13 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       if (!rows[0]) return bad('no active strategy', 404);
       const merged = { ...DEFAULT_PARAMS, ...rows[0].params, ...params };
       const all = [...validateParams(merged), ...validateBracketEconomics(merged as unknown as StrategyParams)];
-      if (all.length) return bad('invalid strategy parameters', 422, all);
+      // Cross-field checks: hard errors block the save, warnings are returned for the operator to see.
+      const crossField = validateCrossFieldParams(merged as unknown as StrategyParams);
+      const crossFieldErrors = crossField.filter((f) => f.level === 'error').map((f) => f.message);
+      if (all.length || crossFieldErrors.length) return bad('invalid strategy parameters', 422, [...all, ...crossFieldErrors]);
       const updated = await db.update('strategy_configs', `id=eq.${rows[0].id}`, { params: merged, updated_by: user.email, updated_at: new Date().toISOString() });
-      return json({ ok: true, strategy: updated[0] });
+      const warnings = crossField.filter((f) => f.level === 'warn');
+      return json({ ok: true, strategy: updated[0], ...(warnings.length ? { warnings } : {}) });
     }
 
     if (path === '/api/system' && method === 'GET') {

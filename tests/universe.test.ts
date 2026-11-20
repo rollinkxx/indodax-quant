@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectUniverse, spreadPct, universeDue, type UniverseInput, type UniverseTicker } from '../shared/universe';
+import { memberAt, normalizeIntervals, selectUniverse, spreadPct, universeDue, type UniverseInput, type UniverseTicker } from '../shared/universe';
 import { DEFAULT_PARAMS, mergeParams, validateParams } from '../shared/strategy';
 
 const NOW = 1_800_000_000;
@@ -114,5 +114,41 @@ describe('MTF + universe parameters', () => {
   });
   it('invalid stored values fall back per key', () => {
     expect(mergeParams({ mtfMode: 'bogus', universeSize: 3 })).toMatchObject({ mtfMode: 'filter', universeSize: 3 });
+  });
+});
+
+describe('timestamped universe membership', () => {
+  it('resolves membership only inside half-open intervals', () => {
+    const iv = [{ from: 1000, to: 2000 }, { from: 3000, to: null }];
+    expect(memberAt(iv, 999)).toBe(false);
+    expect(memberAt(iv, 1000)).toBe(true);
+    expect(memberAt(iv, 1999)).toBe(true);
+    expect(memberAt(iv, 2000)).toBe(false);
+    expect(memberAt(iv, 2500)).toBe(false);
+    expect(memberAt(iv, 3000)).toBe(true);
+    expect(memberAt(iv, 10 ** 12)).toBe(true);
+  });
+
+  it('treats a missing or empty interval list as "never a member"', () => {
+    expect(memberAt(undefined, 1000)).toBe(false);
+    expect(memberAt([], 1000)).toBe(false);
+  });
+
+  it('merges overlapping and adjacent intervals instead of double counting', () => {
+    const merged = normalizeIntervals([
+      { from: 1000, to: 2000 }, { from: 1500, to: 2500 }, { from: 2500, to: 3000 },
+      { from: 5000, to: null }, { from: 6000, to: 7000 },
+    ]);
+    expect(merged).toEqual([{ from: 1000, to: 3000 }, { from: 5000, to: null }]);
+    expect(memberAt(merged, 2800)).toBe(true);
+    expect(memberAt(merged, 4000)).toBe(false);
+  });
+
+  it('drops inverted and non-finite rows rather than creating phantom membership', () => {
+    const merged = normalizeIntervals([
+      { from: 2000, to: 1000 }, { from: Number.NaN, to: 5000 }, { from: 1000, to: 1000 },
+      { from: 4000, to: 4500 },
+    ]);
+    expect(merged).toEqual([{ from: 4000, to: 4500 }]);
   });
 });

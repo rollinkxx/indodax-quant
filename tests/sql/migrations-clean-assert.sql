@@ -41,7 +41,8 @@ BEGIN
   -- Backend mutation and orchestration RPCs must exist and be unavailable to clients.
   FOREACH v_signature IN ARRAY ARRAY[
     'public.begin_run(timestamptz,text,integer)',
-    'public.finish_run(bigint,text,jsonb,text)',
+    'public.finish_run(bigint,text,jsonb,text,bigint)',
+    'public.renew_pipeline_lease(bigint,bigint,integer)',
     'public.ingest_market(jsonb,jsonb,jsonb,jsonb,jsonb,jsonb)',
     'public.get_recent_candles(text[],text,integer)',
     'public.get_recent_candles_multi(text[],text[],integer)',
