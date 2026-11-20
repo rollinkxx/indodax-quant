@@ -356,9 +356,20 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // Trade fetches are the largest single cost (one relay call per pair, 3 attempts on failure).
     // They run in a child budget so retries can never eat the reserve the core steps need; a pair
     // that does not fit is deferred for this minute and keeps its old cursor.
-    const optional = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE));
+    //
+    // The 1m history slice is held back *before* the trades spend the pool. On 2026-11-20 the trades
+    // consumed every optional slot, leaving exactly SUBREQUEST_RESERVE, so `remaining - RESERVE` was
+    // 0 on every run: the backfill never ran, `covered_until` could never advance past the hole, and
+    // the 5m series froze at 03:20 while runs kept reporting SUCCESS.
+    const historyReserve = Math.max(0, Math.min(HISTORY_BACKFILL_PER_RUN, budget.remaining() - SUBREQUEST_RESERVE));
+    const optional = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE - historyReserve));
     const dxOptional = new IndodaxClient(optional.fetch as FetchLike);
-    const tradeOrder = [...pairs].sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id));
+    const byPriority = [...pairs].sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id));
+    // Rotate the tail so a capped queue does not permanently starve the same pairs.
+    const tradeOffset = byPriority.length ? nowSec % byPriority.length : 0;
+    const tradeOrder = byPriority.length
+      ? [...byPriority.slice(tradeOffset), ...byPriority.slice(0, tradeOffset)]
+      : [];
     const tradeDeferred = new Set<string>();
 
     const tradeResults = await step('fetch_trades', async () => {
@@ -422,9 +433,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // subrequests actually left. History is optional work; store_market/analyze/finish_run are not.
       const wanting = usable.filter((p) => plans.get(p.id)!.historyRange).map((p) => p.id);
       const offset = wanting.length ? nowSec % wanting.length : 0;
-      const affordable = Math.min(HISTORY_BACKFILL_PER_RUN, budget.remaining() - SUBREQUEST_RESERVE);
+      const affordable = Math.min(HISTORY_BACKFILL_PER_RUN, historyReserve);
       const budgeted = new Set([...wanting.slice(offset), ...wanting.slice(0, offset)].slice(0, Math.max(0, affordable)));
-      const historyBudget = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE));
+      const historyBudget = budget.child(Math.max(0, affordable));
       const dxHistory = new IndodaxClient(historyBudget.fetch as FetchLike);
 
       await Promise.all(usable.map(async (p) => {

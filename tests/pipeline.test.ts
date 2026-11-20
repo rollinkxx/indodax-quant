@@ -497,6 +497,26 @@ describe('pipeline: unwarmed universe members must not break the run', () => {
   // The real outage: Cloudflare rejects every subrequest past the cap. The invariant is that the run
   // still reaches store_market and finish_run, so the pipeline degrades to PARTIAL instead of dying
   // mid-flight and being killed by the lease watchdog.
+  // 2026-11-20 (second failure): after the null-candle fix the runs reported SUCCESS again but the
+  // 5m series stayed frozen at 03:20. The trade fetches (one call per pair) consumed the entire
+  // optional pool, so `budget.remaining() - SUBREQUEST_RESERVE` was 0 and the 1m history backfill
+  // was deferred on *every* run. Because `covered_until` only advances when the hole is repaired,
+  // the cursor never moved. The invariant: on a realistic universe the history slice must survive.
+  it('still backfills 1m history when trade fetches would otherwise eat the whole pool', async () => {
+    // 25 pairs at one trade call each, plus market/HTF/RPCs, is the production shape that deadlocked.
+    const extraPairs = Array.from({ length: 24 }, (_, i) => `q${i}idr`);
+    const o = setup({ extraPairs, staleCoverage: true });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+
+    expect(r.status).not.toBe('FAILED');
+    const oneMinute = o.indodax.filter((p) => p.startsWith('/tradingview/history_v2')
+      && new URLSearchParams(p.split('?')[1]).get('tf') === '1');
+    expect(oneMinute.length).toBeGreaterThan(0);
+    // The reserve still has to hold: the core steps must reach finish_run inside the cap.
+    expect((r.steps as any).store_market?.ok).toBe(true);
+    expect((r.steps as any).budget.info.used).toBeLessThanOrEqual(50);
+  });
+
   it('reserves budget so store_market and finish_run survive a tight subrequest cap', async () => {
     const extraPairs = Array.from({ length: 12 }, (_, i) => `x${i}idr`);
     const o = setup({ extraPairs, nullCandlePairs: extraPairs, mtfMode: 'on' });
