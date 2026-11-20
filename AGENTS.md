@@ -19,15 +19,17 @@ Instructions for any AI agent working in this repository.
 
 ## Skills
 
-`.agents/skills/` holds the agent skills for engine work. Two are first-party and
-authoritative for this repo: `indodax-engine` (invariants, where things live, how to
-prove a change) and `indodax-orderflow` (the unused `market_trades.side` axis, its
-causality traps, and the bar a flow feature must clear). The rest are MIT-licensed
-trading/quant skills vendored from `agiprolabs/claude-trading-skills` and
+`.agents/skills/` holds the agent skills for engine work (17 skills). Two are
+first-party and authoritative for this repo: `indodax-engine` (invariants, where things
+live, how to prove a change) and `indodax-orderflow` (the unused `market_trades.side`
+axis, its causality traps, and the bar a flow feature must clear). The rest are
+MIT-licensed trading/quant skills vendored from `agiprolabs/claude-trading-skills` and
 `tradermonty/claude-trading-skills` (see `.agents/ATTRIBUTION.md` for pinned
 commits and the review performed). Where a vendored skill contradicts this repository,
 this repository wins — paper trading only, 0.2%/side taker fees, documented backtest
 scope limits. Nothing under `.agents/` is imported by the app, the Worker or the tests.
+Skills load automatically in a new conversation whose workspace root is the repo root
+(discovery is non-recursive and covers `.agents/skills/` only).
 
 ## Conventions
 

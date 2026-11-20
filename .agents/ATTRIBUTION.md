@@ -19,6 +19,9 @@ name/description first and only loads the body and `references/`, `scripts/` on 
 | `mean-reversion` | agiprolabs/claude-trading-skills | same | MIT |
 | `cointegration-analysis` | agiprolabs/claude-trading-skills | same | MIT |
 | `market-microstructure-traditional` | agiprolabs/claude-trading-skills | same | MIT |
+| `correlation-analysis` | agiprolabs/claude-trading-skills | same | MIT |
+| `feature-engineering` | agiprolabs/claude-trading-skills | same | MIT |
+| `strategy-framework` | agiprolabs/claude-trading-skills | same | MIT |
 
 ## Review performed before vendoring
 
@@ -41,6 +44,17 @@ name/description first and only loads the body and `references/`, `scripts/` on 
   (both assume AMM/Solana DEX mechanics, this repo is a CEX order-book spot market) and
   `custom-indicators` (on-chain NVT/exchange-flow metrics that need data this repo does
   not ingest).
+- Second pass (`correlation-analysis`, `feature-engineering`, `strategy-framework`): 0
+  prompt-injection/exfiltration hits, no hooks, no CI files, no `.git`, 15 files total.
+  Only outbound URLs are `api.coingecko.com` and `public-api.birdeye.so` on the optional
+  `--live` path; `feature-engineering` reads `BIRDEYE_API_KEY` only there. The
+  `So1111…112` string in `feature-engineering/scripts/build_features.py` is the wrapped-SOL
+  mint constant, not a credential. `strategy-framework/scripts/*.py` are stdlib-only.
+- Also rejected on relevance in that pass: `signal-classification` (XGBoost/LightGBM —
+  this repo has no Python ML dependency and no ML in `alpha-research.ts`),
+  `trading-visualization` (matplotlib/mplfinance; the dashboard is React),
+  `trade-journal` (duplicates the repo's own `engine_decisions` audit trail),
+  `backtrader`/`vectorbt`/`pandas-ta`/`ta-lib` (Python libraries, repo is TypeScript).
 
 ## Applying them here
 
