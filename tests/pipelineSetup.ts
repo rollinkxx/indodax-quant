@@ -13,7 +13,7 @@ export function candleRows(n: number, endT: number, step: number, fn: (i: number
   });
 }
 
-export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; candleClose?: (i: number) => number } = {}) {
+export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -78,6 +78,10 @@ export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolea
           return typeof opts.pendingSells === 'string'
             ? json({ code: 'PGRST202', message: opts.pendingSells }, 404)
             : json(opts.pendingSells ?? []);
+        case 'prune_pending_entries':
+          return opts.pruneError
+            ? json({ code: 'PGRST202', message: opts.pruneError }, 404)
+            : json(3);
         case 'paper_open_position': return json(opts.openResult ?? { ok: true, position_id: 55, cash_after: 9_700_000 });
         case 'paper_close_position': return json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
         case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
