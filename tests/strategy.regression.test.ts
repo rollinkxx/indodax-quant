@@ -1,7 +1,7 @@
 // Regression tests for the engine BUY/SELL/HOLD logic (FIX-02 .. FIX-10).
 // Each block names the spec acceptance case it covers.
 import { describe, expect, it } from 'vitest';
-import { exitReason, shouldExitOnSignal } from '../shared/paper';
+import { exitReason, positionSize, shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
 import { computeIndicatorsTail, DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 import { ema } from '../shared/indicators';
@@ -202,5 +202,19 @@ describe('FIX-09 gap over both brackets resolves to the stop', () => {
     expect(exitReason(pos, 111, null)).toBe('TAKE_PROFIT');
     // A previous bid above the stop means the stop was never crossed: the target wins.
     expect(exitReason(pos, 111, 96)).toBe('TAKE_PROFIT');
+  });
+});
+
+describe('FIX-10 position sizing charges the exit fee on the stop notional', () => {
+  it('T27 per-unit risk = stop distance + entry fee + exit fee at the stop + exit slippage', () => {
+    // 50 + 1000*0.003 + 950*0.003 + 950*0.002 = 57.75. The old formula charged the exit fee on the
+    // entry notional (1000) and would have produced 57.70 for the same trade.
+    const sized = positionSize({
+      equity: 10_000_000, cash: 10_000_000, entry: 1000, stopLoss: 950,
+      params: { ...DEFAULT_PARAMS, feePct: 0.3, riskPerTradePct: 1, maxPositionPct: 100 },
+      exitSlippageBps: 20,
+    });
+    expect(sized.riskAmount).toBeCloseTo(100_000, 6);
+    expect(sized.qty * 57.75).toBeCloseTo(100_000, 0);
   });
 });

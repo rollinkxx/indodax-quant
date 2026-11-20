@@ -192,7 +192,15 @@ export function positionSize(i: SizingInput): SizingResult {
   if (!(i.entry > 0) || !(i.equity > 0) || !(i.cash > 0)) return zero('invalid_inputs');
   if (!(i.stopLoss > 0) || i.stopLoss >= i.entry) return zero('invalid_stop');
   const riskAmount = i.equity * p.riskPerTradePct / 100;
-  const perUnitRisk = (i.entry - i.stopLoss) + i.entry * (p.feePct / 100) * 2 + i.stopLoss * ((i.exitSlippageBps ?? 0) / 10_000);
+  // Risk per unit is the stop distance plus what the round trip actually costs: the entry fee on the
+  // entry notional, the exit fee on the (lower) stop notional, and the exit slippage at the stop.
+  const feePct = p.feePct / 100;
+  const exitSlip = (i.exitSlippageBps ?? 0) / 10_000;
+  const perUnitRisk =
+    (i.entry - i.stopLoss)
+    + i.entry * feePct
+    + i.stopLoss * feePct
+    + i.stopLoss * exitSlip;
   const qtyByRisk = riskAmount / perUnitRisk;
   const maxNotional = Math.min(i.equity * p.maxPositionPct / 100, i.cash / (1 + p.feePct / 100));
   const qty = roundDown(Math.min(qtyByRisk, maxNotional / i.entry));
