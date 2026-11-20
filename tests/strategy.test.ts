@@ -318,7 +318,8 @@ describe('explicit BUY / SELL / HOLD decisions', () => {
       [above, row({ ema9: 99, ema21: 100, rsi14: 65 })], [15, 5],
       { ...DEFAULT_PARAMS, sellRequireConfirm: true },
     );
-    expect(result).toMatchObject({ action: 'HOLD', signal: null, reason: 'sell_blocked_rsi_confirmation' });
+    // Reason now names the diagnostic stage, mirroring buy_blocked_* (FIX-05).
+    expect(result).toMatchObject({ action: 'HOLD', signal: null, reason: 'sell_blocked_rsi_filter' });
   });
 
   it('fails closed with an explicit HOLD reason for NaN, infinite, negative-volume and invalid-RSI inputs', () => {

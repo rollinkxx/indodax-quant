@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
-import { DEFAULT_PARAMS, validateCrossFieldParams, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
+import { DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 
 describe('FIX-02 graded signal exit policy', () => {
   const policy = { requireProfit: true, forceStrength: 70, forceOnRiskBlock: true };
@@ -82,5 +82,49 @@ describe('FIX-04 score mode warning', () => {
       .some((f) => f.code === 'SCORE_MODE_WITHOUT_THRESHOLD')).toBe(false);
     expect(validateCrossFieldParams({ ...DEFAULT_PARAMS, mtfMode: 'filter' })
       .some((f) => f.code === 'SCORE_MODE_WITHOUT_THRESHOLD')).toBe(false);
+  });
+});
+
+describe('FIX-05 SELL cross lookback', () => {
+  const row = (over: Partial<IndicatorRow> = {}): IndicatorRow => ({
+    t: 0, close: 100, ema9: 101, ema21: 100, ema50: 95, rsi14: 45, macd: 0, macdSignal: 0, macdHist: -1,
+    atr14: 1, volMa20: 10, support: 90, resistance: 110, ...over,
+  });
+  const above = row();
+  const confirm = { ...DEFAULT_PARAMS, sellRequireConfirm: true };
+
+  it('T16 signals SELL one candle after the cross when the filters pass there', () => {
+    const crossWeak = row({ ema9: 99, rsi14: 55 });
+    const lastStrong = row({ ema9: 98, rsi14: 45 });
+    const rows = [above, crossWeak, lastStrong];
+    const volumes = [10, 10, 20];
+
+    expect(diagnoseSellSignalWindow(rows, volumes, confirm)).toMatchObject({
+      stage: 'ready', ready: true, crossFound: true, barsSinceCross: 1, alreadyQualified: false,
+    });
+    expect(evaluateSignalWindow(rows, volumes, confirm)?.side).toBe('SELL');
+  });
+
+  it('T17 ignores a cross older than sellCrossLookback', () => {
+    const below = row({ ema9: 99, rsi14: 45 });
+    const cross = row({ ema9: 99, rsi14: 45 });
+    const rows = [above, cross, below, below, below, row({ ema9: 97, rsi14: 45 })];
+    const volumes = [10, 10, 10, 10, 10, 20];
+    const diag = diagnoseSellSignalWindow(rows, volumes, { ...DEFAULT_PARAMS, sellCrossLookback: 2 });
+    expect(diag.stage).toBe('no_recent_cross');
+    expect(evaluateMarketAction(rows, volumes, { ...DEFAULT_PARAMS, sellCrossLookback: 2 }).action).toBe('HOLD');
+    // Widening the window finds it again.
+    expect(diagnoseSellSignalWindow(rows, volumes, { ...DEFAULT_PARAMS, sellCrossLookback: 5 }).crossFound).toBe(true);
+  });
+
+  it('T18 does not re-emit a cross whose confirmation candle already qualified', () => {
+    const crossStrong = row({ ema9: 99, rsi14: 45 });
+    const lastStrong = row({ ema9: 98, rsi14: 45 });
+    const rows = [above, crossStrong, lastStrong];
+    const volumes = [10, 20, 20];
+    expect(diagnoseSellSignalWindow(rows, volumes, confirm).stage).toBe('already_qualified');
+    expect(evaluateMarketAction(rows, volumes, confirm)).toMatchObject({
+      action: 'HOLD', signal: null, reason: 'sell_blocked_already_qualified',
+    });
   });
 });

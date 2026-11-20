@@ -770,7 +770,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           mtfInfo[p.id] = states.map((st) => `${st.tf}:${st.trend}`).join(' ');
         }
         // enough rows to look back for a recent EMA cross (crossLookback) plus the candle before it
-        const rows = computeIndicatorsTail(series, params, Math.max(3, params.crossLookback + 1));
+        // The tail must cover the longer of the two cross lookbacks: the SELL gate reads its own window.
+        const rows = computeIndicatorsTail(series, params, Math.max(3, params.crossLookback + 1, params.sellCrossLookback + 1));
         const rowVolumes = series.slice(-rows.length).map((c) => c.v);
         const buyDiag = diagnoseBuySignalWindow(rows, rowVolumes, params);
         const continuationDiag = diagnoseTrendContinuationWindow(rows, rowVolumes, params);
