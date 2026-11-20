@@ -55,6 +55,9 @@ export const STRUCTURAL_REJECTION_REASONS: readonly string[] = [
   // Fallbacks used when the callee returns no reason of its own.
   'sizing_rejected',
   'paper_open_rejected',
+  // The open RPC itself failed (transport/DB error) rather than returning a business rejection.
+  // Every candidate failing this way is a broken engine, not a HOLD.
+  'paper_open_failed',
 ];
 
 export function isStructuralRejection(reason: string): boolean {

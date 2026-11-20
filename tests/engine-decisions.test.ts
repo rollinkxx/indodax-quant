@@ -248,6 +248,8 @@ describe('structural rejection reason set matches what the pipeline emits', () =
       ['sizing_gate', 'invalid_inputs'],
       ['sizing_gate', 'invalid_stop'],
       ['persistence', 'invalid_order'],
+      // The guarded open helper reports a thrown RPC as its own reason.
+      ['persistence', 'paper_open_failed'],
       ['stop_out_of_bounds', 'stop_out_of_bounds'],
     ];
     for (const [stage, reason] of fromCallees) {

@@ -673,7 +673,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // Same contract as `close`: a 4xx from paper_open_position (insufficient_cash race, constraint
       // violation) must reject this one candidate, not abort the run and skip the remaining entries.
       const openPosition = async (o: {
-        qty: number; fee: number; notional: number; signalId: number; pairId: string;
+        qty: number; fee: number; signalId: number; pairId: string;
         requestedPrice: number; fill: number; slip: number;
         stops: { stopLoss: number; takeProfit: number };
       }): Promise<{ ok: boolean; reason?: string; position_id?: number; cash_after?: number } | null> => {
@@ -860,7 +860,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const openCost = [...open.values()].reduce((a, x) => a + Number(x.cost_basis), 0);
           if (!exposureAllows(openCost, size.cost, Number(mtm.equity), params)) { rejectEntry(s, 'portfolio_gate', 'max_total_exposure'); continue; }
           const r = await openPosition({
-            qty: size.qty, fee: size.fee, notional: size.notional, signalId: s.id, pairId: s.pair_id,
+            qty: size.qty, fee: size.fee, signalId: s.id, pairId: s.pair_id,
             requestedPrice: t.ask, fill, slip, stops,
           });
           if (r?.ok) {
