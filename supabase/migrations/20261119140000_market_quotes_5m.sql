@@ -59,16 +59,23 @@ begin
 end;
 $$;
 
+-- Backend-only writer, matching every other RPC in this schema.
+revoke all on function public.ingest_quotes_5m(jsonb) from public, anon, authenticated;
+grant execute on function public.ingest_quotes_5m(jsonb) to service_role;
+
 -- Extend the existing retention routine so the quote history is bounded at 400 days. The routine is
--- recreated in full because a PostgreSQL function body cannot be patched in place.
+-- recreated in full because a PostgreSQL function body cannot be patched in place. Everything
+-- before the new quotes line is byte-identical to 20261119130000, including the batch size, the
+-- row-count semantics of `g` and the JSON key names, so this migration only adds a rule.
 create or replace function public.run_retention()
 returns jsonb
 language plpgsql
-security definer
 set search_path = public
 as $$
 declare
-  a int; b int; c int; d int; e int; f int; g int; h int;
+  a int; b int; c int; d int; e int; f int; g int;
+  n int;
+  h int;
 begin
   delete from market_trades where traded_at < now() - interval '3 days'; get diagnostics a = row_count;
   delete from market_tickers where captured_at < now() - interval '8 days'; get diagnostics b = row_count;
@@ -87,15 +94,16 @@ begin
     where ctid in (
       select ctid from candles
       where timeframe = '5m' and open_time < now() - interval '45 days'
-      limit 20000
+      limit 50000
     );
-    exit when not found;
-    g := g + 1;
+    get diagnostics n = row_count;
+    g := g + n;
+    exit when n = 0;
   end loop;
 
   return jsonb_build_object(
-    'market_trades', a, 'market_tickers', b, 'candles_1m', c, 'execution_logs', d,
-    'portfolio_snapshots', e, 'indicators', f, 'candles_5m_batches', g, 'market_quotes_5m', h
+    'trades', a, 'tickers', b, 'candles_1m', c, 'execution_logs', d, 'snapshots', e,
+    'indicators', f, 'candles_5m', g, 'market_quotes_5m', h
   );
 end;
 $$;
