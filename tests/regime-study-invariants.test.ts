@@ -4,7 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('../scripts/regime-study.ts', import.meta.url), 'utf8');
+const source = readFileSync('scripts/regime-study.ts', 'utf8');
 
 describe('regime study invariants', () => {
   it('charges the real round-trip cost instead of a round number', () => {
