@@ -6,7 +6,7 @@
 // Usage: SUPABASE_ACCESS_TOKEN=... SUPABASE_PROJECT_REF=... npx tsx scripts/apply-migrations.ts
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { planMigrations } from '../shared/migrationPlan';
+import { auditMigrationDrift, duplicateVersions, planMigrations, unparsableMigrations } from '../shared/migrationPlan';
 
 const token = process.env.SUPABASE_ACCESS_TOKEN;
 const ref = process.env.SUPABASE_PROJECT_REF;
@@ -31,11 +31,45 @@ const migrationsDir = join(import.meta.dirname, '..', 'supabase', 'migrations');
 const filenames = readdirSync(migrationsDir).filter((name) => name.endsWith('.sql'));
 
 const appliedRows = (await query('select version from supabase_migrations.schema_migrations;')) as { version: string }[];
-const plan = planMigrations(filenames, appliedRows.map((r) => r.version));
+const appliedVersions = appliedRows.map((r) => r.version);
 
-if (plan.unknown.length) {
-  console.warn(`::warning::Recorded migrations with no repository file: ${plan.unknown.join(', ')}`);
+// Refuse to run when a recorded version has no repository file. That means someone applied SQL this
+// repository cannot reproduce, so the next `wrangler deploy` could ship code depending on a schema
+// the repo does not describe. That is how a hand-applied `begin_run` replacement took the cron down
+// on 2026-11-20 with no log row to show for it.
+//
+// The other direction — a file not yet applied — is this script's normal input, so it is not an
+// error here. `tests/migrationDrift.test.ts` asserts both directions for the audit itself.
+const drift = auditMigrationDrift(filenames, appliedVersions);
+if (drift.missingFromRepository.length) {
+  console.error(
+    `::error::Recorded in schema_migrations but absent from supabase/migrations: ` +
+    `${drift.missingFromRepository.join(', ')}. Something applied SQL this repository cannot ` +
+    `reproduce. Add the missing migration file, or delete the phantom row if it was a stray record.`,
+  );
+  process.exit(1);
 }
+
+const duplicates = duplicateVersions(filenames);
+if (duplicates.length) {
+  console.error(
+    `::error::Two migration files share a version: ${duplicates.join(', ')}. Only one is ever ` +
+    `applied and the other is silently dead; rename one to a later timestamp.`,
+  );
+  process.exit(1);
+}
+
+const unparsable = unparsableMigrations(filenames);
+if (unparsable.length) {
+  console.error(
+    `::error::Migration filenames that do not match <14 digits>_<name>.sql: ${unparsable.join(', ')}. ` +
+    `They would be skipped without any error.`,
+  );
+  process.exit(1);
+}
+
+const plan = planMigrations(filenames, appliedVersions);
+
 if (plan.pending.length === 0) {
   console.log('Production schema is up to date; no migrations to apply.');
   process.exit(0);

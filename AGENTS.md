@@ -38,6 +38,10 @@ Skills load automatically in a new conversation whose workspace root is the repo
 - Do not commit `.openhands/`, `.env`, or scratch files.
 - Read-only means read-only: the backtest and `fee:sensitivity` scripts never place orders and never
   write to the active `strategy_configs` row.
+- **Migrations: `npm run db:migrate` is the only path to production.** An applied migration file is
+  immutable — correct it with a new file. Never hand-apply SQL to production; see
+  `supabase/migrations/README.md` for why (a hand-applied `begin_run` replacement took the cron down
+  on 2026-11-20 with no `execution_logs` row to explain it).
 
 ## Environment notes
 
