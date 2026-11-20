@@ -15,6 +15,11 @@ export interface Env {
   POSTHOG_HOST?: string;
   /** Set to production in deployed environments to avoid dev-only configuration warnings. */
   ENVIRONMENT?: string;
+  /**
+   * Cloudflare subrequest cap per invocation. Workers Free allows 50; paid plans default to 10,000.
+   * Set this to match the deployed plan so the pipeline budgets optional work correctly.
+   */
+  SUBREQUEST_LIMIT?: string;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;

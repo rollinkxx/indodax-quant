@@ -75,6 +75,7 @@ jobs:
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/migrations-clean-assert.sql
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/pipeline_lease_fencing_test.sql
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/universe_history_test.sql
+          psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/get_recent_candles_empty_array_test.sql
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

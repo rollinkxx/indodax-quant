@@ -24,6 +24,10 @@
     // indodax.com returns 403 to Cloudflare Workers; market data goes through this read-only relay.
     "INDODAX_PROXY_URL": "https://znikuooxiqfcicyuhqsx.supabase.co/functions/v1/indodax-proxy",
     "POSTHOG_HOST": "https://us.i.posthog.com",
-    "ENVIRONMENT": "production"
+    "ENVIRONMENT": "production",
+    // Workers Free allows 50 subrequests per invocation. The pipeline budgets optional work
+    // (trade fetches, history backfill) against this so store_market/analyze/finish_run always run.
+    // Raise this when the account moves to a paid plan (paid default is 10,000).
+    "SUBREQUEST_LIMIT": "50"
   }
 }
