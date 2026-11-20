@@ -6,7 +6,8 @@
 // the only variable is the bar size. 4h and 1h are RESEARCH_ONLY (see shared/timeframes.ts).
 //
 // Usage: SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... npm run backtest:timeframes [-- --pairs=btcidr,ethidr]
-import { computeIndicators, evaluateMarketAction, evaluateSignalWindow, mergeParams, type StrategyParams } from '../shared/strategy';
+import { mergeParams, type StrategyParams } from '../shared/strategy';
+import { createIndicatorRowsCache, signalAtBar } from '../shared/backtestSignal';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { hasBacktestDataQuality } from '../shared/backtestScope';
 import { DEFAULT_FILL_MODEL, simulatePortfolio, type PortfolioFillModel } from '../shared/portfolioBacktest';
@@ -41,7 +42,8 @@ function parsePairs(argv: string[]): string[] | null {
 async function load5m(pair: string): Promise<Candle[]> {
   const rows: Row[] = [];
   const base = `candles?select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.5m&is_closed=eq.true&order=open_time.asc`;
-  for (let offset = 0; offset < 10_000; offset += 1_000) {
+  // Ascending scan bounded too low silently drops the NEWEST bars (a pair holds ~13k 5m candles).
+  for (let offset = 0; offset < 50_000; offset += 1_000) {
     const page = await get<Row[]>(`${base}&limit=1000&offset=${offset}`);
     rows.push(...page);
     if (page.length < 1_000) break;
@@ -61,17 +63,11 @@ async function load5m(pair: string): Promise<Candle[]> {
  * signal bar itself to be observed data, so a resampled bucket that swallowed a gap filler is skipped.
  */
 function makeSignal(p: StrategyParams, intervalSec: number) {
+  const rowsFor = createIndicatorRowsCache();
   return (pair: string, candles: Candle[], index: number): 'BUY' | 'SELL' | 'HOLD' => {
-    const win = Math.max(3, p.crossLookback + 1);
-    const from = index - win + 1;
-    if (from < 0) return 'HOLD';
+    if (index - Math.max(3, p.crossLookback + 1) + 1 < 0) return 'HOLD';
     if (!hasBacktestDataQuality(candles, index, p.minCandles, intervalSec)) return 'HOLD';
-    const window = candles.slice(from, index + 1);
-    const rows = computeIndicators(window, p);
-    if (rows.length !== window.length) return 'HOLD';
-    const action = evaluateMarketAction(rows, window.map((c) => c.v), p);
-    if (action.signal) return action.signal.side;
-    return evaluateSignalWindow(rows, window.map((c) => c.v), p)?.side ?? 'HOLD';
+    return signalAtBar(pair, candles, index, p, rowsFor);
   };
 }
 
