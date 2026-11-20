@@ -847,7 +847,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         continuationDiagnostics[p.id] = { ...continuationBase, data_quality: 'ok', outcome: continuationDiag.ready ? 'shadow_candidate' : continuationDiag.stage };
         const rawAction = evaluateMarketAction(rows, rowVolumes, params);
         const raw5m = rawAction.signal;
-        const { action: finalAction, mtf } = applyMtfToMarketAction(rawAction, states, params.mtfMode);
+        const { action: finalAction, mtf } = applyMtfToMarketAction(rawAction, states, params.mtfMode, {
+          filterSell: params.mtfFilterSell,
+          minSellStrength: params.mtfSellBlockStrength,
+        });
         if (raw5m && mtf.blocked) mtfBlocked[p.id] = `${raw5m.side} ${mtf.blocked}`;
         buyDiagnostics[p.id] = {
           ...diagnosticBase,

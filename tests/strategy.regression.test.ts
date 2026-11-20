@@ -2,6 +2,8 @@
 // Each block names the spec acceptance case it covers.
 import { describe, expect, it } from 'vitest';
 import { shouldExitOnSignal } from '../shared/paper';
+import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
+import type { MarketActionDecision, SignalDecision } from '../shared/strategy';
 
 describe('FIX-02 graded signal exit policy', () => {
   const policy = { requireProfit: true, forceStrength: 70, forceOnRiskBlock: true };
@@ -35,5 +37,39 @@ describe('FIX-02 graded signal exit policy', () => {
 
   it('a non-finite strength never forces an exit', () => {
     expect(shouldExitOnSignal({ ...base, strength: Number.NaN }).exit).toBe(false);
+  });
+});
+
+describe('FIX-03 MTF sell filter', () => {
+  const tf = (name: '15m' | '1h', trend: TfState['trend']): TfState => ({
+    tf: name, trend, candles: 60, lastOpenTime: 0, close: 100, emaFast: 100, emaSlow: 99, rsi: 50,
+  });
+  const sell = (strength: number): MarketActionDecision => ({
+    action: 'SELL',
+    signal: { side: 'SELL', strength, reasons: ['cross down'] } as SignalDecision,
+    reason: 'sell_cross_confirmed',
+  });
+  const run = (strength: number, states: TfState[], opts = { filterSell: true, minSellStrength: 70 }) =>
+    applyMtfToMarketAction(sell(strength), states, 'filter', opts);
+
+  it('T10 blocks a weak SELL while 15m and 1h are both bullish', () => {
+    const out = run(50, [tf('15m', 'bull'), tf('1h', 'bull')]);
+    expect(out.action.action).toBe('HOLD');
+    expect(out.action.reason).toBe('mtf_blocked_mtf_sell_against_uptrend');
+  });
+
+  it('T11 lets a strong SELL through the same uptrend', () => {
+    const out = run(85, [tf('15m', 'bull'), tf('1h', 'bull')]);
+    expect(out.action.action).toBe('SELL');
+  });
+
+  it('T12 does not block a SELL when the 1h anchor is not bullish', () => {
+    const out = run(50, [tf('15m', 'bull'), tf('1h', 'bear')]);
+    expect(out.action.action).toBe('SELL');
+  });
+
+  it('T13 mtfFilterSell=false restores the unfiltered SELL', () => {
+    const out = run(50, [tf('15m', 'bull'), tf('1h', 'bull')], { filterSell: false, minSellStrength: 70 });
+    expect(out.action.action).toBe('SELL');
   });
 });

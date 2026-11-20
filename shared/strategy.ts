@@ -72,6 +72,10 @@ export interface StrategyParams {
   mtfEmaFast: number;
   mtfEmaSlow: number;
   mtfMinCandles: number;
+  /** Block a weak SELL while both 15m and 1h are bullish (a trapped position can still leave). */
+  mtfFilterSell: boolean;
+  /** SELL strength at or above this is never blocked by the uptrend filter. */
+  mtfSellBlockStrength: number;
   // Dynamic universe: pairs picked automatically by 24h IDR volume + spread, on top of the manually tracked pairs
   universeMode: UniverseMode;
   universeSize: number;
@@ -150,6 +154,8 @@ export const DEFAULT_PARAMS: StrategyParams = {
   mtfEmaFast: 9,
   mtfEmaSlow: 21,
   mtfMinCandles: 30,
+  mtfFilterSell: true,
+  mtfSellBlockStrength: 70,
   universeMode: 'dynamic',
   universeSize: 12,
   universeMinVolumeIdr: 1_000_000_000,
@@ -160,7 +166,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   notifyUniverse: true,
 };
 
-const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'signalExitRequireProfit', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
+const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'signalExitRequireProfit', 'mtfFilterSell', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
 
 type NumKey = { [K in keyof StrategyParams]: StrategyParams[K] extends number ? K : never }[keyof StrategyParams];
 
@@ -202,6 +208,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   mtfEmaFast: [2, 100, true],
   mtfEmaSlow: [3, 200, true],
   mtfMinCandles: [10, 250, true],
+  mtfSellBlockStrength: [0, 100],
   universeSize: [1, 25, true],
   universeMinVolumeIdr: [0, 1e13],
   universeMaxSpreadPct: [0.01, 10],
