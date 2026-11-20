@@ -260,6 +260,8 @@ export interface SimTrade {
   reason: string;
   entryTime: number;
   exitTime: number;
+  /** The exit bar touched both the stop and the target; stop-first was assumed. */
+  ambiguousExit?: boolean;
 }
 
 /**
@@ -379,6 +381,7 @@ export function simulate(
         trades.push({
           pair, entry: pos.entry, exit: fill, pnl, cost: pos.cost, reason,
           entryTime: pos.entryTime, exitTime: c.t,
+          ...(protectiveExit?.ambiguous ? { ambiguousExit: true } : {}),
         });
         pos = null;
       }
@@ -470,6 +473,7 @@ interface Metrics {
   avgWinPct: number;
   avgLossPct: number;
   maxDrawdownPct: number;
+  ambiguousExits: number;
   endOfDataExits: number;
   exitReasons: Record<string, number>;
 }
@@ -501,6 +505,7 @@ function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
     avgWinPct: Number(avgWinPct.toFixed(3)),
     avgLossPct: Number(avgLossPct.toFixed(3)),
     maxDrawdownPct: Number(maxDrawdownPct.toFixed(3)),
+    ambiguousExits: trades.filter((trade) => trade.ambiguousExit === true).length,
     endOfDataExits: trades.filter((trade) => trade.reason === 'END_OF_DATA').length,
     exitReasons: trades.reduce<Record<string, number>>((counts, trade) => {
       counts[trade.reason] = (counts[trade.reason] ?? 0) + 1;

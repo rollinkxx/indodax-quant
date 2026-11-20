@@ -69,12 +69,20 @@ export function finalizeEndOfDataTrade(
 export interface ProtectiveExit {
   price: number;
   reason: 'STOP_LOSS' | 'TRAILING_STOP' | 'TAKE_PROFIT';
+  /**
+   * True when the bar touched both the stop and the target, so the intrabar path is unknown and
+   * the stop-first rule below decided the outcome. Callers must count these: a strategy whose
+   * results depend on how many ambiguous bars it produced is not measurable from 5m OHLC, and
+   * silently treating them as ordinary losses hides that.
+   */
+  ambiguous?: boolean;
 }
 
 /**
  * Resolve stop/target touches using conservative OHLC ordering.
  * A gap beyond a level fills at the candle open; if both levels are touched,
- * stop-loss wins because candle data cannot reveal the intrabar path.
+ * stop-loss wins because candle data cannot reveal the intrabar path. The `ambiguous` flag marks
+ * exactly that case so the caller can report it instead of counting it as a normal stop.
  */
 export function resolveProtectiveExit(
   stopLoss: number,
@@ -91,7 +99,12 @@ export function resolveProtectiveExit(
   if (candle.l <= stopLoss) {
     // A stop ratcheted above entry is attributed to the trailing stop, not the original stop.
     const trailed = entry !== undefined && Number.isFinite(entry) && stopLoss > entry;
-    return { price: candle.o < stopLoss ? candle.o : stopLoss, reason: trailed ? 'TRAILING_STOP' : 'STOP_LOSS' };
+    const exit: ProtectiveExit = {
+      price: candle.o < stopLoss ? candle.o : stopLoss,
+      reason: trailed ? 'TRAILING_STOP' : 'STOP_LOSS',
+    };
+    if (candle.h >= takeProfit) exit.ambiguous = true;
+    return exit;
   }
   if (candle.h >= takeProfit) {
     return { price: candle.o > takeProfit ? candle.o : takeProfit, reason: 'TAKE_PROFIT' };

@@ -300,7 +300,13 @@ export function evaluateExpectancyEvidence(
   const positiveFolds = usableFolds.filter((rs) => rs.reduce((a, b) => a + b, 0) > 0).length;
   const positiveFoldShare = usableFolds.length > 0 ? positiveFolds / usableFolds.length * 100 : 0;
 
-  const drawdown = maxDrawdownPctOfReturns(returns);
+  // Drawdown is a path property: it must follow exit chronology, not the caller's array order.
+  // The gate compared trades in whatever order they were handed over, so the same sample could
+  // pass or fail depending on iteration order.
+  const chronological = trades.every((t) => Number.isFinite(t.exitTime))
+    ? [...trades].sort((a, b) => a.exitTime - b.exitTime)
+    : trades;
+  const drawdown = maxDrawdownPctOfReturns(chronological.map((t) => t.netReturn));
 
   const checks = {
     sufficientSample: valid && n >= requirements.minHoldoutTrades,

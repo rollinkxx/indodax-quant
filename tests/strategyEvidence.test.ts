@@ -126,6 +126,20 @@ describe('maxDrawdownPctOfReturns', () => {
     expect(maxDrawdownPctOfReturns([0.01, 0.01, 0.01])).toBe(0);
     expect(maxDrawdownPctOfReturns([0.1, -0.5])).toBeCloseTo(50, 5);
   });
+
+  it('evaluateExpectancyEvidence computes drawdown in exit-time order', () => {
+    // Same three trades in two array orders. Chronological exit order is win -> loss -> loss,
+    // which draws down far more than loss -> loss -> win.
+    const win = { netReturn: 1.0, exitTime: 300, pair: 'btcidr' };
+    const lossA = { netReturn: -0.5, exitTime: 100, pair: 'ethidr' };
+    const lossB = { netReturn: -0.5, exitTime: 200, pair: 'xrpidr' };
+    const a = evaluateExpectancyEvidence([win, lossB, lossA]);
+    const b = evaluateExpectancyEvidence([lossA, lossB, win]);
+    expect(a.maxDrawdownPct).toBe(b.maxDrawdownPct);
+    // Sanity: the order really matters for the underlying path function.
+    expect(maxDrawdownPctOfReturns([-0.5, 1.0, -0.5]))
+      .not.toBeCloseTo(maxDrawdownPctOfReturns([1.0, -0.5, -0.5]), 5);
+  });
 });
 
 describe('evaluateExpectancyEvidence (WP1a)', () => {

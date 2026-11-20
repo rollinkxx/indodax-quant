@@ -50,9 +50,15 @@ describe('finalizeEndOfDataTrade', () => {
 });
 
 describe('resolveProtectiveExit', () => {
-  it('uses stop-loss first when one candle touches both stop and target', () => {
+  it('uses stop-loss first when one candle touches both stop and target, and flags the ambiguity', () => {
     const result = resolveProtectiveExit(95, 105, finalCandle({ o: 100, h: 106, l: 94, c: 101 }));
+    expect(result).toEqual({ price: 95, reason: 'STOP_LOSS', ambiguous: true });
+  });
+
+  it('does not flag a bar that only touches the stop', () => {
+    const result = resolveProtectiveExit(95, 105, finalCandle({ o: 100, h: 102, l: 94, c: 99 }));
     expect(result).toEqual({ price: 95, reason: 'STOP_LOSS' });
+    expect(result?.ambiguous).toBeUndefined();
   });
 
   it('fills at the candle open when price gaps through the stop', () => {
