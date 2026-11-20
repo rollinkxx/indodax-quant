@@ -22,7 +22,7 @@ Instructions for any AI agent working in this repository.
 `.agents/skills/` holds the agent skills for engine work. `indodax-engine` is
 first-party and authoritative for this repo; the rest are MIT-licensed trading/quant
 skills vendored from `agiprolabs/claude-trading-skills` and
-`tradermonty/claude-trading-skills` (see `.agents/skills/ATTRIBUTION.md` for pinned
+`tradermonty/claude-trading-skills` (see `.agents/ATTRIBUTION.md` for pinned
 commits and the review performed). Where a vendored skill contradicts this repository,
 this repository wins — paper trading only, 0.2%/side taker fees, documented backtest
 scope limits. Nothing under `.agents/` is imported by the app, the Worker or the tests.

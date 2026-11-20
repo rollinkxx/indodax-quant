@@ -1,14 +1,14 @@
 # Third-party skills vendored into `.agents/skills/`
 
-These skills come from public MIT-licensed repositories, copied unmodified except
-for this file and `indodax-engine/` (which is first-party). Each is a plain
-`SKILL.md` folder, so OpenHands reads the name/description first and only loads the
-body and `references/`, `scripts/` on demand.
+These skills live in `.agents/skills/`. They come from public MIT-licensed
+repositories, copied unmodified except for this file and `indodax-engine/` (which is
+first-party). Each is a plain `SKILL.md` folder, so OpenHands reads the
+name/description first and only loads the body and `references/`, `scripts/` on demand.
 
 | Skill | Upstream | Pinned commit | License |
 | --- | --- | --- | --- |
-| `backtest-expert` | [tradermonty/claude-trading-skills](https://github.com/tradermonty/claude-trading-skills) | `f95e770591b56fd83b9917175f5a7e8fe9ac47dc` | MIT (c) 2026 TraderMonty — `LICENSE.tradermonty.md` |
-| `walk-forward-validation` | [agiprolabs/claude-trading-skills](https://github.com/agiprolabs/claude-trading-skills) | `981e1d736cdc02bdc1c55c74ec9224e956414706` | MIT (c) 2026 AGIPro — `LICENSE.agiprolabs.md` |
+| `backtest-expert` | [tradermonty/claude-trading-skills](https://github.com/tradermonty/claude-trading-skills) | `f95e770591b56fd83b9917175f5a7e8fe9ac47dc` | MIT (c) 2026 TraderMonty — `licenses/tradermonty-MIT.md` |
+| `walk-forward-validation` | [agiprolabs/claude-trading-skills](https://github.com/agiprolabs/claude-trading-skills) | `981e1d736cdc02bdc1c55c74ec9224e956414706` | MIT (c) 2026 AGIPro — `licenses/agiprolabs-MIT.md` |
 | `exit-strategies` | agiprolabs/claude-trading-skills | same | MIT |
 | `position-sizing` | agiprolabs/claude-trading-skills | same | MIT |
 | `risk-management` | agiprolabs/claude-trading-skills | same | MIT |
