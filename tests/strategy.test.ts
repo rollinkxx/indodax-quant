@@ -176,16 +176,26 @@ describe('synthetic candle indicator isolation', () => {
     n: source === 'synthetic' ? 0 : 1, source,
   });
 
-  it('restarts the latest indicator window after an internal synthetic gap', () => {
+  it('keeps the indicator window continuous across an internal synthetic gap', () => {
+    // FIX-08: the series is no longer restarted at the gap (a segment-local SMA seed shifted EMA50
+    // and RSI enough to fake crosses). The gap is reported as `degraded` instead.
     const beforeGap = Array.from({ length: 80 }, (_, i) => candle(i * 300, 100 + i));
     const afterGap = Array.from({ length: 80 }, (_, i) => candle((81 + i) * 300, 500 - i * 0.7));
     const withGap = [...beforeGap, candle(80 * 300, 179, 'synthetic'), ...afterGap];
+    const asIfTraded = [...beforeGap, candle(80 * 300, 179), ...afterGap];
 
     const actual = computeIndicatorsTail(withGap, DEFAULT_PARAMS, 3);
-    const expected = computeIndicatorsTail(afterGap, DEFAULT_PARAMS, 3);
-    const comparable = (rows: typeof actual) => rows.map(({ t: _t, ...row }) => row);
+    const continuous = computeIndicatorsTail(asIfTraded, DEFAULT_PARAMS, 3);
 
-    expect(comparable(actual)).toEqual(comparable(expected));
+    // The gap is 80 candles back, outside the 50-candle warm-up, so the rows stay usable...
+    expect(actual.map((r) => r.degraded)).toEqual([false, false, false]);
+    expect(continuous.every((r) => r.degraded === false)).toBe(true);
+    actual.forEach((row, i) => {
+      expect(row.ema9).toBeCloseTo(continuous[i].ema9!, 9);
+      expect(row.ema21).toBeCloseTo(continuous[i].ema21!, 9);
+      expect(row.rsi14).toBeCloseTo(continuous[i].rsi14!, 9);
+      expect(row.atr14).toBeCloseTo(continuous[i].atr14!, 9);
+    });
   });
 
   it('returns unready indicators for a synthetic latest candle', () => {

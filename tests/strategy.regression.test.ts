@@ -3,7 +3,9 @@
 import { describe, expect, it } from 'vitest';
 import { shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
-import { DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
+import { computeIndicatorsTail, DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
+import { ema } from '../shared/indicators';
+import type { Candle } from '../shared/candles';
 
 describe('FIX-02 graded signal exit policy', () => {
   const policy = { requireProfit: true, forceStrength: 70, forceOnRiskBlock: true };
@@ -148,5 +150,41 @@ describe('FIX-07 shipped defaults do not warn about themselves', () => {
   it('T21 DEFAULT_PARAMS has no overlapping RSI regimes', () => {
     expect(validateCrossFieldParams(DEFAULT_PARAMS).some((f) => f.code === 'BUY_AND_SELL_RSI_REGIMES_OVERLAP')).toBe(false);
     expect(DEFAULT_PARAMS.rsiBuyMin).toBeGreaterThan(DEFAULT_PARAMS.rsiSellMax);
+  });
+});
+
+describe('FIX-08 synthetic candles degrade rows instead of restarting indicators', () => {
+  const candle = (t: number, close: number, source: Candle['source'] = 'trades'): Candle => ({
+    t, o: close, h: close + 1, l: close - 1, c: close, v: source === 'synthetic' ? 0 : 10,
+    n: source === 'synthetic' ? 0 : 1, source,
+  });
+  const series = (gapAt: number | null) => Array.from({ length: 250 }, (_, i) =>
+    candle(i * 300, 1000 + Math.sin(i / 7) * 20 + i * 0.1, i === gapAt ? 'synthetic' : 'trades'));
+
+  it('T22 matches a full-series EMA when there is no gap', () => {
+    const rows = computeIndicatorsTail(series(null), DEFAULT_PARAMS, 3);
+    const closes = series(null).map((c) => c.c);
+    const expected = ema(closes, DEFAULT_PARAMS.emaTrend);
+    expect(rows).toHaveLength(3);
+    expect(rows[2].ema50).toBeCloseTo(expected[249], 9);
+  });
+
+  it('T23 treats a row as not warm when a synthetic candle is inside its warm-up', () => {
+    const rows = computeIndicatorsTail(series(245), DEFAULT_PARAMS, 3);
+    expect(rows[2].degraded).toBe(true);
+    const volumes = series(245).slice(-rows.length).map((c) => c.v);
+    expect(evaluateMarketAction(rows, volumes)).toMatchObject({ action: 'HOLD', reason: 'indicators_not_ready' });
+    expect(evaluateSignalWindow(rows, volumes)).toBeNull();
+  });
+
+  it('T24 keeps a row usable when the synthetic candle is outside its warm-up', () => {
+    const rows = computeIndicatorsTail(series(190), DEFAULT_PARAMS, 3);
+    expect(rows[2].degraded).toBe(false);
+  });
+
+  it('returns an unready, degraded row when the latest candle is synthetic', () => {
+    const rows = computeIndicatorsTail(series(249), DEFAULT_PARAMS, 3);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ degraded: true, ema9: null, rsi14: null });
   });
 });

@@ -427,17 +427,27 @@ export interface IndicatorRow {
   volMa20: number | null;
   support: number | null;
   resistance: number | null;
+  /** True when a synthetic candle sits inside this row's warm-up window: the values are untrustworthy. */
+  degraded?: boolean;
 }
 
 function emptyIndicatorRow(c: Candle): IndicatorRow {
   return {
     t: c.t, close: c.c, ema9: null, ema21: null, ema50: null, rsi14: null,
     macd: null, macdSignal: null, macdHist: null, atr14: null, volMa20: null,
-    support: null, resistance: null,
+    support: null, resistance: null, degraded: true,
   };
 }
 
-/** Calculate indicators within one uninterrupted segment that contains no synthetic candles. */
+/**
+ * Calculate the indicator tail over the FULL series, flagging rows whose warm-up window contains a
+ * synthetic candle.
+ *
+ * Slicing the series at the last synthetic candle restarted EMA/RSI from a segment-local SMA seed,
+ * so a single gap shifted EMA50 and RSI enough to fake a cross (or to silently hold). The values are
+ * now computed on the continuous series; a row is instead marked `degraded` and treated as not warm
+ * while a synthetic candle is still inside its warm-up window.
+ */
 function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = candles.length): IndicatorRow[] {
   if (candles.length === 0) return [];
   const closes = candles.map((c) => c.c);
@@ -449,16 +459,21 @@ function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = ca
   const m = macd(closes);
   const a = atr(candles, p.atrPeriod);
   const vm = sma(vols, p.volumeMaPeriod);
+  const warmup = Math.max(p.emaTrend, 26 + 9, p.rsiPeriod + 1, p.volumeMaPeriod);
   const start = Math.max(0, candles.length - Math.max(1, Math.floor(tail)));
   const rows: IndicatorRow[] = [];
   for (let i = start; i < candles.length; i++) {
     // Levels come from the candles BEFORE this one. A slice that includes the candle itself makes
     // resistance >= close and support <= close by construction, so a breakout could never be detected.
     const sr = supportResistance(candles.slice(0, i), 50);
+    let degraded = false;
+    for (let k = Math.max(0, i - warmup + 1); k <= i; k++) {
+      if (candles[k].source === 'synthetic') { degraded = true; break; }
+    }
     rows.push({
       t: candles[i].t, close: candles[i].c, ema9: f[i], ema21: s[i], ema50: tr[i], rsi14: r[i],
       macd: m.macd[i], macdSignal: m.signal[i], macdHist: m.hist[i], atr14: a[i], volMa20: vm[i],
-      support: sr.support, resistance: sr.resistance,
+      support: sr.support, resistance: sr.resistance, degraded,
     });
   }
   return rows;
@@ -482,18 +497,14 @@ export function computeIndicators(candles: Candle[], p: StrategyParams = DEFAULT
 }
 
 /**
- * Efficient indicator tail for the latest contiguous non-synthetic segment only.
- * If the latest candle is synthetic, return an unready row so callers can still inspect its timestamp.
+ * Indicator tail over the whole series. If the latest candle is synthetic, return an unready row so
+ * callers can still inspect its timestamp; gaps earlier in the series are reported per row through
+ * `degraded` instead of restarting the indicators.
  */
 export function computeIndicatorsTail(candles: Candle[], p: StrategyParams, tail = 3): IndicatorRow[] {
   if (candles.length === 0) return [];
-  let lastSynthetic = -1;
-  for (let i = candles.length - 1; i >= 0; i--) {
-    if (candles[i].source === 'synthetic') { lastSynthetic = i; break; }
-  }
-  if (lastSynthetic === candles.length - 1) return [emptyIndicatorRow(candles[candles.length - 1])];
-  const segment = candles.slice(lastSynthetic + 1);
-  return computeIndicatorSegment(segment, p, tail);
+  if (candles[candles.length - 1].source === 'synthetic') return [emptyIndicatorRow(candles[candles.length - 1])];
+  return computeIndicatorSegment(candles, p, tail);
 }
 
 export interface SignalDecision {
@@ -504,7 +515,8 @@ export interface SignalDecision {
 
 type WarmRow = IndicatorRow & { ema9: number; ema21: number; rsi14: number; volMa20: number };
 const warm = (r: IndicatorRow | undefined): r is WarmRow =>
-  !!r && r.ema9 !== null && r.ema21 !== null && r.rsi14 !== null && r.volMa20 !== null;
+  !!r && r.degraded !== true &&
+  r.ema9 !== null && r.ema21 !== null && r.rsi14 !== null && r.volMa20 !== null;
 
 /**
  * Fail closed on malformed market inputs before evaluating a crossover.
@@ -523,6 +535,7 @@ function validSignalInputs(rows: IndicatorRow[], volumes: number[]): boolean {
     if (!indicators.every((value) => value === null || Number.isFinite(value))) return false;
     if (row.rsi14 !== null && (row.rsi14 < 0 || row.rsi14 > 100)) return false;
     if (row.volMa20 !== null && row.volMa20 < 0) return false;
+    if (row.degraded !== undefined && typeof row.degraded !== 'boolean') return false;
     return true;
   });
 }
