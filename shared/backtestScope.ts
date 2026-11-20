@@ -46,3 +46,39 @@ export function backtestScopeWarnings(params: Pick<StrategyParams, 'mtfMode'>): 
   }
   return warnings;
 }
+
+export interface VariantMeasurement {
+  trades: number;
+  ambiguousExits: number;
+  endOfDataExits: number;
+}
+
+/**
+ * Post-simulation measurement warnings. A bar that touches both the stop and the target has no
+ * recoverable intrabar path, so the stop-first rule decides it. Those trades are not ordinary
+ * losses: a result whose outcome rests on them cannot be reproduced from 5m OHLC, and an operator
+ * reading only win rate and expectancy would never see that. Zero-trade variants are skipped
+ * because a ratio over no trades is not evidence either way.
+ */
+export function measurementWarnings(
+  byVariant: Record<string, VariantMeasurement>,
+  ambiguousShareLimitPct = 5,
+): string[] {
+  const warnings: string[] = [];
+  for (const [variant, m] of Object.entries(byVariant)) {
+    if (!(m.trades > 0)) continue;
+    if (m.ambiguousExits > 0) {
+      const share = m.ambiguousExits / m.trades * 100;
+      const severity = share > ambiguousShareLimitPct ? 'UNRELIABLE' : 'CAVEAT';
+      warnings.push(
+        `${severity} ${variant}: ${m.ambiguousExits}/${m.trades} exits (${share.toFixed(1)}%) touched stop and target on the same 5m bar and were resolved stop-first; their true outcome is unknown from OHLC.`,
+      );
+    }
+    if (m.endOfDataExits > 0) {
+      warnings.push(
+        `CAVEAT ${variant}: ${m.endOfDataExits}/${m.trades} trades were force-closed at end of data and carry no exit signal; exclude them before reading exit-reason statistics.`,
+      );
+    }
+  }
+  return warnings;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PARAMS } from '../shared/strategy';
-import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
+import { backtestScopeWarnings, hasBacktestDataQuality, measurementWarnings } from '../shared/backtestScope';
 import type { Candle } from '../shared/candles';
 
 describe('backtest scope warnings', () => {
@@ -97,4 +97,29 @@ describe('backtest scope warnings', () => {
     expect(hasBacktestDataQuality(series, 89, 60)).toBe(true);
   });
 
+
+describe('measurement warnings', () => {
+  it('escalates a variant whose ambiguous-exit share exceeds the limit', () => {
+    const w = measurementWarnings({ v: { trades: 10, ambiguousExits: 2, endOfDataExits: 0 } });
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain('UNRELIABLE');
+    expect(w[0]).toContain('2/10');
+  });
+
+  it('reports a small ambiguous share as a caveat rather than suppressing it', () => {
+    const w = measurementWarnings({ v: { trades: 200, ambiguousExits: 1, endOfDataExits: 0 } });
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain('CAVEAT');
+    expect(w[0]).not.toContain('UNRELIABLE');
+  });
+
+  it('flags end-of-data exits separately and stays silent for a clean variant', () => {
+    expect(measurementWarnings({ v: { trades: 5, ambiguousExits: 0, endOfDataExits: 2 } })[0]).toContain('end of data');
+    expect(measurementWarnings({ v: { trades: 5, ambiguousExits: 0, endOfDataExits: 0 } })).toEqual([]);
+  });
+
+  it('says nothing about a variant with no trades', () => {
+    expect(measurementWarnings({ v: { trades: 0, ambiguousExits: 0, endOfDataExits: 0 } })).toEqual([]);
+  });
+});
 });

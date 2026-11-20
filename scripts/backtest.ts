@@ -17,7 +17,7 @@ import {
   netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, signalExitCoversCosts, trailingStop,
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
-import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
+import { backtestScopeWarnings, hasBacktestDataQuality, measurementWarnings } from '../shared/backtestScope';
 import { evaluateStrategyEvidence, evaluateExpectancyEvidence, evaluateNullModel, type EvidenceTrade } from '../shared/strategyEvidence';
 import { IndodaxClient } from '../worker/src/indodax';
 import { withIndodaxRelay } from '../worker/src/relay';
@@ -651,6 +651,15 @@ async function main() {
       measure(trades, 10_000_000 * usablePairs),
     ]),
   );
+  // Ambiguous/end-of-data exits are measured but were previously only visible in the raw JSON.
+  // Surface them next to the scope warnings so a result resting on unresolvable bars is not read as clean.
+  const measurementScopeWarnings = measurementWarnings(
+    Object.fromEntries(Object.entries(aggregateOutOfSample).map(([key, m]) => [key, {
+      trades: m.trades, ambiguousExits: m.ambiguousExits, endOfDataExits: m.endOfDataExits,
+    }])),
+  );
+  for (const warning of measurementScopeWarnings) console.warn(`[BACKTEST MEASUREMENT] ${warning}`);
+
   // This is a release gate for manual review only. It never changes active strategy settings.
   const evidenceGateByVariant = Object.fromEntries(
     Object.entries(aggregateOutOfSample).map(([key, metrics]) => [key, evaluateStrategyEvidence(metrics)]),
@@ -758,7 +767,7 @@ async function main() {
       initialEquityPerPairIdr: 10_000_000,
       sharedPortfolio: false,
     },
-    scopeWarnings: backtestScopeWarnings(base),
+    scopeWarnings: [...backtestScopeWarnings(base), ...measurementScopeWarnings],
     aggregateOutOfSampleIndependentPairAccounts: aggregateOutOfSample,
     evidenceGateByVariant,
     evidenceGatePolicy: 'NO_GO unless holdout has >=100 trades, Wilson 95% lower win-rate bound >=70%, profit factor >1 and net expectancy >0; eligible results require human review and are never auto-promoted',
