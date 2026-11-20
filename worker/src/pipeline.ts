@@ -15,6 +15,7 @@ import { assessQuote, valuationHealth, killSwitchState, type KillSwitchState } f
 import { createLeaseKeeper } from '../../shared/lease';
 import { normalizeOrder } from '../../shared/orderNormalize';
 import { combineDecision, emptyDecisionCounters, tallyDecision, type DecisionCounters } from '../../shared/decisionPipeline';
+import { createBudget, BudgetExceeded } from './budget';
 
 export interface Account {
   id: number;
@@ -62,6 +63,17 @@ const toCandle = (r: CandleRow): Candle => ({
 
 /** Max pairs per run that get their one-time 15m/1h OHLC history backfill (2 INDODAX calls each). */
 export const HTF_BACKFILL_PER_RUN = 2;
+/**
+ * Max 1m OHLC recovery calls per run.
+ *
+ * A pair whose covered_until is stale asks for a full 24h bootstrap range, and a newly admitted pair
+ * with no stored candles asks for the same. `fetchWithRetry` allows 2 retries, so each such pair can
+ * cost 3 subrequests; with ~25 pairs in scope that alone exceeded the Worker's per-invocation
+ * subrequest limit on 2026-11-20, after which every later step - including finish_run - failed with
+ * "Too many subrequests" and the run was killed by the lease watchdog. Capping the queue keeps a
+ * burst of new universe members (or one bad cursor) from starving the pipeline.
+ */
+export const HISTORY_BACKFILL_PER_RUN = 4;
 /** Higher-timeframe buckets re-persisted per run (aggregated from 5m), per timeframe. */
 const HTF_PERSIST: Record<string, number> = { '15m': 4, '1h': 2 };
 
@@ -120,10 +132,30 @@ export interface PipelineOptions {
   trigger: 'cron' | 'manual';
   fetchImpl?: FetchLike;
   now?: () => number; // ms
+  /** Cloudflare subrequest cap per invocation. Free plan = 50; paid plans default to 10,000. */
+  subrequestLimit?: number;
+}
+
+/**
+ * Subrequests held back for the steps that must always run: store_market, analyze, save_analysis,
+ * paper_trading, notifications, finish_run and lease heartbeats. Without this reserve the optional
+ * work (trade fetches, history backfill) can starve them and the run dies after doing the expensive
+ * part.
+ */
+export const SUBREQUEST_RESERVE = 18;
+/** Default Cloudflare Workers Free plan cap. */
+export const DEFAULT_SUBREQUEST_LIMIT = 50;
+
+export function parseSubrequestLimit(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SUBREQUEST_LIMIT;
 }
 
 export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunResult> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const rawFetch = opts.fetchImpl ?? fetch;
+  const limit = opts.subrequestLimit ?? parseSubrequestLimit(env.SUBREQUEST_LIMIT);
+  const budget = createBudget(rawFetch as typeof fetch, limit);
+  const fetchImpl = budget.fetch as FetchLike;
   const now = opts.now ?? Date.now;
   const db = new Db(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, fetchImpl);
   const dx = new IndodaxClient(fetchImpl);
@@ -268,8 +300,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const rotated = candidates.length
         ? [...candidates.slice(offset), ...candidates.slice(0, offset)]
         : [];
-      const todo = rotated.slice(0, HTF_BACKFILL_PER_RUN);
+      const todo = rotated.slice(0, Math.min(HTF_BACKFILL_PER_RUN, Math.max(0, budget.remaining() - SUBREQUEST_RESERVE - 2)));
       if (todo.length) {
+        const htfBudget = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE));
+        const dxHtf = new IndodaxClient(htfBudget.fetch as FetchLike);
         await step('backfill_htf', async () => {
           const info: Record<string, unknown> = {};
           await Promise.all(todo.map(async (p) => {
@@ -278,7 +312,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               let pairReady = true;
               for (const h of HIGHER_TFS) {
                 const from = nowSec - (MTF_WINDOW + 4) * h.sec;
-                const list = await dx.getHistory(p.symbol, h.historyTf, from, nowSec);
+                const list = await dxHtf.getHistory(p.symbol, h.historyTf, from, nowSec);
                 const lastComplete = lastCompleteBucket(expectedLast5m, h.sec);
                 const done = list.filter((c) =>
                   c.t % h.sec === 0 && c.t + h.sec <= nowSec && isValidCandle(c),
@@ -311,7 +345,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // that the last 60 bars are contiguous.
     const recoveryCandles = await step('load_coverage_state', async () =>
       db.rpc<Record<string, CandleRow[]>>('get_recent_candles', { p_pairs: tracked, p_timeframe: '5m', p_limit: 250 }),
-    (r) => Object.fromEntries(Object.entries(r ?? {}).map(([id, rows]) => [id, rows.length])));
+    (r) => Object.fromEntries(Object.entries(r ?? {}).map(([id, rows]) => [id, rows?.length ?? 0])));
 
     const tradeFetchFailures: Record<string, {
       http_status: number;
@@ -319,13 +353,23 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       retryable: boolean;
       attempts: number;
     }> = {};
+    // Trade fetches are the largest single cost (one relay call per pair, 3 attempts on failure).
+    // They run in a child budget so retries can never eat the reserve the core steps need; a pair
+    // that does not fit is deferred for this minute and keeps its old cursor.
+    const optional = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE));
+    const dxOptional = new IndodaxClient(optional.fetch as FetchLike);
+    const tradeOrder = [...pairs].sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id));
+    const tradeDeferred = new Set<string>();
+
     const tradeResults = await step('fetch_trades', async () => {
       const out = new Map<string, Trade[] | null>();
-      await Promise.all(pairs.map(async (p) => {
+      await Promise.all(tradeOrder.map(async (p) => {
+        if (optional.exhausted()) { tradeDeferred.add(p.id); return; }
         try {
-          out.set(p.id, await dx.getTrades(p.id));
+          out.set(p.id, await dxOptional.getTrades(p.id));
         } catch (e) {
           out.set(p.id, null);
+          if (e instanceof BudgetExceeded) { tradeDeferred.add(p.id); return; }
           const status = e instanceof HttpError ? e.status : 0;
           const body = e instanceof HttpError ? (e.body ?? '') : '';
           tradeFetchFailures[p.id] = {
@@ -346,6 +390,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       return out;
     }, (r) => ({
       ...Object.fromEntries([...r].map(([k, v]) => [k, v?.length ?? 'error'])),
+      ...(tradeDeferred.size ? { deferred_budget: [...tradeDeferred] } : {}),
       ...(Object.keys(tradeFetchFailures).length ? { failures: tradeFetchFailures } : {}),
     }));
 
@@ -354,32 +399,61 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     const ingestPayload = { trades: [] as unknown[], candles: [] as unknown[], sync: [] as unknown[] };
     await step('build_candles', async () => {
       const info: Record<string, unknown> = {};
-      await Promise.all(pairs.map(async (p) => {
-        const trades = tradeResults?.get(p.id);
+      const usable = pairs.filter((p) => tradeResults?.get(p.id));
+      for (const p of pairs) {
+        if (!tradeResults?.get(p.id)) { coverage.set(p.id, toSec(p.covered_until)); info[p.id] = 'no_trades_fetch'; }
+      }
+
+      const plans = new Map<string, ReturnType<typeof planCoverage>>();
+      const recoveryStarts = new Map<string, number | null>();
+      for (const p of usable) {
+        const trades = tradeResults!.get(p.id)!;
         const prevCovered = toSec(p.covered_until);
-        if (!trades) { coverage.set(p.id, prevCovered); info[p.id] = 'no_trades_fetch'; return; }
         const stored5m = (recoveryCandles?.[p.id] ?? []).map(toCandle);
-        const recoveryFrom = recoveryCandles
-          ? findCoverageRecoveryStart(stored5m, nowSec, params.minCandles)
-          : null;
+        const recoveryFrom = recoveryCandles ? findCoverageRecoveryStart(stored5m, nowSec, params.minCandles) : null;
+        recoveryStarts.set(p.id, recoveryFrom);
         const planningCursor = recoveryFrom !== null && prevCovered !== null
           ? Math.min(prevCovered, recoveryFrom)
           : prevCovered;
-        const plan = planCoverage(trades, planningCursor, nowSec);
+        plans.set(p.id, planCoverage(trades, planningCursor, nowSec));
+      }
+
+      // Rotate then cap: a pair that keeps failing cannot starve the queue, and the cap follows the
+      // subrequests actually left. History is optional work; store_market/analyze/finish_run are not.
+      const wanting = usable.filter((p) => plans.get(p.id)!.historyRange).map((p) => p.id);
+      const offset = wanting.length ? nowSec % wanting.length : 0;
+      const affordable = Math.min(HISTORY_BACKFILL_PER_RUN, budget.remaining() - SUBREQUEST_RESERVE);
+      const budgeted = new Set([...wanting.slice(offset), ...wanting.slice(0, offset)].slice(0, Math.max(0, affordable)));
+      const historyBudget = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE));
+      const dxHistory = new IndodaxClient(historyBudget.fetch as FetchLike);
+
+      await Promise.all(usable.map(async (p) => {
+        const trades = tradeResults!.get(p.id)!;
+        const prevCovered = toSec(p.covered_until);
+        const plan = plans.get(p.id)!;
+        const deferred = plan.historyRange !== null && !budgeted.has(p.id);
         let history: Candle[] | null = [];
-        if (plan.historyRange) {
+        // Both causes leave the same evidence in the database: the cursor must not move past a hole
+        // that this run did not repair, or the next run will trust it and skip the backfill.
+        let held = deferred;
+        if (plan.historyRange && !deferred) {
           try {
-            history = await dx.getHistory(p.symbol, '1', plan.historyRange.from, plan.historyRange.to - 1);
+            history = await dxHistory.getHistory(p.symbol, '1', plan.historyRange.from, plan.historyRange.to - 1);
           } catch (e) {
             history = null;
-            errors.push(`backfill ${p.id}: ${errorMessage(e)}`);
+            if (e instanceof BudgetExceeded) {
+              held = true;
+              info[`${p.id}_history`] = 'deferred_budget';
+            } else {
+              errors.push(`backfill ${p.id}: ${errorMessage(e)}`);
+            }
           }
         }
         const built = buildPairCandles(trades, plan, prevCovered, history);
-        if (plan.historyRange && !built.historyComplete && history !== null) {
+        if (plan.historyRange && !deferred && !held && !built.historyComplete && history !== null) {
           errors.push(`backfill ${p.id}: incomplete_coverage (${built.missingMinutes} missing minute(s))`);
         }
-        coverage.set(p.id, built.newCoveredUntil);
+        coverage.set(p.id, held ? prevCovered : built.newCoveredUntil);
         const fresh = newTradesSince(trades, p.last_trade_tid);
         const newest = newestTrade(trades);
         for (const t of fresh) {
@@ -395,15 +469,18 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         }
         ingestPayload.sync.push({
           pair_id: p.id,
-          covered_until: built.newCoveredUntil === null ? null : iso(built.newCoveredUntil),
+          covered_until: held
+            ? (prevCovered === null ? null : iso(prevCovered))
+            : (built.newCoveredUntil === null ? null : iso(built.newCoveredUntil)),
           last_trade_time: newest ? iso(newest.ts) : null,
           last_trade_tid: newest?.tid ?? null,
           htf_backfilled_at: htfBackfilled.has(p.id) ? iso(nowSec) : null,
         });
         info[p.id] = {
           trades: trades.length, new: fresh.length, m1: built.m1.length, m5: built.m5.length,
-          backfilled: built.backfilled, recovery_from: recoveryFrom, history_range: plan.historyRange,
-          history_complete: built.historyComplete, history_missing_minutes: built.missingMinutes,
+          backfilled: built.backfilled, recovery_from: recoveryStarts.get(p.id) ?? null,
+          history_range: plan.historyRange, history_complete: built.historyComplete,
+          history_missing_minutes: built.missingMinutes, history_deferred: held || undefined,
         };
       }));
       // pairs whose trade fetch failed still record a successful HTF backfill (one sync row per pair)
@@ -991,6 +1068,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     }
 
     // 9. Execution log + release lock (only if this run still owns the fence)
+    steps.budget = { ok: true, info: { used: budget.used(), limit } };
     try {
       await db.rpc('finish_run', {
         p_run_id: ctx.run_id, p_status: finalStatus, p_steps: steps,
