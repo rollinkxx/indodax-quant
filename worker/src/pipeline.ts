@@ -1422,6 +1422,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     // Hourly retention
     if (new Date(nowSec * 1000).getUTCMinutes() === 7) {
       await step('retention', () => db.rpc('run_retention'), (r) => r);
+      // Expired queue rows are unreachable (the entry path filters on expires_at), so they are dead
+      // weight; drop them on the same hourly beat. Housekeeping must never downgrade a run.
+      try {
+        steps.prune_pending_entries = { ok: true, info: await db.rpc('prune_pending_entries') };
+      } catch (e) {
+        steps.prune_pending_entries = { ok: false, error: errorMessage(e) };
+        console.error('[pipeline] prune_pending_entries failed:', errorMessage(e));
+      }
     }
   } catch (e) {
     errors.push(`unexpected: ${errorMessage(e)}`);

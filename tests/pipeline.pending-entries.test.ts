@@ -134,3 +134,34 @@ describe('FIX-04 minimum signal strength gate', () => {
     expect(paperInfo(r).entry_rejections.some((x: any) => x.stage === 'strength_gate')).toBe(false);
   });
 });
+
+// The queue only stays small if something deletes expired rows. `prune_pending_entries` is part of
+// the migration but nothing called it, so the table grew without bound.
+describe('FIX-01 queue housekeeping', () => {
+  // NOW sits exactly on an hour boundary, so minute m of that hour is a plain offset.
+  const atMinute = (m: number) => 1_800_000_000 + m * 60 + 30;
+  const runAt = (o: ReturnType<typeof setup>, at: number) => runPipeline(env(), {
+    scheduledTime: at * 1000, trigger: 'cron', fetchImpl: o.f, now: () => at * 1000,
+  });
+
+  it('prunes expired claims on the hourly beat, next to retention', async () => {
+    const o = setup({ mtfMode: 'off' });
+    const r = await runAt(o, atMinute(7));
+    expect(o.rpcs.some((x) => x.fn === 'prune_pending_entries')).toBe(true);
+    expect((r.steps as any).prune_pending_entries).toMatchObject({ ok: true });
+  });
+
+  it('leaves the queue alone on the other minutes', async () => {
+    const o = setup({ mtfMode: 'off' });
+    await runAt(o, atMinute(8));
+    expect(o.rpcs.some((x) => x.fn === 'prune_pending_entries')).toBe(false);
+  });
+
+  it('records a failed prune without downgrading the run', async () => {
+    const o = setup({ mtfMode: 'off', pruneError: 'Could not find the function public.prune_pending_entries' });
+    const r = await runAt(o, atMinute(7));
+    expect(r.status).toBe('SUCCESS');
+    expect((r.steps as any).prune_pending_entries.ok).toBe(false);
+    expect((r.steps as any).prune_pending_entries.error).toContain('prune_pending_entries');
+  });
+});
