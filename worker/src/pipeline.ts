@@ -100,6 +100,29 @@ export function universeExceedsCapacity(scopeSize: number, perRun = TRADE_FETCH_
   return Number.isFinite(scopeSize) && scopeSize > perRun;
 }
 
+/**
+ * Start index for a bounded, rotating work queue of `total` items that serves `window` per run.
+ *
+ * A `runIndex % total` cursor advances by ONE per run, so with a window smaller than the queue the
+ * windows overlap and the tail is starved: with 12 pairs and a window of 5, a pair could wait 8 runs
+ * (verified by simulation). Advancing by the window size instead tiles the queue, so every item is
+ * served within `ceil(total / window)` runs (<= 3 for 12 pairs / 5). The clock is the cursor, so the
+ * guarantee holds across runs without persisting state.
+ */
+export function rotationOffset(nowSec: number, total: number, window: number): number {
+  if (total <= 0) return 0;
+  const step = Math.max(1, Math.floor(window));
+  const runIndex = Math.floor(nowSec / 60);
+  return ((runIndex * step) % total + total) % total;
+}
+
+/** Rotate `items` so that the window starting at `offset` comes first. */
+export function rotateWindow<T>(items: readonly T[], offset: number): T[] {
+  if (items.length === 0) return [];
+  const start = ((offset % items.length) + items.length) % items.length;
+  return [...items.slice(start), ...items.slice(0, start)];
+}
+
 interface BeginRun {
   ok: boolean;
   reason?: string;
@@ -113,15 +136,55 @@ interface BeginRun {
   open_positions: Position[];
   day_start_equity: number | string | null;
   pair_catalog_age_seconds: number | null;
+  /** Phase begin_run recorded for this run (see FIX-07). */
+  phase?: RunPhase;
+  /** True when no signal evaluation has completed yet in the current hour (see FIX-07). */
+  signals_due?: boolean;
 }
 
 /**
- * Lease TTL. Must exceed the worst-case *real* run. Measured on production (2026-11-20, post-fix):
- * SUCCESS runs p99 = 22.5s, max = 24.2s; the 240s rows are watchdog finalizations of zombie runs,
- * not live execution. `guardLease()` renews via heartbeat before every order mutation, so 55s leaves
- * >2x headroom over a real run and still fits inside the 60s cron cadence.
+ * Lease TTL. Must exceed the worst-case *real* run, and must leave a margin against the cron
+ * interval so a run never overruns into the next tick's lock.
+ *
+ * Measured on production (2026-11-20, post-fix): SUCCESS runs p99 = 22.5s, max = 24.2s; the 240s
+ * rows are watchdog finalizations of zombie runs, not live execution. The cron fires every 60s, so
+ * a 45s TTL leaves a 15s margin (>= 15s required) between the lease expiring and the next tick
+ * trying to acquire it. The previous 55s left only 5s, which a single `fetchWithRetry` (3 attempts
+ * x 8s timeout + backoff) can exceed - the run then keeps working past its fence and the next tick
+ * sees a half-finished state.
  */
-export const LEASE_TTL_SECONDS = 55;
+export const LEASE_TTL_SECONDS = 45;
+/** The cron interval. Kept next to the TTL so the margin is checked, not assumed. */
+export const CRON_INTERVAL_SECONDS = 60;
+/** Minimum margin required between lease expiry and the next cron tick. */
+export const MIN_LEASE_MARGIN_SECONDS = 15;
+
+/** True when the lease TTL leaves at least `MIN_LEASE_MARGIN_SECONDS` before the next cron tick. */
+export function leaseFitsCron(ttl = LEASE_TTL_SECONDS, interval = CRON_INTERVAL_SECONDS): boolean {
+  return interval - ttl >= MIN_LEASE_MARGIN_SECONDS;
+}
+
+/** The strategy's base timeframe. Signals are only meaningful on a new bucket of this size. */
+export const SIGNAL_TIMEFRAME_SECONDS = 300;
+
+export type RunPhase = 'signal' | 'mark';
+
+/**
+ * Which phase this run executes. The cron fires every 60s but signals are computed on 300s candles,
+ * so four of five runs would re-evaluate an unchanged candle. The signal phase runs once per bucket
+ * (the first tick whose floorTo(now, 300) bucket has no completed signal run yet); every other tick is
+ * a mark phase that only marks to market and checks exits.
+ *
+ * Ingest is deliberately NOT gated: `/api/trades` returns a rolling window, so skipping ingest for
+ * four minutes would punch holes in the 1m candles. Only the expensive evaluation is skipped.
+ */
+export function runPhase(signalsDue: boolean | undefined): RunPhase {
+  // Fail-safe: when the database predates the phase migration the field is absent. Falling back to
+  // "mark" would silently stop opening positions; falling back to "signal" reproduces the exact
+  // pre-FIX-07 behaviour (evaluate every tick), so the only cost is subrequests already budgeted.
+  if (signalsDue === undefined) return 'signal';
+  return signalsDue ? 'signal' : 'mark';
+}
 
 interface SignalRow {
   id: number;
@@ -193,7 +256,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   const scheduledIso = opts.trigger === 'cron'
     ? iso(floorTo(Math.floor(opts.scheduledTime / 1000), 60))
     : new Date(opts.scheduledTime).toISOString();
-  const ctx = await db.rpc<BeginRun>('begin_run', { p_scheduled: scheduledIso, p_trigger: opts.trigger, p_lock_ttl_seconds: 55 });
+  const ctx = await db.rpc<BeginRun>('begin_run', {
+    p_scheduled: scheduledIso, p_trigger: opts.trigger, p_lock_ttl_seconds: LEASE_TTL_SECONDS,
+  });
   if (!ctx?.ok) return { status: 'SKIPPED', reason: ctx?.reason ?? 'unknown', runId: ctx?.run_id };
 
   // Fencing token for this lease. Every heartbeat renewal and the final release must present it, so a
@@ -208,10 +273,23 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const r = await db.rpc<{ ok: boolean; reason?: string; token?: number; expires_at_ms?: number }>(
         'renew_pipeline_lease', { p_run_id: Number(runId), p_fence_token: token, p_lock_ttl_seconds: ttl },
       );
-      return { ok: !!r?.ok, token: r?.token === undefined ? undefined : Number(r.token), expiresAtMs: r?.expires_at_ms === undefined ? undefined : Number(r.expires_at_ms) };
+      return {
+        ok: !!r?.ok,
+        reason: r?.reason,
+        token: r?.token === undefined ? undefined : Number(r.token),
+        expiresAtMs: r?.expires_at_ms === undefined ? undefined : Number(r.expires_at_ms),
+      };
     },
   });
-  const leaseLost: { reason: string | null } = { reason: null };
+  // Two distinct failure modes that need different operator responses:
+  //  - lease_expired: this run outlived its TTL (it is too slow) -> shrink the work, not the TTL;
+  //  - lease_stolen:  another run acquired the fence (a zombie overlap) -> investigate overlap.
+  const leaseLost: { reason: string | null; kind: 'expired' | 'stolen' | null } = { reason: null, kind: null };
+  function classifyLeaseLoss(raw: string): 'expired' | 'stolen' {
+    // The RPC answers `lease_not_held` both for an expired lease and a lost owner; the client-side
+    // guard raises `lease_expired_before_renewal` only when its own clock already passed the deadline.
+    return /expired|not_held/i.test(raw) ? 'expired' : 'stolen';
+  }
   // Called before every state mutation that can place/close an order. If the fence is gone, the run
   // must stop instead of writing to an account another run now controls.
   async function guardLease(): Promise<boolean> {
@@ -220,8 +298,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       await leaseKeeper.ensure();
       return true;
     } catch (e) {
-      leaseLost.reason = e instanceof Error ? e.message : String(e);
-      errors.push(`lease: ${leaseLost.reason}`);
+      const raw = e instanceof Error ? e.message.replace(/^pipeline lease lost: /, '') : String(e);
+      leaseLost.reason = raw;
+      leaseLost.kind = classifyLeaseLoss(raw);
+      errors.push(`lease: ${raw}`);
       return false;
     }
   }
@@ -251,6 +331,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   let accountStatus = account.status;
   let lastEquity: number | null = Number(account.equity);
   let finalStatus: RunResult['status'] = 'SUCCESS';
+  const phase = ctx.phase ?? runPhase(ctx.signals_due);
 
   async function step<T>(name: string, fn: () => Promise<T>, summarize?: (r: T) => unknown): Promise<T | undefined> {
     const s = now();
@@ -290,6 +371,23 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     };
     const freshTicker = (pairId: string): ParsedTicker | null => (quoteAssessment(pairId).ok ? tickers.get(pairId)! : null);
 
+    // Capacity event, emitted every run (not only on the 15-minute universe refresh) so an oversized
+    // scope is visible in execution_logs instead of silently deferring pairs forever.
+    if (universeExceedsCapacity(pairs.length)) {
+      const dropped = Math.max(0, pairs.length - TRADE_FETCH_PER_RUN);
+      steps.universe_capacity = {
+        ok: false,
+        reason: 'universe_exceeds_capacity',
+        universeSize: pairs.length,
+        capacity: TRADE_FETCH_PER_RUN,
+        droppedPairs: dropped,
+      };
+      errors.push(
+        `universe_capacity: ${pairs.length} pairs in scope > capacity ${TRADE_FETCH_PER_RUN}; ` +
+        `${dropped} pair(s) deferred this run and rotated out next run. Lower universeSize or raise SUBREQUEST_LIMIT.`,
+      );
+    }
+
     // 1b. Dynamic universe (from the summaries already fetched; takes effect on the next run)
     const currentUniverse = new Set(pairs.filter((p) => p.in_universe).map((p) => p.id));
     if (market && ctx.catalog && universeDue(nowSec, currentUniverse.size, params.universeMode)) {
@@ -306,13 +404,6 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         });
         // one statement: membership changes + refreshed ranks
         await db.rpc('set_universe', { p_members: result.members.map((m) => ({ id: m.pair_id, rank: m.rank })) });
-        if (universeExceedsCapacity(ctx.pairs.length)) {
-          errors.push(
-            `universe_capacity: ${ctx.pairs.length} pairs in scope (pinned + universe) > TRADE_FETCH_PER_RUN ${TRADE_FETCH_PER_RUN}; ` +
-            'pairs beyond the per-run trade budget are deferred and their candles lag. ' +
-            'Lower universeSize or raise SUBREQUEST_LIMIT.',
-          );
-        }
         if (params.notifyUniverse && (result.added.length || result.removed.length)) {
           notes.push({
             event_type: 'universe', dedupe_key: `universe:${nowMin}`,
@@ -336,7 +427,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           h.tf, Object.fromEntries(tracked.map((id) => [id, r?.[h.tf]?.[id]?.length ?? 0])),
         ]))) ?? {})
       : {};
-    if (params.mtfMode !== 'off') {
+    if (params.mtfMode !== 'off' && phase === 'signal') {
       const expectedLast5m = floorTo(nowSec, 300) - 300;
       const needsHtfHistory = (p: PairCtx) => HIGHER_TFS.some((h) => {
         const lastComplete = lastCompleteBucket(expectedLast5m, h.sec);
@@ -345,12 +436,12 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       });
       const candidates = pairs.filter(needsHtfHistory)
         .sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id));
-      // Rotate the bounded work queue so a failed pair cannot starve every later pair.
-      const offset = candidates.length ? Math.floor(nowSec / 60) % candidates.length : 0;
-      const rotated = candidates.length
-        ? [...candidates.slice(offset), ...candidates.slice(0, offset)]
-        : [];
-      const todo = rotated.slice(0, Math.min(HTF_BACKFILL_PER_RUN, Math.max(0, budget.remaining() - SUBREQUEST_RESERVE - 2)));
+      // Rotate the bounded work queue. The offset advances by the *window* (not by one) so the queue
+      // is tiled instead of slid: with a window smaller than the queue, a one-per-run cursor leaves
+      // the tail unserved for many runs (see rotationOffset).
+      const htfWindow = Math.min(HTF_BACKFILL_PER_RUN, Math.max(0, budget.remaining() - SUBREQUEST_RESERVE - 2));
+      const rotated = rotateWindow(candidates, rotationOffset(nowSec, candidates.length, htfWindow));
+      const todo = rotated.slice(0, htfWindow);
       if (todo.length) {
         const htfBudget = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE));
         const dxHtf = new IndodaxClient(htfBudget.fetch as FetchLike);
@@ -415,13 +506,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     const optional = budget.child(Math.max(0, budget.remaining() - SUBREQUEST_RESERVE - historyReserve));
     const dxOptional = new IndodaxClient(optional.fetch as FetchLike);
     const byPriority = [...pairs].sort((a, b) => Number(!!b.is_tracked) - Number(!!a.is_tracked) || a.id.localeCompare(b.id));
-    // Rotate the tail so a capped queue does not permanently starve the same pairs.
-    // Divide by 60 first: nowSec is a whole minute, so `nowSec % n` repeats with period n/gcd(n,60)
-    // and freezes entirely when n divides 60 (a 20-pair queue always got offset 0).
-    const tradeOffset = byPriority.length ? Math.floor(nowSec / 60) % byPriority.length : 0;
-    const tradeOrder = byPriority.length
-      ? [...byPriority.slice(tradeOffset), ...byPriority.slice(0, tradeOffset)]
-      : [];
+    // Rotate the tail so a capped queue does not permanently starve the same pairs. The offset
+    // advances by the effective window so the queue tiles; a one-per-run cursor overlapped windows
+    // and left the tail waiting up to ceil(n/window) x window runs.
+    const tradeWindow = Math.max(1, Math.min(TRADE_FETCH_PER_RUN, budget.remaining() - SUBREQUEST_RESERVE - historyReserve));
+    const tradeOrder = rotateWindow(byPriority, rotationOffset(nowSec, byPriority.length, tradeWindow));
     const tradeDeferred = new Set<string>();
 
     const tradeResults = await step('fetch_trades', async () => {
@@ -484,11 +573,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // Rotate then cap: a pair that keeps failing cannot starve the queue, and the cap follows the
       // subrequests actually left. History is optional work; store_market/analyze/finish_run are not.
       const wanting = usable.filter((p) => plans.get(p.id)!.historyRange).map((p) => p.id);
-      // Minute index, not raw seconds: see the tradeOffset note. With `nowSec % n` a queue whose
-      // length divides 60 never moved, so qntidr/pepeidr stayed 6h behind while other pairs recovered.
-      const offset = wanting.length ? Math.floor(nowSec / 60) % wanting.length : 0;
       const affordable = Math.min(HISTORY_BACKFILL_PER_RUN, historyReserve);
-      const budgeted = new Set([...wanting.slice(offset), ...wanting.slice(0, offset)].slice(0, Math.max(0, affordable)));
+      const budgeted = new Set(rotateWindow(wanting, rotationOffset(nowSec, wanting.length, affordable)).slice(0, Math.max(0, affordable)));
       const historyBudget = budget.child(Math.max(0, affordable));
       const dxHistory = new IndodaxClient(historyBudget.fetch as FetchLike);
 
@@ -573,9 +659,12 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       });
     }, (r) => r);
 
-    // 4+5. Indicators + signals on COMPLETED 5m candles only
+    // 4+5. Indicators + signals on COMPLETED 5m candles only.
+    // Skipped on mark-phase runs: the candle has not changed since the signal run that evaluated it, so
+    // re-running indicators and signal evaluation would burn subrequests for an identical result. MTF
+    // backfill is also signal-only (its data only feeds the evaluation).
     const lastIndicators = new Map<string, { atr14: number | null }>();
-    const analysis = await step('analyze', async () => {
+    const analysis = phase === 'signal' ? await step('analyze', async () => {
       const mtfOn = params.mtfMode !== 'off';
       const [map, htfMap] = await Promise.all([
         db.rpc<Record<string, CandleRow[]>>('get_recent_candles', { p_pairs: tracked, p_timeframe: '5m', p_limit: 250 }),
@@ -745,7 +834,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       ...(Object.keys(r.mtfBlocked).length ? { mtf_blocked: r.mtfBlocked } : {}),
       buy_diagnostics: r.buyDiagnostics,
       continuation_diagnostics: r.continuationDiagnostics,
-    }));
+    })) : undefined;
 
     const newSignals = analysis?.newSignals ?? [];
     if (params.notifySignals) {
@@ -823,7 +912,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       // a0) A SELL is stored once (ON CONFLICT DO NOTHING), so it is only "new" in the run that saved it. If that run skipped the
       // exit check (stale ticker, rejected close, orphaned run) the SELL would be lost. Re-read stored SELLs for open positions on
       // pairs that pass data quality; paper_close_position makes the close idempotent (duplicate / not OPEN is rejected).
-      const pendingSellPairs = [...open.keys()].filter((id) => analysis?.quality?.[id] === 'ok');
+      // On a mark-phase run there is no fresh analysis, so gate on quote freshness instead of candle
+      // quality. The recovery net must still run every minute: a SELL stored by the signal run is only
+      // "new" in that one run, and a position left unprotected for four minutes is worse than a lookup.
+      const pendingSellPairs = [...open.keys()].filter((id) =>
+        analysis ? analysis.quality?.[id] === 'ok' : freshQuotePairs.has(id));
       if (pendingSellPairs.length > 0) {
         try {
           const pending = await db.rpc<SignalRow[]>('get_pending_sell_signals', { p_pairs: pendingSellPairs });
@@ -850,8 +943,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id), spreadPct);
           const newStop = trailingStop(pos, t.bid, lastIndicators.get(pos.pair_id)?.atr14 ?? null, params, trailCostPct);
           if (newStop !== null) {
+            // The ratchet is a state mutation: never persist it under a lease we no longer hold.
+            if (!(await guardLease())) { actions.push(`trail ${pos.pair_id} skipped: lease lost`); continue; }
             try {
-              await db.update('paper_positions', `id=eq.${pos.id}&status=eq.OPEN`, { stop_loss: newStop });
+              // Absolute set filtered on the OPEN row: replaying it is a no-op, so a transient 503 may retry.
+              await db.update('paper_positions', `id=eq.${pos.id}&status=eq.OPEN`, { stop_loss: newStop }, { retries: 1 });
               pos.stop_loss = newStop;
               actions.push(`trail ${pos.pair_id} stop -> ${newStop}`);
             } catch (e) {
@@ -869,8 +965,19 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (reason) await close(pos, reason, t.bid);
       }
 
-      // b) Mark to market + snapshot
+      // b) Mark to market + snapshot. MTM writes equity, peak, drawdown and the snapshot row, so it
+      // must respect the fence exactly like an order. If the lease is gone, stop before writing and
+      // return early with the degraded status so the operator sees an unmarked run instead of a
+      // silently half-updated account.
       const bids = Object.fromEntries(tracked.map((id) => [id, freshTicker(id)?.bid]).filter(([, v]) => v));
+      if (!(await guardLease())) {
+        actions.push('mark_to_market skipped: lease lost');
+        degraded.push('mark_to_market skipped: lease lost');
+        return { status: accountStatus, equity: Number(account.equity), drawdown: 0, open: open.size, actions, degraded,
+          buy_signals_received: 0, entries_opened: 0, opened_entries: [], entry_rejections: [], entry_rejection_counts: {},
+          risk_block_reasons: [], kill_state: killSwitchState({ status: accountStatus, killSwitch: account.kill_switch, openPositions: open.size }), valuation_status: 'UNKNOWN',
+          unpriced_pairs: [], decision_counters: decisionCounters };
+      }
       let mtm = await db.rpc<MtmResult>('paper_mark_to_market', { p_account_id: account.id, p_prices: bids, p_snapshot_time: iso(nowMin) });
       lastEquity = Number(mtm.equity);
 
@@ -878,6 +985,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const risk = riskState({ equity: Number(mtm.equity), peakEquity: Number(mtm.peak_equity), dayStartEquity: ctx.day_start_equity === null ? null : Number(ctx.day_start_equity), params });
       let killState: KillSwitchState = killSwitchState({ status: accountStatus, killSwitch: account.kill_switch, openPositions: open.size });
       if (accountStatus === 'RUNNING' && risk.killSwitch) {
+        if (!(await guardLease())) { actions.push('kill switch skipped: lease lost'); degraded.push('kill switch skipped: lease lost'); return { status: accountStatus, equity: Number(mtm.equity), drawdown: Number(mtm.drawdown_pct), open: open.size, actions, degraded, buy_signals_received: 0, entries_opened: 0, opened_entries: [], entry_rejections: [], entry_rejection_counts: {}, risk_block_reasons: [], kill_state: killSwitchState({ status: accountStatus, killSwitch: account.kill_switch, openPositions: open.size }), valuation_status: valuation.status, unpriced_pairs: valuation.unpricedPairs, decision_counters: decisionCounters }; }
         await db.rpc('paper_set_status', { p_account_id: account.id, p_status: 'KILLED', p_reason: risk.reasons.join('; ') });
         accountStatus = 'KILLED';
         let closed = 0;
@@ -1117,7 +1225,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
 
     // A lost lease means part of the run was abandoned mid-flight; record it for the operator.
     if (leaseLost.reason) {
-      steps.lease = { ok: false, reason: leaseLost.reason, fence_token: fenceToken, abandoned: true };
+      steps.lease = { ok: false, reason: leaseLost.reason, kind: leaseLost.kind, fence_token: fenceToken, abandoned: true };
       if (finalStatus === 'SUCCESS') finalStatus = 'PARTIAL';
     } else if (fenceToken !== null) {
       steps.lease = { ok: true, fence_token: fenceToken };
