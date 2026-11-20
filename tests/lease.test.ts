@@ -24,6 +24,15 @@ describe('lease TTL', () => {
 
 describe('lease renewal is fenced by the token', () => {
   const current: LeaseGrant = { owner: 'run-1', token: 7, expiresAtMs: 5000 };
+
+  it('preserves the server reason so expired and stolen are distinguishable', () => {
+    expect(applyRenewal(current, { ok: false, reason: 'lease_not_held' }, 1000))
+      .toEqual({ ok: false, reason: 'lease_not_held' });
+    expect(applyRenewal(current, { ok: false, reason: 'lease_token_mismatch' }, 1000))
+      .toEqual({ ok: false, reason: 'lease_token_mismatch' });
+    // No reason from the server still yields a generic, non-empty reason.
+    expect(applyRenewal(current, { ok: false }, 1000)).toEqual({ ok: false, reason: 'lease_renewal_rejected' });
+  });
   it('extends the lease on a matching token', () => {
     const r = applyRenewal(current, { ok: true, token: 7, expiresAtMs: 9000 }, 1000);
     expect(r.ok && r.lease.expiresAtMs).toBe(9000);

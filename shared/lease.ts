@@ -32,10 +32,11 @@ export function heartbeatDue(lease: Pick<LeaseGrant, 'expiresAtMs'>, nowMs: numb
 
 /**
  * Apply a renewal response. A renewal only extends the lease when the presented token still matches,
- * which is what makes the token a fence rather than a label.
+ * which is what makes the token a fence rather than a label. The server's `reason` is preserved so a
+ * caller can tell "my lease expired" (`lease_not_held`) from "another run took it" (token mismatch).
  */
-export function applyRenewal(current: LeaseGrant, response: { ok: boolean; token?: number; expiresAtMs?: number }, nowMs: number): LeaseDecision {
-  if (!response.ok) return { ok: false, reason: 'lease_renewal_rejected' };
+export function applyRenewal(current: LeaseGrant, response: { ok: boolean; token?: number; expiresAtMs?: number; reason?: string }, nowMs: number): LeaseDecision {
+  if (!response.ok) return { ok: false, reason: response.reason ?? 'lease_renewal_rejected' };
   if (response.token !== undefined && response.token !== current.token) {
     return { ok: false, reason: 'lease_token_mismatch' };
   }
@@ -61,7 +62,7 @@ export interface LeaseKeeperDeps {
   token: number;
   ttlSeconds: number;
   now: () => number;
-  renew: (runId: string, token: number, ttlSeconds: number) => Promise<{ ok: boolean; token?: number; expiresAtMs?: number }>;
+  renew: (runId: string, token: number, ttlSeconds: number) => Promise<{ ok: boolean; token?: number; expiresAtMs?: number; reason?: string }>;
 }
 
 /**

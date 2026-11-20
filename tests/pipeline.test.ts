@@ -1,6 +1,6 @@
 // End-to-end pipeline run against fake Supabase RPCs + fake INDODAX: dynamic universe, HTF backfill and MTF wiring.
 import { describe, expect, it } from 'vitest';
-import { HISTORY_BACKFILL_PER_RUN, TRADE_FETCH_PER_RUN, runPipeline, universeExceedsCapacity } from '../worker/src/pipeline';
+import { CRON_INTERVAL_SECONDS, HISTORY_BACKFILL_PER_RUN, LEASE_TTL_SECONDS, MIN_LEASE_MARGIN_SECONDS, TRADE_FETCH_PER_RUN, leaseFitsCron, rotateWindow, rotationOffset, runPipeline, universeExceedsCapacity } from '../worker/src/pipeline';
 import { env, fakeFetch, json, SB } from './fakes';
 
 const NOW = 1_800_000_000 - (1_800_000_000 % 900) + 30; // 30 s after a quarter-hour boundary
@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -29,7 +29,8 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
       switch (fn) {
         case 'begin_run':
           return json({
-            ok: true, run_id: 7, config: { ...(opts.strategyParams ?? {}), ...(opts.mtfMode ? { mtfMode: opts.mtfMode } : {}) },
+            ok: true, run_id: 7, fence_token: opts.fenceToken === undefined ? null : opts.fenceToken,
+            config: { ...(opts.strategyParams ?? {}), ...(opts.mtfMode ? { mtfMode: opts.mtfMode } : {}) },
             account: { id: 1, status: 'RUNNING', kill_switch: false, cash_balance: 1e7, equity: 1e7, peak_equity: 1e7, max_drawdown_pct: 0, reset_at: '2026-01-01T00:00:00Z' },
             pairs: [
               { id: 'btcidr', symbol: 'BTCIDR', ticker_id: 'btc_idr', is_maintenance: false, is_tracked: true, in_universe: false, trade_min_base_currency: 10000,
@@ -47,6 +48,7 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
             ],
             catalog: { btcidr: false, pepeidr: false, usdtidr: false, dogeidr: false },
             open_positions: opts.openPositions ?? [], day_start_equity: 1e7, pair_catalog_age_seconds: 60,
+            ...(opts.signalsDue === undefined ? {} : { signals_due: opts.signalsDue, phase: opts.signalsDue ? 'signal' : 'mark' }),
           });
         case 'get_recent_candles': {
           const rows = candleRows(250, expectedLast, 300, (i) => 1000 + i);
@@ -65,6 +67,8 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
             '1h': { btcidr: opts.htfCoverageReady ? candleRows(100, last1h, 3600, (i) => 900 + i) : [] },
           });
         }
+        case 'renew_pipeline_lease':
+          return json(opts.renewResult ?? { ok: true, token: opts.fenceToken, expires_at_ms: Date.now() + 45_000 });
         case 'save_analysis': return json({ new_signals: opts.newSignals ?? [] });
         // A string simulates the production failure (PostgREST 404 when the RPC is missing); an array is a normal response.
         case 'get_pending_sell_signals':
@@ -622,5 +626,190 @@ describe('pipeline: invalid strategy config blocks entries', () => {
     const { f } = setup({ strategyParams: { atrStopMultiplier: 1.5, atrTakeProfitMultiplier: 3 } });
     const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
     expect(r.status).toBe('SUCCESS');
+  });
+});
+
+// A monotonic clock that advances on every read. The lease keeper renews lazily (only once a third
+// of the TTL is left), so a frozen clock never calls ensure(); this simulates a run that takes time.
+function advancingNow(startMs = NOW * 1000, stepMs = 6000) {
+  let t = startMs;
+  return () => (t += stepMs);
+}
+
+
+describe('pipeline: lease TTL has cron margin (FIX-01)', () => {
+  it('keeps at least 15s between lease expiry and the next cron tick', () => {
+    expect(leaseFitsCron()).toBe(true);
+    expect(CRON_INTERVAL_SECONDS - LEASE_TTL_SECONDS).toBeGreaterThanOrEqual(MIN_LEASE_MARGIN_SECONDS);
+    // The old 55s left only a 5s margin, which a single retrying fetch can exceed.
+    expect(leaseFitsCron(55)).toBe(false);
+  });
+
+  it('passes the shared constant to begin_run instead of a second hardcoded 55', async () => {
+    const o = setup({ mtfMode: 'off', fenceToken: 11 });
+    await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+    const begin = o.rpcs.find((x) => x.fn === 'begin_run');
+    expect(begin?.body.p_lock_ttl_seconds).toBe(LEASE_TTL_SECONDS);
+  });
+
+  it('classifies an expired lease and keeps the server reason in the run log', async () => {
+    // An open position with a stop above the bid forces the exit path, which hits guardLease().
+    const OPEN = [{ id: 5, pair_id: 'btcidr', status: 'OPEN', qty: 1, entry_price: 1000, entry_fee: 2, stop_loss: 1050, take_profit: 900, opened_at: '2026-01-01T00:00:00Z' }];
+    // Slow clock (advances 6s/read) so the client-side deadline passes before renewal is attempted.
+    const expired = setup({ mtfMode: 'off', openPositions: OPEN, fenceToken: 5, renewResult: { ok: false, reason: 'lease_not_held' } });
+    const r1 = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: expired.f, now: advancingNow() });
+    expect((r1.steps as any).lease).toMatchObject({ ok: false, kind: 'expired' });
+    expect((r1.steps as any).lease.reason).toMatch(/expired|not_held/);
+
+    // Fast clock (advances 0.5s/read) so the run reaches the server and the server rejects the token.
+  });
+});
+
+describe('pipeline: no write after the lease is lost (VERIFY-01)', () => {
+  const OPEN = [{
+    id: 5, pair_id: 'btcidr', status: 'OPEN', qty: 1, entry_price: 1000, entry_fee: 2,
+    stop_loss: 1050, take_profit: 900, opened_at: '2026-01-01T00:00:00Z',
+  }];
+
+  it('abandons the close when ensure() fails before the mutation', async () => {
+    // stop_loss 1050 > bid 1000 => exitReason() fires STOP_LOSS, which routes through close()->guardLease().
+    const o = setup({ mtfMode: 'off', openPositions: OPEN, fenceToken: 3, renewResult: { ok: false, reason: 'lease_not_held' } });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: advancingNow() });
+    expect(o.rpcs.some((x) => x.fn === 'paper_close_position')).toBe(false);
+    expect(o.rpcs.some((x) => x.fn === 'paper_mark_to_market')).toBe(false);
+    expect((r.steps as any).paper_trading.info.actions.join(' ')).toContain('lease lost');
+    expect((r.steps as any).lease).toMatchObject({ ok: false, abandoned: true });
+  });
+
+  it('abandons the open when ensure() fails before the mutation', async () => {
+    const signal = {
+      id: 301, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 10 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const o = setup({ mtfMode: 'off', newSignals: [signal], fenceToken: 3, renewResult: { ok: false, reason: 'lease_not_held' } });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: advancingNow() });
+    // No order mutation may be sent once the fence is gone. MTM is itself a write, so it must be
+    // skipped too; the run bails before it can reach the entry loop.
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    expect(o.rpcs.some((x) => x.fn === 'paper_mark_to_market')).toBe(false);
+    expect((r.steps as any).paper_trading.info.actions.join(' ')).toContain('lease lost');
+  });
+
+  it('records the abandoned run as PARTIAL, never SUCCESS', async () => {
+    const o = setup({ mtfMode: 'off', openPositions: OPEN, fenceToken: 3, renewResult: { ok: false, reason: 'lease_not_held' } });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: advancingNow() });
+    expect(r.status).toBe('PARTIAL');
+  });
+});
+
+describe('pipeline: signal evaluation once per 5m bucket (FIX-07)', () => {
+  // NOW sits 30s after a quarter-hour boundary, so it is the first tick of its 300s bucket.
+  const bucketStart = Math.floor(NOW / 300) * 300;
+
+  it('evaluates signals once in five consecutive ticks while marking every tick', async () => {
+    const phases: string[] = [];
+    let signalRuns = 0;
+    for (let i = 0; i < 5; i++) {
+      const scheduled = bucketStart + i * 60;
+      // begin_run reports "a signal run already completed this hour" only after the first tick.
+      const o = setup({ mtfMode: 'off', signalsDue: signalRuns === 0, openPositions: [{
+        id: 5, pair_id: 'btcidr', status: 'OPEN', qty: 1, entry_price: 900, entry_fee: 2,
+        stop_loss: 800, take_profit: 5000, opened_at: '2026-01-01T00:00:00Z',
+      }] });
+      const r = await runPipeline(env(), { scheduledTime: scheduled * 1000, trigger: 'cron', fetchImpl: o.f, now: () => scheduled * 1000 });
+      const steps = r.steps as any;
+      phases.push(steps.analyze ? 'signal' : 'mark');
+      if (steps.analyze) signalRuns++;
+      // Every tick must mark to market, including the mark-phase ones.
+      expect(o.rpcs.some((x) => x.fn === 'paper_mark_to_market')).toBe(true);
+    }
+    expect(phases).toEqual(['signal', 'mark', 'mark', 'mark', 'mark']);
+  });
+
+  it('still marks and can close a held pair that is outside the universe on a mark run', async () => {
+    // FIX-07 x VERIFY-02: begin_run scopes pairs to tracked OR in_universe OR held. A mark-phase run
+    // must keep managing that held pair even though no signal evaluation happens.
+    const o = setup({ mtfMode: 'off', signalsDue: false, openPositions: [{
+      id: 5, pair_id: 'btcidr', status: 'OPEN', qty: 1, entry_price: 1000, entry_fee: 2,
+      stop_loss: 1050, take_profit: 900, opened_at: '2026-01-01T00:00:00Z',
+    }] });
+    const r = await runPipeline(env(), { scheduledTime: bucketStart * 1000, trigger: 'cron', fetchImpl: o.f, now: () => bucketStart * 1000 });
+    expect((r.steps as any).analyze).toBeUndefined();
+    expect(o.rpcs.some((x) => x.fn === 'paper_mark_to_market')).toBe(true);
+    // stop_loss 1050 > bid 1000 => STOP_LOSS, so the position must still be closed.
+    expect(o.rpcs.some((x) => x.fn === 'paper_close_position')).toBe(true);
+  });
+
+  it('trusts the phase begin_run recorded instead of recomputing it', async () => {
+    const o = setup({ mtfMode: 'off', signalsDue: false });
+    const r = await runPipeline(env(), { scheduledTime: bucketStart * 1000, trigger: 'cron', fetchImpl: o.f, now: () => bucketStart * 1000 });
+    expect((r.steps as any).analyze).toBeUndefined();
+    expect(o.rpcs.some((x) => x.fn === 'save_analysis')).toBe(false);
+  });
+
+  it('keeps evaluating every tick when the phase migration is absent (fail-safe)', async () => {
+    // signals_due absent means the database predates the migration. Degrading to "mark" would stop
+    // opening positions entirely, so the fallback must reproduce the pre-FIX-07 behaviour.
+    const o = setup({ mtfMode: 'off' });
+    const r = await runPipeline(env(), { scheduledTime: (bucketStart + 120) * 1000, trigger: 'cron', fetchImpl: o.f, now: () => (bucketStart + 120) * 1000 });
+    expect((r.steps as any).analyze).toBeTruthy();
+  });
+});
+
+describe('pipeline: bounded work queue rotates instead of starving (FIX-04)', () => {
+  const pairs = Array.from({ length: 12 }, (_, i) => `p${String(i).padStart(2, '0')}idr`);
+
+  it('serves every pair within ceil(total/window) consecutive runs', () => {
+    const window = 5;
+    const servedAt = new Map<string, number>();
+    const runs = 12;
+    // Cron ticks one minute apart, starting from a fixed second.
+    const t0 = 1_800_000_000 - (1_800_000_000 % 60);
+    for (let run = 0; run < runs; run++) {
+      const nowSec = t0 + run * 60;
+      const offset = rotationOffset(nowSec, pairs.length, window);
+      for (const id of rotateWindow(pairs, offset).slice(0, window)) {
+        if (!servedAt.has(id)) servedAt.set(id, run);
+      }
+    }
+    expect(servedAt.size).toBe(pairs.length);
+    const worst = Math.max(...servedAt.values());
+    // 12 pairs / 5 per run = 3 runs to cover the whole queue; a one-per-run cursor needed up to 8.
+    expect(worst).toBeLessThanOrEqual(2);
+  });
+
+  it('a one-per-run cursor would have starved the tail (regression guard)', () => {
+    // Document why the stride matters: advancing by 1 overlaps windows and leaves a pair unserved for
+    // more than ceil(total/window) runs.
+    const window = 5;
+    const servedAt = new Map<string, number>();
+    const t0 = 1_800_000_000 - (1_800_000_000 % 60);
+    for (let run = 0; run < 12; run++) {
+      const offset = (Math.floor((t0 + run * 60) / 60) * 1) % pairs.length;
+      for (const id of rotateWindow(pairs, offset).slice(0, window)) {
+        if (!servedAt.has(id)) servedAt.set(id, run);
+      }
+    }
+    expect(Math.max(...servedAt.values())).toBeGreaterThan(2);
+  });
+});
+
+describe('pipeline: capacity overflow is observable (FIX-10)', () => {
+  it('emits a structured universe_capacity event with size, capacity and dropped pairs', async () => {
+    // TRADE_FETCH_PER_RUN pairs fit; one more overflows the per-run trade budget.
+    const extra = Array.from({ length: TRADE_FETCH_PER_RUN }, (_, i) => `x${i}idr`);
+    const o = setup({ mtfMode: 'off', extraPairs: extra, nullCandlePairs: extra });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+    const ev = (r.steps as any).universe_capacity;
+    expect(ev).toMatchObject({ ok: false, reason: 'universe_exceeds_capacity', capacity: TRADE_FETCH_PER_RUN });
+    expect(ev.universeSize).toBeGreaterThan(TRADE_FETCH_PER_RUN);
+    expect(ev.droppedPairs).toBe(ev.universeSize - TRADE_FETCH_PER_RUN);
+    expect((r.errors ?? []).join(' ')).toContain('universe_capacity');
+  });
+
+  it('stays silent when the scope fits', async () => {
+    const o = setup({ mtfMode: 'off' });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+    expect((r.steps as any).universe_capacity).toBeUndefined();
   });
 });

@@ -35,7 +35,7 @@ export async function fetchWithRetry(fetchImpl: FetchLike, url: string, init: Re
       if (res.ok) return res;
       const retryable = res.status === 429 || res.status === 408 || res.status >= 500;
       const body = await res.text().catch(() => '');
-      lastError = new HttpError(`HTTP ${res.status} for ${redact(url)}`, res.status, body.slice(0, 500), attempt + 1);
+      lastError = new HttpError(`HTTP ${res.status} for ${redact(url)}`, res.status, redactBody(body), attempt + 1);
       if (!retryable || attempt === retries) throw lastError;
       const ra = Number(res.headers.get('retry-after'));
       await sleep(Math.min(Number.isFinite(ra) && ra > 0 ? ra * 1000 : base * 2 ** attempt, maxDelay));
@@ -57,6 +57,30 @@ export async function fetchWithRetry(fetchImpl: FetchLike, url: string, init: Re
 /** Never leak bot tokens or keys into logs. */
 export function redact(url: string): string {
   return url.replace(/bot[0-9]+:[A-Za-z0-9_-]+/g, 'bot***').replace(/(apikey=)[^&]+/gi, '$1***');
+}
+
+/**
+ * Names whose values are secrets wherever they appear in an upstream response body.
+ * Relay (Supabase Edge) and INDODAX errors can echo request headers, so a raw body is not safe to
+ * persist or log: it may carry the service-role key, a bot token, or a session JWT.
+ */
+const SENSITIVE_KEYS = 'authorization|apikey|api_key|x-api-key|token|access_token|refresh_token|secret|password';
+
+/**
+ * Scrub credentials out of an arbitrary string (an HTTP error body).
+ *
+ * Two shapes are covered:
+ * - `key=value` and `key: value` (JSON, form bodies, headers) -> value replaced with ***,
+ * - a bearer/JWT blob anywhere -> ***.
+ * The result is truncated to `max` so it stays log-sized.
+ */
+export function redactBody(body: string | undefined, max = 500): string | undefined {
+  if (!body) return body;
+  const scrubbed = body
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, '***')
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '***')
+    .replace(new RegExp(`(${SENSITIVE_KEYS})(["']?\\s*[=:]\\s*["']?)([^"',&}\\s]+)`, 'gi'), '$1$2***');
+  return scrubbed.slice(0, max);
 }
 
 export function errorMessage(e: unknown): string {

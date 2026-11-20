@@ -1,7 +1,7 @@
 // REST API served by the Worker under /api/*. All data endpoints require a Supabase session
 // whose email is listed in public.app_users; mutating endpoints require role=admin.
 import type { Env, FetchLike } from './env';
-import { Db } from './db';
+import { Db, filterValue } from './db';
 import { authenticate, AuthError, requireAdmin, type AppUser } from './auth';
 import { IndodaxClient } from './indodax';
 import { errorMessage } from './http';
@@ -107,7 +107,7 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
           return bad(`maximum ${MAX_TRACKED_PAIRS} tracked pairs (INDODAX public rate limit is 180 req/min)`);
         }
       }
-      const rows = await db.update('market_pairs', `id=eq.${trackMatch[1]}`, { is_tracked: body.tracked });
+      const rows = await db.update('market_pairs', `id=eq.${filterValue(trackMatch[1])}`, { is_tracked: body.tracked }, { retries: 1 });
       if (!rows.length) return bad('pair not found (it appears after the hourly pair catalog sync)', 404);
       return json({ ok: true, pair: rows[0] });
     }
@@ -117,14 +117,14 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       if (!pairOk(pair)) return bad('invalid pair');
       const minutes = int(q.get('minutes'), 240, 10, 10080);
       const since = new Date(Date.now() - minutes * 60000).toISOString();
-      const rows = await db.select('market_tickers', `select=captured_at,last,bid,ask,vol_idr,change_24h_pct&pair_id=eq.${pair}&captured_at=gte.${since}&order=captured_at.asc&limit=10080`);
+      const rows = await db.select('market_tickers', `select=captured_at,last,bid,ask,vol_idr,change_24h_pct&pair_id=eq.${filterValue(pair)}&captured_at=gte.${since}&order=captured_at.asc&limit=10080`);
       return json({ pair, rows });
     }
 
     if (path === '/api/market/trades' && method === 'GET') {
       const pair = q.get('pair');
       if (!pairOk(pair)) return bad('invalid pair');
-      const rows = await db.select('market_trades', `select=tid,traded_at,price,amount,side&pair_id=eq.${pair}&order=traded_at.desc&limit=${int(q.get('limit'), 50, 1, 500)}`);
+      const rows = await db.select('market_trades', `select=tid,traded_at,price,amount,side&pair_id=eq.${filterValue(pair)}&order=traded_at.desc&limit=${int(q.get('limit'), 50, 1, 500)}`);
       return json({ pair, rows });
     }
 
@@ -132,7 +132,7 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       const pair = q.get('pair');
       const tf = tfParam(q.get('tf'), true);
       if (!pairOk(pair)) return bad('invalid pair');
-      const rows = await db.select<Record<string, unknown>>('candles', `select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${pair}&timeframe=eq.${tf}&is_closed=eq.true&order=open_time.desc&limit=${int(q.get('limit'), 300, 10, 1000)}`);
+      const rows = await db.select<Record<string, unknown>>('candles', `select=open_time,open,high,low,close,volume,trade_count,source&pair_id=eq.${filterValue(pair)}&timeframe=eq.${tf}&is_closed=eq.true&order=open_time.desc&limit=${int(q.get('limit'), 300, 10, 1000)}`);
       return json({ pair, timeframe: tf, candles: rows.reverse() });
     }
 
@@ -140,7 +140,7 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       const pair = q.get('pair');
       if (!pairOk(pair)) return bad('invalid pair');
       const tf = tfParam(q.get('tf'), false);
-      const rows = await db.select<Record<string, unknown>>('indicators', `select=*&pair_id=eq.${pair}&timeframe=eq.${tf}&order=open_time.desc&limit=${int(q.get('limit'), 300, 1, 1000)}`);
+      const rows = await db.select<Record<string, unknown>>('indicators', `select=*&pair_id=eq.${filterValue(pair)}&timeframe=eq.${tf}&order=open_time.desc&limit=${int(q.get('limit'), 300, 1, 1000)}`);
       return json({ pair, timeframe: tf, indicators: rows.reverse() });
     }
 
@@ -163,7 +163,7 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       const pair = q.get('pair');
       const side = q.get('side');
       let filter = '';
-      if (pair) { if (!pairOk(pair)) return bad('invalid pair'); filter += `&pair_id=eq.${pair}`; }
+      if (pair) { if (!pairOk(pair)) return bad('invalid pair'); filter += `&pair_id=eq.${filterValue(pair)}`; }
       if (side === 'BUY' || side === 'SELL') filter += `&side=eq.${side}`;
       const rows = await db.select('trading_signals', `select=*${filter}&order=created_at.desc&limit=${int(q.get('limit'), 100, 1, 500)}`);
       return json({ signals: rows });
@@ -210,7 +210,7 @@ export async function handleApi(req: Request, env: Env, fetchImpl: FetchLike = f
       const crossField = validateCrossFieldParams(merged as unknown as StrategyParams);
       const crossFieldErrors = crossField.filter((f) => f.level === 'error').map((f) => f.message);
       if (all.length || crossFieldErrors.length) return bad('invalid strategy parameters', 422, [...all, ...crossFieldErrors]);
-      const updated = await db.update('strategy_configs', `id=eq.${rows[0].id}`, { params: merged, updated_by: user.email, updated_at: new Date().toISOString() });
+      const updated = await db.update('strategy_configs', `id=eq.${rows[0].id}`, { params: merged, updated_by: user.email, updated_at: new Date().toISOString() }, { retries: 1 });
       const warnings = crossField.filter((f) => f.level === 'warn');
       return json({ ok: true, strategy: updated[0], ...(warnings.length ? { warnings } : {}) });
     }
