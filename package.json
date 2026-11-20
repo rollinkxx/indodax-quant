@@ -21,6 +21,8 @@
     "paper:report": "tsx scripts/paper-report.ts",
     "db:verify": "tsx scripts/verify-schema-contract.ts",
     "db:migrate": "tsx scripts/apply-migrations.ts",
+    "db:drift": "tsx scripts/check-migration-drift.ts",
+    "db:verify-begin-run": "tsx scripts/verify-begin-run.ts",
     "backtest:timeframes": "tsx scripts/backtest-timeframes.ts",
     "regime:study": "tsx scripts/regime-study.ts"
   },

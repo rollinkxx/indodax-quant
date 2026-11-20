@@ -131,3 +131,50 @@ SELECT
   (SELECT count(*) FROM pg_policies WHERE schemaname = 'public') AS public_policies,
   (SELECT count(*) FROM public.strategy_configs WHERE is_active) AS active_configs,
   (SELECT params->>'feePct' FROM public.strategy_configs WHERE is_active LIMIT 1) AS fee_pct;
+
+-- begin_run contract: the Worker reads these keys off the returned jsonb. A hand-written replacement
+-- that drops any of them crashes inside begin_run *before* the run row is inserted, so the cron goes
+-- silent with no execution_logs row to explain it (2026-11-20). Assert every key the Worker uses, so
+-- a migration that truncates the return value fails here instead of in production.
+DO $begin_run_contract$
+DECLARE
+  v_body text;
+  v_required text[] := ARRAY[
+    '''ok''',                -- begin_run ok flag
+    '''run_id''',
+    '''fence_token''',       -- lease fencing (FIX-01)
+    '''lease_expires_at''',
+    '''config''',            -- active strategy params: pipeline reads ctx.config
+    '''account''',           -- paper account snapshot
+    '''pairs''',             -- universe with per-pair state
+    '''catalog''',           -- market catalog for entry decisions
+    '''open_positions'''     -- positions to mark and close
+  ];
+  v_key text;
+BEGIN
+  SELECT pg_get_functiondef(p.oid) INTO v_body
+    FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE p.proname = 'begin_run' AND n.nspname = 'public';
+
+  IF v_body IS NULL THEN
+    RAISE EXCEPTION 'begin_run is missing after migration replay';
+  END IF;
+
+  FOREACH v_key IN ARRAY v_required LOOP
+    IF position(v_key IN v_body) = 0 THEN
+      RAISE EXCEPTION 'begin_run no longer returns %; the Worker crashes before inserting the run row', v_key;
+    END IF;
+  END LOOP;
+
+  -- FIX-07: signals must be evaluated once per 300s bucket. date_trunc('hour') here meant one signal
+  -- run per hour, so entries were only ever considered hourly.
+  IF position('make_interval(secs => 300 * floor' IN v_body) = 0 THEN
+    RAISE EXCEPTION 'begin_run does not derive signals_due from a 300s bucket; signals would be evaluated less often than the 5m candle';
+  END IF;
+
+  -- The stale-run watchdog must survive: it is what finalizes a RUNNING row whose lease expired.
+  IF position('stale_run_without_lease' IN v_body) = 0 THEN
+    RAISE EXCEPTION 'begin_run lost the stale_run_without_lease watchdog';
+  END IF;
+END
+$begin_run_contract$;

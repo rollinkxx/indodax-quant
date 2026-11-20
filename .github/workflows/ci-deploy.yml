@@ -122,6 +122,10 @@ jobs:
         run: npx tsx scripts/apply-migrations.ts
       - name: Verify the live schema exposes every RPC and table the Worker requires
         run: npx tsx scripts/verify-schema-contract.ts
+      - name: Verify the live begin_run returns every key the Worker reads
+        # A replacement body can keep the name and signature while dropping keys from its jsonb, which
+        # crashes the Worker before it inserts a run row: no error, no cron. Existence checks miss it.
+        run: npx tsx scripts/verify-begin-run.ts
 
   # Every Worker deployment refreshes the signing secret; sync and deploy the Supabase relay afterwards.
   # Pipeline ingestion is smoke-tested in deploy-relay, only after both sides share the same HMAC secret.
