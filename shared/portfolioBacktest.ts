@@ -12,7 +12,7 @@ import { lastQuoteAtOrBefore, quoteFillPrice, type QuotePoint } from './quoteHis
 import {
   computeStops, dynamicSlippageBps, effectiveFeePct, entryGate, exitReason, exposureAllows, feeFor,
   netRewardRiskDiagnostics, positionSize, roundTripCostPct, sellFillPrice, buyFillPrice,
-  signalExitCoversCosts, timeStopHit, trailingStop,
+  shouldExitOnSignal, signalExitCoversCosts, timeStopHit, trailingStop,
 } from './paper';
 import type { StrategyParams } from './strategy';
 import { memberAt, type UniverseInterval } from './universe';
@@ -299,9 +299,18 @@ export function simulatePortfolio(
         if (newStop !== null) pos.sl = newStop;
         if (timeStopHit(pos.openedAtSec * 1000, t * 1000, p)) { reason = 'TIME_STOP'; rawExit = candle.c; }
       }
-      if (!reason && opts.signal(bar.pair, candlesByPair.get(bar.pair)!, bar.index) === 'SELL'
-        && signalExitCoversCosts({ entryPrice: pos.entry, qty: pos.qty, costBasis: pos.cost, bid: candle.c, feePct, slippageBps: slip })) {
-        reason = 'SIGNAL'; rawExit = candle.c;
+      if (!reason && opts.signal(bar.pair, candlesByPair.get(bar.pair)!, bar.index) === 'SELL') {
+        // Same policy as the engine. The backtest signal has no strength and no portfolio risk state,
+        // so the force paths stay inert and the result matches the shipped `signalExitRequireProfit`.
+        const verdict = shouldExitOnSignal({
+          coversCosts: signalExitCoversCosts({ entryPrice: pos.entry, qty: pos.qty, costBasis: pos.cost, bid: candle.c, feePct, slippageBps: slip }),
+          strength: 0,
+          riskBlocked: false,
+          drawdownPct: 0,
+          maxDrawdownPct: p.maxDrawdownPct,
+          policy: { requireProfit: p.signalExitRequireProfit, forceStrength: p.signalExitForceStrength, forceOnRiskBlock: false },
+        });
+        if (verdict.exit) { reason = 'SIGNAL'; rawExit = candle.c; }
       }
       if (reason) {
         const fill = resolveFill(bar.pair, rawExit, t, 'SELL', slip);
