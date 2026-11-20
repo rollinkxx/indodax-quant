@@ -200,8 +200,29 @@ No increment/append PATCH exists in the codebase, so no compare-and-set column h
   the safe direction.
 - **Proof:** `tests/pipeline.test.ts` — 5 consecutive ticks give `['signal','mark','mark','mark','mark']`
   with `paper_mark_to_market` called on all 5; `tests/sql/pipeline_phase_test.sql` proves the same
-  cadence in SQL. Rolling back the migration makes the SQL test fail on
-  *"the first run of an hour must evaluate signals"*. Rollback script verified.
+  cadence in SQL. Rollback script verified.
+- **Production defect found after merge (corrected by `20261120170000_pipeline_phase_5m_bucket`):**
+  the first version of `20261120160000_pipeline_phase.sql` derived `signals_due` with
+  `date_trunc('hour')`, so signals were evaluated **once per hour** instead of once per 300s candle
+  — 12× too rarely, meaning entries were only ever considered once an hour. The SQL test that
+  shipped with it asserted the same wrong contract (*"signal phase once per hour"*), so the test and
+  the implementation agreed with each other and both were wrong. Production proved it: after the
+  16:07 deploy exactly one run was `signal` and the next 16 were `mark` with no `analyze` step.
+  Two lessons, both applied:
+  1. The test now asserts the 5-minute contract, including an assertion that a per-hour
+     implementation fails (*"a new 5m bucket must evaluate signals again"* at 10:05). Verified red
+     against the old body and green against the new one.
+  2. The correction is a **new** migration, not an edit to the applied one — `apply-migrations.ts`
+     only applies versions that are not yet recorded in `supabase_migrations.schema_migrations`, so
+     editing an applied file never reaches production.
+- **Second production defect, also mine:** while applying that correction by hand I retyped the
+  function body instead of executing the migration file, dropping the `config`, `pairs`, `catalog`,
+  `open_positions`, `lease_expires_at` and watchdog branches from the `jsonb_build_object` return.
+  The Worker crashed inside `begin_run` before it could insert the run row, so the cron went silent
+  for ~9 minutes with **no** `execution_logs` row to show it. Fixed by applying the migration file
+  verbatim; verified that every required key is present in the live function definition and that
+  the cadence resumed (`16:35` signal + `analyze`, `16:36`/`16:37` mark). Never hand-write SQL that
+  is meant to mirror a migration file.
 
 ### FIX-08 — Zero-volume candle marked invalid — NOT A BUG
 
@@ -303,7 +324,7 @@ rather than changed.
 | VERIFY-02 | `begin_run` SQL, `pipeline.ts` | pair scope, `open` map | (already correct) | SQL + JS regression tests |
 | FIX-05 | — | — | — | no change (verified) |
 | FIX-06 | `worker/src/http.ts` | `redactBody` | raw body in `HttpError` | scrubbed body |
-| FIX-07 | `pipeline.ts`, `20261120160000_pipeline_phase.sql` | `runPhase`, `begin_run` | evaluate every tick | `signal`/`mark` phase, server-derived |
+| FIX-07 | `pipeline.ts`, `20261120160000_pipeline_phase.sql`, `20261120170000_pipeline_phase_5m_bucket.sql` | `runPhase`, `begin_run` | evaluate every tick | `signal`/`mark` phase, server-derived, per 300s bucket |
 | FIX-08 | — | — | — | no change (verified) |
 | FIX-09 | `worker/src/auth.ts` | `cacheGet`, `cacheSet` | unbounded Map, clear-all | bounded LRU + TTL + 401 delete |
 | FIX-10 | `worker/src/pipeline.ts` | `steps.universe_capacity` | ignored boolean | structured event + error |
@@ -316,7 +337,17 @@ rather than changed.
 All work is on branch `audit/implementation-correctness` off `main` (`05d18e3`). Nothing is
 deployed by this change; deploying is a separate, explicit step.
 
+**Production state after this work was merged and deployed:** worker version
+`36b7d348` (deployed 2026-11-20 16:07:42 UTC, account `80011412c187955587e651d9d7a2c06b`).
+The `begin_run` body in production is the one from `20261120170000_pipeline_phase_5m_bucket`.
+
 - **Revert everything:** `git revert <merge-commit>` (or drop the branch).
+- **Revert the 5m-bucket correction only** (back to per-hour signal evaluation — a known defect,
+  use only to escape a bad state):
+  ```
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+    -f supabase/migrations/rollback/20261120170000_pipeline_phase_5m_bucket.rollback.sql
+  ```
 - **Revert the migration only:**
   ```
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
@@ -327,10 +358,12 @@ deployed by this change; deploying is a separate, explicit step.
   behaviour, so old and new code both work against either schema state.
 - **Roll back the Worker version** (if a deploy went out):
   `npx wrangler rollback --message "audit rollback"` or redeploy the previous version id.
-  Previous known-good version: `3da051d6-e8c0-4e4d-8ae4-b2ae26d17f77`.
+  Previous known-good version before this work: `da990839-ecc0-4ebf-ad34-b3dab9ca3790`.
+- **Do NOT** hand-apply SQL that is supposed to mirror a migration file. Doing that during this
+  audit dropped return keys from `begin_run` and crashed `scheduled()` for ~9 minutes. Apply the
+  file, or use `npx tsx scripts/apply-migrations.ts`.
 - Each item is independently revertable: the source edits are in distinct files/functions and the
-  only schema change is the single additive `pipeline_phase` migration, which is backward
-  compatible with the old worker.
+  schema changes are additive migrations that are backward compatible with the old worker.
 
 ---
 
