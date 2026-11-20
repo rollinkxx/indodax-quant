@@ -1192,6 +1192,13 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             break;
           }
           if (open.has(s.pair_id)) { rejectEntry(s, 'portfolio_gate', 'already_open'); continue; }
+          if (params.minSignalStrength > 0 && Number(s.strength) < params.minSignalStrength) {
+            rejectEntry(s, 'strength_gate', 'below_min_strength', {
+              strength: Number(s.strength),
+              min_strength: params.minSignalStrength,
+            });
+            continue;
+          }
           const t = freshTicker(s.pair_id);
           if (!t) { rejectEntry(s, 'market_data_gate', 'stale_ticker'); continue; }
           const slip = slipFor(s.pair_id);

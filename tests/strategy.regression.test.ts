@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
-import type { MarketActionDecision, SignalDecision } from '../shared/strategy';
+import { DEFAULT_PARAMS, validateCrossFieldParams, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 
 describe('FIX-02 graded signal exit policy', () => {
   const policy = { requireProfit: true, forceStrength: 70, forceOnRiskBlock: true };
@@ -71,5 +71,16 @@ describe('FIX-03 MTF sell filter', () => {
   it('T13 mtfFilterSell=false restores the unfiltered SELL', () => {
     const out = run(50, [tf('15m', 'bull'), tf('1h', 'bull')], { filterSell: false, minSellStrength: 70 });
     expect(out.action.action).toBe('SELL');
+  });
+});
+
+describe('FIX-04 score mode warning', () => {
+  it('warns when mtfMode=score has no strength threshold', () => {
+    const findings = validateCrossFieldParams({ ...DEFAULT_PARAMS, mtfMode: 'score', minSignalStrength: 0 });
+    expect(findings).toContainEqual(expect.objectContaining({ level: 'warn', code: 'SCORE_MODE_WITHOUT_THRESHOLD' }));
+    expect(validateCrossFieldParams({ ...DEFAULT_PARAMS, mtfMode: 'score', minSignalStrength: 60 })
+      .some((f) => f.code === 'SCORE_MODE_WITHOUT_THRESHOLD')).toBe(false);
+    expect(validateCrossFieldParams({ ...DEFAULT_PARAMS, mtfMode: 'filter' })
+      .some((f) => f.code === 'SCORE_MODE_WITHOUT_THRESHOLD')).toBe(false);
   });
 });

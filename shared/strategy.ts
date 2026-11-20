@@ -25,6 +25,11 @@ export interface StrategyParams {
   maxEntryExtensionPct: number;
   /** false = every fresh EMA cross-down exits/signals SELL; true = RSI and volume must confirm too. */
   sellRequireConfirm: boolean;
+  /**
+   * Minimum signal strength required to open a position. Without it `mtfMode='score'` only changes
+   * the execution order, because strength is used for sorting and display. 0 = disabled.
+   */
+  minSignalStrength: number;
   /** Gate a signal-driven exit on the position already covering the round trip (see shouldExitOnSignal). */
   signalExitRequireProfit: boolean;
   /** SELL strength at or above this exits regardless of profit (0 = never force). */
@@ -120,6 +125,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   entryRetryTtlCandles: 3,
   maxEntryExtensionPct: 1.5,
   sellRequireConfirm: false,
+  minSignalStrength: 0,
   signalExitRequireProfit: true,
   signalExitForceStrength: 70,
   atrPeriod: 14,
@@ -184,6 +190,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   entryRetryTtlCandles: [1, 12, true],
   maxEntryExtensionPct: [0, 20],
   signalExitForceStrength: [0, 100],
+  minSignalStrength: [0, 100],
   atrPeriod: [2, 50, true],
   atrStopMultiplier: [0.1, 10],
   atrTakeProfitMultiplier: [0.1, 20],
@@ -317,6 +324,13 @@ export function validateCrossFieldParams(p: StrategyParams): CrossFieldFinding[]
   }
   if (!(p.minNetRewardRiskRatio > 0)) {
     out.push({ level: 'error', code: 'INVALID_NET_REWARD_RISK', message: 'minNetRewardRiskRatio must be positive' });
+  }
+  if (p.mtfMode === 'score' && !(p.minSignalStrength > 0)) {
+    out.push({
+      level: 'warn',
+      code: 'SCORE_MODE_WITHOUT_THRESHOLD',
+      message: "mtfMode='score' tanpa minSignalStrength > 0 tidak mengubah keputusan; strength hanya dipakai untuk urutan eksekusi",
+    });
   }
   return out;
 }

@@ -116,3 +116,21 @@ describe('FIX-01 pending entry retry queue', () => {
     expect(isRetryableEntryRejection('strategy_params_gate', 'invalid_strategy_params')).toBe(false);
   });
 });
+
+describe('FIX-04 minimum signal strength gate', () => {
+  it('T14 rejects a BUY below minSignalStrength at the strength gate', async () => {
+    const o = setup({ mtfMode: 'off', newSignals: [buySignal({ strength: 55 })], strategyParams: { minSignalStrength: 60 } });
+    const r = await run(o);
+    expect(paperInfo(r).entry_rejections).toContainEqual(expect.objectContaining({
+      stage: 'strength_gate', reason: 'below_min_strength', metrics: { strength: 55, min_strength: 60 },
+    }));
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+  });
+
+  it('T15 minSignalStrength=0 leaves the entry path unchanged', async () => {
+    const o = setup({ mtfMode: 'off', newSignals: [buySignal({ strength: 1 })], strategyParams: { minSignalStrength: 0 } });
+    const r = await run(o);
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(true);
+    expect(paperInfo(r).entry_rejections.some((x: any) => x.stage === 'strength_gate')).toBe(false);
+  });
+});
