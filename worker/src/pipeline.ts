@@ -37,6 +37,8 @@ export interface Position {
   stop_loss: number | string | null;
   take_profit: number | string | null;
   opened_at?: string | null;
+  /** Bid stored by the previous run's mark-to-market: the last observed price before this run. */
+  last_price?: number | string | null;
 }
 
 interface PairCtx {
@@ -1008,7 +1010,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       for (const pos of [...open.values()]) {
         const t = freshTicker(pos.pair_id);
         if (!t) { actions.push(`skip exit check ${pos.pair_id}: stale ticker`); continue; }
-        let reason: string | null = exitReason(pos, t.bid);
+        // pos.last_price is the bid the previous run marked this position at, so a gap that cleared
+        // both brackets resolves to the stop instead of the take profit.
+        const prevBid = pos.last_price === null || pos.last_price === undefined ? null : Number(pos.last_price);
+        let reason: string | null = exitReason(pos, t.bid, prevBid);
         if (!reason) {
           // Trailing stop: ratchet the stop up with price (takes effect from the next run).
           // The break-even floor must cover the spread too: the exit fills at the bid, so a stop

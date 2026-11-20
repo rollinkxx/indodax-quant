@@ -1,7 +1,7 @@
 // Regression tests for the engine BUY/SELL/HOLD logic (FIX-02 .. FIX-10).
 // Each block names the spec acceptance case it covers.
 import { describe, expect, it } from 'vitest';
-import { shouldExitOnSignal } from '../shared/paper';
+import { exitReason, shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
 import { computeIndicatorsTail, DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 import { ema } from '../shared/indicators';
@@ -166,7 +166,7 @@ describe('FIX-08 synthetic candles degrade rows instead of restarting indicators
     const closes = series(null).map((c) => c.c);
     const expected = ema(closes, DEFAULT_PARAMS.emaTrend);
     expect(rows).toHaveLength(3);
-    expect(rows[2].ema50).toBeCloseTo(expected[249], 9);
+    expect(rows[2].ema50).toBeCloseTo(expected[249] as number, 9);
   });
 
   it('T23 treats a row as not warm when a synthetic candle is inside its warm-up', () => {
@@ -186,5 +186,21 @@ describe('FIX-08 synthetic candles degrade rows instead of restarting indicators
     const rows = computeIndicatorsTail(series(249), DEFAULT_PARAMS, 3);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ degraded: true, ema9: null, rsi14: null });
+  });
+});
+
+describe('FIX-09 gap over both brackets resolves to the stop', () => {
+  const pos = { entry_price: 100, stop_loss: 95, take_profit: 110 };
+
+  it('T25 books STOP_LOSS when the previous bid was under the stop and the bid is over the target', () => {
+    expect(exitReason(pos, 111, 94)).toBe('STOP_LOSS');
+    expect(exitReason({ ...pos, stop_loss: 101 }, 111, 100)).toBe('TRAILING_STOP');
+  });
+
+  it('T26 keeps the old ordering when there is no previous bid', () => {
+    expect(exitReason(pos, 111)).toBe('TAKE_PROFIT');
+    expect(exitReason(pos, 111, null)).toBe('TAKE_PROFIT');
+    // A previous bid above the stop means the stop was never crossed: the target wins.
+    expect(exitReason(pos, 111, 96)).toBe('TAKE_PROFIT');
   });
 });

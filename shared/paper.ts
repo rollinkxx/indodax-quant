@@ -375,15 +375,27 @@ export function exposureAllows(openCost: number, newCost: number, equity: number
  * the stop sits above entry, but fees and slippage can still leave the trade net negative.
  * TAKE_PROFIT is checked first so a gap through both levels is attributed to the target.
  */
+/**
+ * Which bracket the bid touched, if any.
+ *
+ * `prevBid` is the bid from the previous run's snapshot. When the market gapped over both the stop
+ * and the target between two runs, the observed bid alone cannot say which was hit first; the
+ * pessimistic assumption (stop first) is the only one that does not book a fill the market never
+ * offered. Without a previous bid the check is skipped and the old ordering applies.
+ */
 export function exitReason(
   pos: { entry_price?: number | string; stop_loss: number | string | null; take_profit: number | string | null },
   bid: number,
+  prevBid: number | null = null,
 ): ExitReason | null {
   const sl = pos.stop_loss === null || pos.stop_loss === undefined ? null : Number(pos.stop_loss);
   const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
+  const entry = pos.entry_price === undefined ? null : Number(pos.entry_price);
+  if (sl !== null && tp !== null && prevBid !== null && Number.isFinite(prevBid) && prevBid < sl && bid > tp) {
+    return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';
+  }
   if (tp !== null && bid >= tp) return 'TAKE_PROFIT';
   if (sl !== null && bid <= sl) {
-    const entry = pos.entry_price === undefined ? null : Number(pos.entry_price);
     return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';
   }
   return null;
