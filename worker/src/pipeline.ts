@@ -640,13 +640,25 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         STOP_LOSS: 'stop_loss', TAKE_PROFIT: 'take_profit', TRAILING_STOP: 'trailing_stop',
       };
 
+      // A rejected close must never abort the run. db.rpc throws on 4xx (a check-constraint
+      // violation used to kill every trailing-stop exit), and a throw here would skip mark-to-market,
+      // entries and the remaining exits — or leave a KILLED account with positions still open.
+      // Only a transport/DB failure degrades the run; a business rejection (not_open, duplicate) does not.
       const close = async (pos: Position, reason: string, bid: number) => {
         const slip = slipFor(pos.pair_id);
         const fill = sellFillPrice(bid, slip);
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
-        const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
-          p_position_id: pos.id, p_requested_price: bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
-        });
+        let r: { ok: boolean; reason?: string; realized_pnl?: number } | null = null;
+        try {
+          r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
+            p_position_id: pos.id, p_requested_price: bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
+          });
+        } catch (e) {
+          const msg = `close ${pos.pair_id} ${reason} failed: ${errorMessage(e)}`;
+          actions.push(msg);
+          degraded.push(msg);
+          return false;
+        }
         if (r?.ok) {
           open.delete(pos.pair_id);
           actions.push(`close ${pos.pair_id} ${reason}`);

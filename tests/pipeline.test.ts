@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; closeHttpError?: number; mtmEquity?: number; pairTakerFee?: number | null; tickerBid?: number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -58,8 +58,11 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
             ? json({ code: 'PGRST202', message: opts.pendingSells }, 404)
             : json(opts.pendingSells ?? []);
         case 'paper_open_position': return json(opts.openResult ?? { ok: true, position_id: 55, cash_after: 9_700_000 });
-        case 'paper_close_position': return json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
-        case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
+        case 'paper_close_position':
+          return opts.closeHttpError
+            ? json({ code: '23514', message: 'new row for relation "paper_orders" violates check constraint "paper_orders_reason_check"' }, opts.closeHttpError)
+            : json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
+        case 'paper_mark_to_market': return json({ ok: true, equity: opts.mtmEquity ?? 1e7, cash: opts.mtmEquity ?? 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
         case 'claim_notifications': return json(body.p_items.map((x: any) => x.dedupe_key));
         default: return json({ ok: true });
       }
@@ -383,6 +386,30 @@ describe('pipeline: persisted SELL exits (F3)', () => {
     const r = await run(o);
     expect(r.status).toBe('SUCCESS');
     expect(closes(o)).toHaveLength(1);
+  });
+
+  it('keeps the run alive when a close is rejected by the database instead of aborting every other step', async () => {
+    // paper_close_position raised a check-constraint violation (HTTP 400) for TRAILING_STOP before
+    // migration 20261119150000. db.rpc throws on 4xx, and without a local guard one bad exit killed
+    // mark-to-market, entries and notifications for every pair in the run.
+    const o = setup({ mtfMode: 'off', openPositions: [position], pendingSells: [sell], closeHttpError: 400, tickerBid: 1010 });
+    const r = await run(o);
+    expect(r.status).toBe('PARTIAL');
+    expect(o.rpcs.some((x) => x.fn === 'paper_mark_to_market')).toBe(true);
+    expect(JSON.stringify((r.steps as any)?.paper_trading)).toContain('close btcidr SIGNAL failed');
+  });
+
+  it('still completes the kill-switch flatten when the close RPC throws', async () => {
+    // Equity 50% below peak trips the drawdown kill switch. paper_set_status(KILLED) runs before the
+    // flatten loop, so an unguarded throw would leave the account KILLED with the position still open
+    // and skip the post-flatten mark-to-market. The guard must keep the loop and the refresh running.
+    const o = setup({ mtfMode: 'off', openPositions: [position], closeHttpError: 400, mtmEquity: 5e6, tickerBid: 1010 });
+    const r = await run(o);
+    expect(r.status).toBe('PARTIAL');
+    expect(o.rpcs.some((x) => x.fn === 'paper_set_status' && x.body.p_status === 'KILLED')).toBe(true);
+    expect(o.rpcs.filter((x) => x.fn === 'paper_close_position').map((x) => x.body.p_reason)).toContain('MAX_DRAWDOWN');
+    // initial MTM + the refresh after the flatten attempt; an aborted step leaves only the first.
+    expect(o.rpcs.filter((x) => x.fn === 'paper_mark_to_market')).toHaveLength(2);
   });
 
   it('does not look up pending SELLs for a pair that is flat or fails data quality', async () => {

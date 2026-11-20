@@ -124,6 +124,31 @@ BEGIN
 END
 $low_check$;
 
+-- paper_close_position writes the exit reason into paper_orders.reason. If the check constraint and
+-- the reasons the engine emits drift apart, the insert fails with 23514, PostgREST returns 400 and the
+-- exit is lost (TRAILING_STOP was missing before 20261119150000). Assert every emitted reason is allowed.
+DO $reason_check$
+DECLARE
+  v_reason text;
+  v_allowed text[];
+BEGIN
+  SELECT array_agg(DISTINCT m[1])
+    INTO v_allowed
+    FROM pg_constraint c,
+         LATERAL regexp_matches(pg_get_constraintdef(c.oid), '''([A-Z_]+)''', 'g') AS m
+   WHERE c.conrelid = 'public.paper_orders'::regclass AND c.conname = 'paper_orders_reason_check';
+  IF v_allowed IS NULL THEN
+    RAISE EXCEPTION 'paper_orders_reason_check constraint is missing';
+  END IF;
+  FOREACH v_reason IN ARRAY ARRAY['SIGNAL', 'STOP_LOSS', 'TAKE_PROFIT', 'TRAILING_STOP', 'TIME_STOP',
+                                  'KILL_SWITCH', 'MAX_DRAWDOWN', 'DAILY_LOSS', 'MANUAL'] LOOP
+    IF NOT v_reason = ANY (v_allowed) THEN
+      RAISE EXCEPTION 'paper_orders_reason_check rejects %, which the engine emits on close', v_reason;
+    END IF;
+  END LOOP;
+END
+$reason_check$;
+
 -- Explicitly print the replay summary for the CI log.
 SELECT
   (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE') AS public_tables,
