@@ -1,5 +1,6 @@
 // Strategy: EMA crossover + RSI + volume confirmation on completed candles.
 import { atr, ema, macd, rsi, sma, supportResistance } from './indicators';
+import { roundTripCostPct } from './paper';
 import type { Candle } from './candles';
 
 export interface StrategyParams {
@@ -16,10 +17,26 @@ export interface StrategyParams {
   useTrendFilter: boolean;
   /** BUY may fire up to N-1 completed candles after the EMA cross (1 = only on the cross candle itself). */
   crossLookback: number;
+  /** SELL may fire up to N-1 completed candles after the EMA cross-down (1 = cross candle only). */
+  sellCrossLookback: number;
+  /**
+   * How many 5m candles a BUY rejected by a transient gate (spread, drift, stale ticker, sizing,
+   * lease) stays eligible for a retry. The setup itself is re-validated before the retry fires.
+   */
+  entryRetryTtlCandles: number;
   /** BUY is skipped when close is more than N% above the slow EMA (anti chasing). 0 = disabled. */
   maxEntryExtensionPct: number;
   /** false = every fresh EMA cross-down exits/signals SELL; true = RSI and volume must confirm too. */
   sellRequireConfirm: boolean;
+  /**
+   * Minimum signal strength required to open a position. Without it `mtfMode='score'` only changes
+   * the execution order, because strength is used for sorting and display. 0 = disabled.
+   */
+  minSignalStrength: number;
+  /** Gate a signal-driven exit on the position already covering the round trip (see shouldExitOnSignal). */
+  signalExitRequireProfit: boolean;
+  /** SELL strength at or above this exits regardless of profit (0 = never force). */
+  signalExitForceStrength: number;
   atrPeriod: number;
   atrStopMultiplier: number;
   atrTakeProfitMultiplier: number;
@@ -63,6 +80,10 @@ export interface StrategyParams {
   mtfEmaFast: number;
   mtfEmaSlow: number;
   mtfMinCandles: number;
+  /** Block a weak SELL while both 15m and 1h are bullish (a trapped position can still leave). */
+  mtfFilterSell: boolean;
+  /** SELL strength at or above this is never blocked by the uptrend filter. */
+  mtfSellBlockStrength: number;
   // Dynamic universe: pairs picked automatically by 24h IDR volume + spread, on top of the manually tracked pairs
   universeMode: UniverseMode;
   universeSize: number;
@@ -97,15 +118,22 @@ export const DEFAULT_PARAMS: StrategyParams = {
   emaSlow: 21,
   emaTrend: 50,
   rsiPeriod: 14,
-  rsiBuyMin: 50,
+  // 52, not 50: the default must not sit inside the SELL band (rsiSellMax 50) and trip its own
+  // BUY_AND_SELL_RSI_REGIMES_OVERLAP warning.
+  rsiBuyMin: 52,
   rsiBuyMax: 65,
   rsiSellMax: 50,
   volumeMaPeriod: 20,
   volumeMultiplier: 1.2,
   useTrendFilter: true,
   crossLookback: 2,
+  entryRetryTtlCandles: 3,
+  sellCrossLookback: 2,
   maxEntryExtensionPct: 1.5,
   sellRequireConfirm: false,
+  minSignalStrength: 0,
+  signalExitRequireProfit: true,
+  signalExitForceStrength: 70,
   atrPeriod: 14,
   atrStopMultiplier: 1.5,
   atrTakeProfitMultiplier: 3,
@@ -138,6 +166,8 @@ export const DEFAULT_PARAMS: StrategyParams = {
   mtfEmaFast: 9,
   mtfEmaSlow: 21,
   mtfMinCandles: 30,
+  mtfFilterSell: true,
+  mtfSellBlockStrength: 70,
   universeMode: 'dynamic',
   universeSize: 12,
   universeMinVolumeIdr: 1_000_000_000,
@@ -148,7 +178,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   notifyUniverse: true,
 };
 
-const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
+const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'signalExitRequireProfit', 'mtfFilterSell', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
 
 type NumKey = { [K in keyof StrategyParams]: StrategyParams[K] extends number ? K : never }[keyof StrategyParams];
 
@@ -163,7 +193,11 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   volumeMaPeriod: [2, 100, true],
   volumeMultiplier: [0, 10],
   crossLookback: [1, 10, true],
+  entryRetryTtlCandles: [1, 12, true],
+  sellCrossLookback: [1, 10, true],
   maxEntryExtensionPct: [0, 20],
+  signalExitForceStrength: [0, 100],
+  minSignalStrength: [0, 100],
   atrPeriod: [2, 50, true],
   atrStopMultiplier: [0.1, 10],
   atrTakeProfitMultiplier: [0.1, 20],
@@ -188,6 +222,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   mtfEmaFast: [2, 100, true],
   mtfEmaSlow: [3, 200, true],
   mtfMinCandles: [10, 250, true],
+  mtfSellBlockStrength: [0, 100],
   universeSize: [1, 25, true],
   universeMinVolumeIdr: [0, 1e13],
   universeMaxSpreadPct: [0.01, 10],
@@ -261,13 +296,44 @@ export function validateParams(input: Record<string, unknown>): string[] {
  * falls back to DEFAULT_PARAMS on any error, so an impossible stored bracket would silently
  * reset every other parameter instead of surfacing. This runs where a human saves a config.
  */
+/**
+ * Reject a bracket whose NET reward/risk cannot clear `minNetRewardRiskRatio`.
+ *
+ * The gross ratio (tp/sl multipliers) is not the quantity the runtime gate checks: fees and
+ * slippage are charged on both legs, so gross > net always, and a config that looked fine on the
+ * multipliers could still reject every entry as `net_reward_risk_below_minimum`. Both the ATR
+ * bracket and the percentage fallback used when ATR is unavailable are projected at a 1% ATR.
+ */
 export function validateBracketEconomics(merged: StrategyParams): string[] {
   if (!(merged.atrStopMultiplier > 0)) return ['atrStopMultiplier must be positive'];
-  const grossRatio = merged.atrTakeProfitMultiplier / merged.atrStopMultiplier;
-  if (grossRatio < merged.minNetRewardRiskRatio) {
-    return [`atrTakeProfitMultiplier / atrStopMultiplier (${grossRatio.toFixed(3)}) is below minNetRewardRiskRatio (${merged.minNetRewardRiskRatio}); no entry can pass the net reward/risk gate`];
+
+  const costPct = roundTripCostPct(merged.feePct, merged.slippageBps);
+
+  const atrPct = 1;
+  const slDistAtr = merged.atrStopMultiplier * atrPct;
+  const tpDistAtr = merged.atrTakeProfitMultiplier * atrPct;
+  const netRiskAtr = slDistAtr + costPct;
+  const netRewardAtr = tpDistAtr - costPct;
+  const netRatioAtr = netRiskAtr > 0 ? netRewardAtr / netRiskAtr : 0;
+
+  const netRiskPct = merged.fallbackStopPct + costPct;
+  const netRewardPct = merged.fallbackTakeProfitPct - costPct;
+  const netRatioPct = netRiskPct > 0 ? netRewardPct / netRiskPct : 0;
+
+  const errors: string[] = [];
+  if (!(netRewardAtr > 0)) {
+    errors.push(`ATR bracket: take profit ${tpDistAtr.toFixed(2)}% does not cover the ${costPct.toFixed(2)}% round-trip cost`);
   }
-  return [];
+  if (!(netRewardPct > 0)) {
+    errors.push(`fallback bracket: take profit ${merged.fallbackTakeProfitPct}% does not cover the ${costPct.toFixed(2)}% round-trip cost`);
+  }
+  if (netRatioAtr < merged.minNetRewardRiskRatio) {
+    errors.push(`net reward/risk ATR ${netRatioAtr.toFixed(3)} (after ${costPct.toFixed(2)}% cost) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
+  }
+  if (netRatioPct < merged.minNetRewardRiskRatio) {
+    errors.push(`net reward/risk fallback ${netRatioPct.toFixed(3)} (after ${costPct.toFixed(2)}% cost) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
+  }
+  return errors;
 }
 
 /**
@@ -296,6 +362,13 @@ export function validateCrossFieldParams(p: StrategyParams): CrossFieldFinding[]
   }
   if (!(p.minNetRewardRiskRatio > 0)) {
     out.push({ level: 'error', code: 'INVALID_NET_REWARD_RISK', message: 'minNetRewardRiskRatio must be positive' });
+  }
+  if (p.mtfMode === 'score' && !(p.minSignalStrength > 0)) {
+    out.push({
+      level: 'warn',
+      code: 'SCORE_MODE_WITHOUT_THRESHOLD',
+      message: "mtfMode='score' tanpa minSignalStrength > 0 tidak mengubah keputusan; strength hanya dipakai untuk urutan eksekusi",
+    });
   }
   return out;
 }
@@ -354,17 +427,27 @@ export interface IndicatorRow {
   volMa20: number | null;
   support: number | null;
   resistance: number | null;
+  /** True when a synthetic candle sits inside this row's warm-up window: the values are untrustworthy. */
+  degraded?: boolean;
 }
 
 function emptyIndicatorRow(c: Candle): IndicatorRow {
   return {
     t: c.t, close: c.c, ema9: null, ema21: null, ema50: null, rsi14: null,
     macd: null, macdSignal: null, macdHist: null, atr14: null, volMa20: null,
-    support: null, resistance: null,
+    support: null, resistance: null, degraded: true,
   };
 }
 
-/** Calculate indicators within one uninterrupted segment that contains no synthetic candles. */
+/**
+ * Calculate the indicator tail over the FULL series, flagging rows whose warm-up window contains a
+ * synthetic candle.
+ *
+ * Slicing the series at the last synthetic candle restarted EMA/RSI from a segment-local SMA seed,
+ * so a single gap shifted EMA50 and RSI enough to fake a cross (or to silently hold). The values are
+ * now computed on the continuous series; a row is instead marked `degraded` and treated as not warm
+ * while a synthetic candle is still inside its warm-up window.
+ */
 function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = candles.length): IndicatorRow[] {
   if (candles.length === 0) return [];
   const closes = candles.map((c) => c.c);
@@ -376,16 +459,21 @@ function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = ca
   const m = macd(closes);
   const a = atr(candles, p.atrPeriod);
   const vm = sma(vols, p.volumeMaPeriod);
+  const warmup = Math.max(p.emaTrend, 26 + 9, p.rsiPeriod + 1, p.volumeMaPeriod);
   const start = Math.max(0, candles.length - Math.max(1, Math.floor(tail)));
   const rows: IndicatorRow[] = [];
   for (let i = start; i < candles.length; i++) {
     // Levels come from the candles BEFORE this one. A slice that includes the candle itself makes
     // resistance >= close and support <= close by construction, so a breakout could never be detected.
     const sr = supportResistance(candles.slice(0, i), 50);
+    let degraded = false;
+    for (let k = Math.max(0, i - warmup + 1); k <= i; k++) {
+      if (candles[k].source === 'synthetic') { degraded = true; break; }
+    }
     rows.push({
       t: candles[i].t, close: candles[i].c, ema9: f[i], ema21: s[i], ema50: tr[i], rsi14: r[i],
       macd: m.macd[i], macdSignal: m.signal[i], macdHist: m.hist[i], atr14: a[i], volMa20: vm[i],
-      support: sr.support, resistance: sr.resistance,
+      support: sr.support, resistance: sr.resistance, degraded,
     });
   }
   return rows;
@@ -409,18 +497,14 @@ export function computeIndicators(candles: Candle[], p: StrategyParams = DEFAULT
 }
 
 /**
- * Efficient indicator tail for the latest contiguous non-synthetic segment only.
- * If the latest candle is synthetic, return an unready row so callers can still inspect its timestamp.
+ * Indicator tail over the whole series. If the latest candle is synthetic, return an unready row so
+ * callers can still inspect its timestamp; gaps earlier in the series are reported per row through
+ * `degraded` instead of restarting the indicators.
  */
 export function computeIndicatorsTail(candles: Candle[], p: StrategyParams, tail = 3): IndicatorRow[] {
   if (candles.length === 0) return [];
-  let lastSynthetic = -1;
-  for (let i = candles.length - 1; i >= 0; i--) {
-    if (candles[i].source === 'synthetic') { lastSynthetic = i; break; }
-  }
-  if (lastSynthetic === candles.length - 1) return [emptyIndicatorRow(candles[candles.length - 1])];
-  const segment = candles.slice(lastSynthetic + 1);
-  return computeIndicatorSegment(segment, p, tail);
+  if (candles[candles.length - 1].source === 'synthetic') return [emptyIndicatorRow(candles[candles.length - 1])];
+  return computeIndicatorSegment(candles, p, tail);
 }
 
 export interface SignalDecision {
@@ -431,7 +515,8 @@ export interface SignalDecision {
 
 type WarmRow = IndicatorRow & { ema9: number; ema21: number; rsi14: number; volMa20: number };
 const warm = (r: IndicatorRow | undefined): r is WarmRow =>
-  !!r && r.ema9 !== null && r.ema21 !== null && r.rsi14 !== null && r.volMa20 !== null;
+  !!r && r.degraded !== true &&
+  r.ema9 !== null && r.ema21 !== null && r.rsi14 !== null && r.volMa20 !== null;
 
 /**
  * Fail closed on malformed market inputs before evaluating a crossover.
@@ -450,6 +535,7 @@ function validSignalInputs(rows: IndicatorRow[], volumes: number[]): boolean {
     if (!indicators.every((value) => value === null || Number.isFinite(value))) return false;
     if (row.rsi14 !== null && (row.rsi14 < 0 || row.rsi14 > 100)) return false;
     if (row.volMa20 !== null && row.volMa20 < 0) return false;
+    if (row.degraded !== undefined && typeof row.degraded !== 'boolean') return false;
     return true;
   });
 }
@@ -494,6 +580,10 @@ export interface BuySignalDiagnostics {
   volumeOk: boolean | null;
   extensionOk: boolean | null;
   alreadyQualified: boolean;
+  /** The trend structure a queued retry is allowed to still rely on (EMA9 > EMA21 and, with the
+   *  trend filter on, close above EMA50). Deliberately excludes the transient filters: a retry is
+   *  only invalidated by the setup breaking, never by a spread or RSI reading at retry time. */
+  setupValid: boolean;
   rsi: number | null;
   volumeRatio: number | null;
   extensionPct: number | null;
@@ -511,7 +601,7 @@ export function diagnoseBuySignalWindow(
   const unavailable: BuySignalDiagnostics = {
     stage: 'indicators_not_ready', ready: false, crossFound: false, barsSinceCross: null,
     trendOk: null, rsiOk: null, volumeOk: null, extensionOk: null, alreadyQualified: false,
-    rsi: null, volumeRatio: null, extensionPct: null,
+    setupValid: false, rsi: null, volumeRatio: null, extensionPct: null,
   };
   const n = rows.length;
   if (n < 2 || volumes.length !== n) return unavailable;
@@ -566,9 +656,12 @@ export function diagnoseBuySignalWindow(
   else if (alreadyQualified) stage = 'already_qualified';
   else stage = 'ready';
 
+  const setupValid = last.ema9 > last.ema21 &&
+    (!p.useTrendFilter || (last.ema50 !== null && last.close > last.ema50));
+
   return {
     stage, ready: stage === 'ready', crossFound, barsSinceCross, trendOk, rsiOk, volumeOk, extensionOk,
-    alreadyQualified, rsi: last.rsi14, volumeRatio, extensionPct,
+    alreadyQualified, setupValid, rsi: last.rsi14, volumeRatio, extensionPct,
   };
 }
 
@@ -659,6 +752,93 @@ export function diagnoseTrendContinuationWindow(
   };
 }
 
+export type SellDiagnosticStage =
+  | 'indicators_not_ready'
+  | 'invalid_market_data'
+  | 'ema_fast_not_below_slow'
+  | 'no_recent_cross'
+  | 'rsi_filter'
+  | 'volume_filter'
+  | 'already_qualified'
+  | 'ready';
+
+export interface SellSignalDiagnostics {
+  stage: SellDiagnosticStage;
+  ready: boolean;
+  crossFound: boolean;
+  barsSinceCross: number | null;
+  rsiOk: boolean | null;
+  volumeOk: boolean | null;
+  alreadyQualified: boolean;
+  rsi: number | null;
+  volumeRatio: number | null;
+}
+
+/**
+ * Explain the exact 5m SELL gate without changing it: the mirror of diagnoseBuySignalWindow.
+ * A SELL used to fire only on the single candle where EMA9 crossed below EMA21, so one missed cron
+ * tick dropped the exit for good. It now accepts a cross within `sellCrossLookback` candles while
+ * EMA9 stays below EMA21, and still emits at most one signal per cross.
+ */
+export function diagnoseSellSignalWindow(
+  rows: IndicatorRow[],
+  volumes: number[],
+  p: StrategyParams = DEFAULT_PARAMS,
+): SellSignalDiagnostics {
+  const unavailable: SellSignalDiagnostics = {
+    stage: 'indicators_not_ready', ready: false, crossFound: false, barsSinceCross: null,
+    rsiOk: null, volumeOk: null, alreadyQualified: false, rsi: null, volumeRatio: null,
+  };
+  const n = rows.length;
+  if (n < 2 || volumes.length !== n) return unavailable;
+  if (!validSignalInputs(rows, volumes)) return { ...unavailable, stage: 'invalid_market_data' };
+  const last = rows[n - 1];
+  const prev = rows[n - 2];
+  if (!warm(last) || prev.ema9 === null || prev.ema21 === null) return unavailable;
+
+  const volume = volumes[n - 1];
+  const volumeRatio = last.volMa20 > 0 ? volume / last.volMa20 : null;
+  const rsiOk = last.rsi14 <= p.rsiSellMax;
+  const volumeOk = last.volMa20 > 0 && volume >= last.volMa20 * p.volumeMultiplier;
+
+  let crossIdx = -1;
+  if (last.ema9 < last.ema21) {
+    const lookback = Math.max(1, Math.floor(p.sellCrossLookback));
+    for (let j = n - 1; j >= 1 && n - 1 - j < lookback; j--) {
+      const cur = rows[j];
+      const before = rows[j - 1];
+      if (cur.ema9 === null || cur.ema21 === null || before.ema9 === null || before.ema21 === null) break;
+      if (!(cur.ema9 < cur.ema21)) break;
+      if (before.ema9 >= before.ema21) { crossIdx = j; break; }
+    }
+  }
+  const crossFound = crossIdx >= 0;
+  const barsSinceCross = crossFound ? n - 1 - crossIdx : null;
+
+  let alreadyQualified = false;
+  if (crossFound) {
+    for (let j = crossIdx; j < n - 1; j++) {
+      const earlier = rows[j];
+      if (!warm(earlier)) continue;
+      if (!(earlier.ema9 < earlier.ema21)) continue;
+      const confOk = !p.sellRequireConfirm ||
+        (earlier.rsi14 <= p.rsiSellMax &&
+          earlier.volMa20 > 0 && volumes[j] >= earlier.volMa20 * p.volumeMultiplier);
+      if (confOk) { alreadyQualified = true; break; }
+    }
+  }
+
+  let stage: SellDiagnosticStage;
+  if (last.ema9 >= last.ema21) stage = 'ema_fast_not_below_slow';
+  else if (!crossFound) stage = 'no_recent_cross';
+  else if (p.sellRequireConfirm && !rsiOk) stage = 'rsi_filter';
+  else if (p.sellRequireConfirm && !volumeOk) stage = 'volume_filter';
+  else if (alreadyQualified) stage = 'already_qualified';
+  else stage = 'ready';
+
+  return { stage, ready: stage === 'ready', crossFound, barsSinceCross, rsiOk, volumeOk, alreadyQualified, rsi: last.rsi14, volumeRatio };
+}
+
 export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
   const n = rows.length;
   if (!validSignalInputs(rows, volumes)) return null;
@@ -667,8 +847,7 @@ export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p:
   if (!warm(last) || prev.ema9 === null || prev.ema21 === null) return null;
 
   const volume = volumes[n - 1];
-  const { ema9: f, ema21: s, rsi14: r, volMa20: vm } = last;
-  const volOk = vm > 0 && volume >= vm * p.volumeMultiplier;
+  const { rsi14: r, volMa20: vm } = last;
   const buy = diagnoseBuySignalWindow(rows, volumes, p);
 
   if (buy.ready) {
@@ -688,21 +867,21 @@ export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p:
     return { side: 'BUY', strength: Math.max(0, Math.min(strength, 100)), reasons };
   }
 
-  const crossDown = prev.ema9 >= prev.ema21 && f < s;
-  if (crossDown) {
-    const rsiOk = r <= p.rsiSellMax;
-    if (!p.sellRequireConfirm || (rsiOk && volOk)) {
-      const reasons = [
-        `EMA${p.emaFast} crossed below EMA${p.emaSlow}`,
-        `RSI ${r.toFixed(1)}${rsiOk ? ` <= ${p.rsiSellMax}` : ''}`,
-        `Volume ${vm > 0 ? (volume / vm).toFixed(2) : '0'}x of MA${p.volumeMaPeriod}`,
-      ];
-      let strength = 60;
-      if (last.macdHist !== null && last.macdHist < 0) { strength += 15; reasons.push('MACD histogram negative'); }
-      if (vm > 0 && volume >= vm * 2) strength += 15;
-      if (last.support !== null && last.close < last.support) { strength += 10; reasons.push('Breaking support'); }
-      return { side: 'SELL', strength: Math.min(strength, 100), reasons };
-    }
+  const sell = diagnoseSellSignalWindow(rows, volumes, p);
+  if (sell.ready) {
+    const barsSince = sell.barsSinceCross ?? 0;
+    const reasons = [
+      barsSince === 0
+        ? `EMA${p.emaFast} crossed below EMA${p.emaSlow}`
+        : `EMA${p.emaFast} crossed below EMA${p.emaSlow} ${barsSince} candle(s) ago and stayed below`,
+      `RSI ${r.toFixed(1)}${sell.rsiOk ? ` <= ${p.rsiSellMax}` : ''}`,
+      `Volume ${vm > 0 ? (volume / vm).toFixed(2) : '0'}x of MA${p.volumeMaPeriod}`,
+    ];
+    let strength = 60 - 5 * barsSince;
+    if (last.macdHist !== null && last.macdHist < 0) { strength += 15; reasons.push('MACD histogram negative'); }
+    if (vm > 0 && volume >= vm * 2) strength += 15;
+    if (last.support !== null && last.close < last.support) { strength += 10; reasons.push('Breaking support'); }
+    return { side: 'SELL', strength: Math.max(0, Math.min(strength, 100)), reasons };
   }
   return null;
 }
@@ -749,17 +928,11 @@ export function evaluateMarketAction(
   if (buy.stage !== 'no_recent_cross' && buy.stage !== 'ema_fast_not_above_slow') {
     return { action: 'HOLD', signal: null, reason: `buy_blocked_${buy.stage}` };
   }
-  const crossedDown = prev.ema9 >= prev.ema21 && last.ema9 < last.ema21;
-  if (crossedDown && p.sellRequireConfirm) {
-    const volume = volumes[n - 1];
-    const rsiOk = last.rsi14 <= p.rsiSellMax;
-    const volumeOk = last.volMa20 > 0 && volume >= last.volMa20 * p.volumeMultiplier;
-    return {
-      action: 'HOLD', signal: null,
-      reason: !rsiOk ? 'sell_blocked_rsi_confirmation' : !volumeOk ? 'sell_blocked_volume_confirmation' : 'sell_blocked',
-    };
+  const sell = diagnoseSellSignalWindow(rows, volumes, p);
+  if (sell.stage !== 'no_recent_cross' && sell.stage !== 'ema_fast_not_below_slow') {
+    return { action: 'HOLD', signal: null, reason: `sell_blocked_${sell.stage}` };
   }
-  return { action: 'HOLD', signal: null, reason: crossedDown ? 'sell_not_confirmed' : 'no_fresh_setup' };
+  return { action: 'HOLD', signal: null, reason: 'no_fresh_setup' };
 }
 
 /** Evaluate the LAST row against only the previous row (fresh cross only, legacy behaviour). */

@@ -160,14 +160,24 @@ export interface MtfOutcome {
 
 const label = (t: Trend) => ({ bull: 'bullish', bear: 'bearish', neutral: 'netral', unknown: 'belum siap' }[t]);
 
+export type MtfOpts = {
+  /** Block a weak SELL while both higher timeframes are bullish. Off restores the unfiltered SELL. */
+  filterSell: boolean;
+  /** SELL strength at or above this is never blocked by the uptrend filter. */
+  minSellStrength: number;
+};
+
+const DEFAULT_MTF_OPTS: MtfOpts = { filterSell: false, minSellStrength: 70 };
+
 /**
  * Apply the higher-timeframe context to a 5m decision.
  * - off:    unchanged.
  * - filter: BUY needs 1h bullish and no bearish higher timeframe; unknown (warming up) blocks BUY.
- *           SELL is an exit signal for long positions and is never blocked.
+ *           SELL is an exit signal for long positions, so it is only blocked when it is weak AND
+ *           both 15m and 1h are bullish: a trapped position must still be able to leave.
  * - score:  never blocks; strength +10 per aligned timeframe, -15 per opposing one.
  */
-export function applyMtf(decision: SignalDecision | null, states: TfState[], mode: StrategyParams['mtfMode']): MtfOutcome {
+export function applyMtf(decision: SignalDecision | null, states: TfState[], mode: StrategyParams['mtfMode'], opts: MtfOpts = DEFAULT_MTF_OPTS): MtfOutcome {
   const summary = Object.fromEntries(states.map((s) => [s.tf, { trend: s.trend, rsi: s.rsi, ema_fast: s.emaFast, ema_slow: s.emaSlow, candles: s.candles }])) as MtfOutcome['summary'];
   if (!decision || mode === 'off') return { decision, summary };
   if (states.length === 0 && !(mode === 'filter' && decision.side === 'BUY')) return { decision, summary };
@@ -185,6 +195,15 @@ export function applyMtf(decision: SignalDecision | null, states: TfState[], mod
     if (requiredStates.some((s) => s.trend === 'unknown')) return { decision: null, blocked: 'mtf_warming_up', summary };
     if (requiredStates.some((s) => s.trend === against)) return { decision: null, blocked: 'mtf_against_trend', summary };
     if (anchor.trend !== want) return { decision: null, blocked: 'mtf_anchor_not_bullish', summary };
+  }
+
+  if (mode === 'filter' && decision.side === 'SELL' && opts.filterSell) {
+    const anchor = states.find((s) => s.tf === '1h');
+    const fast = states.find((s) => s.tf === '15m');
+    const bothBull = anchor?.trend === 'bull' && fast?.trend === 'bull';
+    if (bothBull && decision.strength < opts.minSellStrength) {
+      return { decision: null, blocked: 'mtf_sell_against_uptrend', summary };
+    }
   }
 
   let strength = decision.strength;
@@ -209,7 +228,7 @@ export function applyMtf(decision: SignalDecision | null, states: TfState[], mod
 /**
  * Apply MTF gating to the user-facing three-state decision.
  * A raw BUY rejected by a higher-timeframe filter is a final HOLD, not a BUY.
- * SELL remains an exit and is never blocked by MTF.
+ * A SELL is only blocked while both higher timeframes are bullish and the SELL is weak.
  */
 export interface MtfMarketActionOutcome {
   action: MarketActionDecision;
@@ -220,8 +239,9 @@ export function applyMtfToMarketAction(
   action: MarketActionDecision,
   states: TfState[],
   mode: StrategyParams['mtfMode'],
+  opts?: MtfOpts,
 ): MtfMarketActionOutcome {
-  const mtf = applyMtf(action.signal, states, mode);
+  const mtf = applyMtf(action.signal, states, mode, opts);
   if (action.action === 'HOLD') return { action, mtf };
 
   if (!mtf.decision) {

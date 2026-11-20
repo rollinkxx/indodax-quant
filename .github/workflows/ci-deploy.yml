@@ -77,6 +77,7 @@ jobs:
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/universe_history_test.sql
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/get_recent_candles_empty_array_test.sql
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/pipeline_phase_test.sql
+          psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/pending_entries_test.sql
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/wib_day_boundary_test.sql
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/paper_mark_idempotency_test.sql
           psql -h localhost -U postgres -d indodax_quant_migration_test -v ON_ERROR_STOP=1 -f tests/sql/universe_removed_position_test.sql

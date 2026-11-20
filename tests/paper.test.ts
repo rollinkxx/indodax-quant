@@ -83,7 +83,8 @@ describe('position sizing', () => {
   });
   it('risk-limited when the stop is wide', () => {
     const r = positionSize({ equity: 10_000_000, cash: 10_000_000, entry: 100, stopLoss: 80, params: P });
-    const perUnitRisk = 20 + 100 * (P.feePct / 100) * 2; // no exitSlippageBps passed
+    // FIX-10: the exit fee is charged on the stop notional (80), not on the entry notional.
+    const perUnitRisk = 20 + 100 * (P.feePct / 100) + 80 * (P.feePct / 100); // no exitSlippageBps passed
     expect(r.qty).toBe(roundDown(100_000 / perUnitRisk));
     expect(r.cost).toBeLessThanOrEqual(10_000_000);
   });

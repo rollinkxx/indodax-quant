@@ -23,13 +23,27 @@ export function sellFillPrice(bid: number, slippageBps: number): number {
   return bid * (1 - slippageBps / 10_000);
 }
 
-/** Thin pairs fill worse than the flat assumption: scale slippage by 24h IDR volume tier. */
-export function dynamicSlippageBps(base: number, volIdr: number | null | undefined): number {
-  if (volIdr === null || volIdr === undefined || !Number.isFinite(volIdr) || volIdr <= 0) return base * 4;
-  if (volIdr < 5e8) return base * 4;
-  if (volIdr < 2e9) return base * 2.5;
-  if (volIdr < 1e10) return base * 1.5;
-  return base;
+/**
+ * Thin pairs fill worse than the flat assumption: scale slippage by 24h IDR volume tier.
+ *
+ * `maxMultiplier` caps the penalty. Exits pass a lower cap than entries: when the volume is unknown
+ * the tier alone would apply the worst case, and marking every stop out at 4x slippage made the paper
+ * PnL worse than the market could deliver, which is just as misleading as being too optimistic.
+ */
+export function dynamicSlippageBps(
+  base: number,
+  volIdr: number | null | undefined,
+  opts: { maxMultiplier?: number } = {},
+): number {
+  const cap = Number.isFinite(opts.maxMultiplier) && (opts.maxMultiplier as number) > 0 ? (opts.maxMultiplier as number) : 4;
+  const tier = (() => {
+    if (volIdr === null || volIdr === undefined || !Number.isFinite(volIdr) || volIdr <= 0) return 4;
+    if (volIdr < 5e8) return 4;
+    if (volIdr < 2e9) return 2.5;
+    if (volIdr < 1e10) return 1.5;
+    return 1;
+  })();
+  return base * Math.min(tier, cap);
 }
 
 export function feeFor(notional: number, feePct: number): number {
@@ -129,6 +143,43 @@ export function roundTripCostPct(feePct: number, slippageBps: number, spreadPct 
   return fee * 2 + slip * 2 + spread;
 }
 
+/**
+ * Whether a SELL signal should close an open position.
+ *
+ * A SELL is the only exit the engine can take before a stop or target is touched, so gating it on
+ * "already profitable after costs" turns every adverse move into a wait for the stop: on 5m candles
+ * the exits that did fire averaged -0.97% net against a 4.2% win rate. Costs still matter for the
+ * *marginal* exit (a weak signal on a position that would book a loss), so the gate is graded
+ * instead of binary:
+ * - a risk block (kill switch / daily loss) exits regardless: protecting capital beats a fee;
+ * - a drawdown at half the limit exits regardless: the position is the reason for the block;
+ * - a strong signal exits regardless: it is the setup the strategy was built to obey;
+ * - otherwise the configured policy decides, and by default a SELL that cannot cover the round trip
+ *   is still withheld so the stop keeps control.
+ */
+export type SignalExitPolicy = {
+  requireProfit: boolean;
+  forceStrength: number;
+  forceOnRiskBlock: boolean;
+};
+
+export function shouldExitOnSignal(input: {
+  coversCosts: boolean;
+  strength: number;
+  riskBlocked: boolean;
+  drawdownPct: number;
+  maxDrawdownPct: number;
+  policy: SignalExitPolicy;
+}): { exit: boolean; reason: string } {
+  const { coversCosts, strength, riskBlocked, drawdownPct, maxDrawdownPct, policy } = input;
+  if (policy.forceOnRiskBlock && riskBlocked) return { exit: true, reason: 'risk_block' };
+  if (maxDrawdownPct > 0 && drawdownPct >= maxDrawdownPct * 0.5) return { exit: true, reason: 'drawdown_half' };
+  if (Number.isFinite(strength) && strength >= policy.forceStrength) return { exit: true, reason: 'strong_signal' };
+  if (!policy.requireProfit) return { exit: true, reason: 'policy_off' };
+  if (coversCosts) return { exit: true, reason: 'covers_costs' };
+  return { exit: false, reason: 'below_cost' };
+}
+
 export interface SizingInput {
   equity: number;
   cash: number;
@@ -155,7 +206,15 @@ export function positionSize(i: SizingInput): SizingResult {
   if (!(i.entry > 0) || !(i.equity > 0) || !(i.cash > 0)) return zero('invalid_inputs');
   if (!(i.stopLoss > 0) || i.stopLoss >= i.entry) return zero('invalid_stop');
   const riskAmount = i.equity * p.riskPerTradePct / 100;
-  const perUnitRisk = (i.entry - i.stopLoss) + i.entry * (p.feePct / 100) * 2 + i.stopLoss * ((i.exitSlippageBps ?? 0) / 10_000);
+  // Risk per unit is the stop distance plus what the round trip actually costs: the entry fee on the
+  // entry notional, the exit fee on the (lower) stop notional, and the exit slippage at the stop.
+  const feePct = p.feePct / 100;
+  const exitSlip = (i.exitSlippageBps ?? 0) / 10_000;
+  const perUnitRisk =
+    (i.entry - i.stopLoss)
+    + i.entry * feePct
+    + i.stopLoss * feePct
+    + i.stopLoss * exitSlip;
   const qtyByRisk = riskAmount / perUnitRisk;
   const maxNotional = Math.min(i.equity * p.maxPositionPct / 100, i.cash / (1 + p.feePct / 100));
   const qty = roundDown(Math.min(qtyByRisk, maxNotional / i.entry));
@@ -338,15 +397,27 @@ export function exposureAllows(openCost: number, newCost: number, equity: number
  * the stop sits above entry, but fees and slippage can still leave the trade net negative.
  * TAKE_PROFIT is checked first so a gap through both levels is attributed to the target.
  */
+/**
+ * Which bracket the bid touched, if any.
+ *
+ * `prevBid` is the bid from the previous run's snapshot. When the market gapped over both the stop
+ * and the target between two runs, the observed bid alone cannot say which was hit first; the
+ * pessimistic assumption (stop first) is the only one that does not book a fill the market never
+ * offered. Without a previous bid the check is skipped and the old ordering applies.
+ */
 export function exitReason(
   pos: { entry_price?: number | string; stop_loss: number | string | null; take_profit: number | string | null },
   bid: number,
+  prevBid: number | null = null,
 ): ExitReason | null {
   const sl = pos.stop_loss === null || pos.stop_loss === undefined ? null : Number(pos.stop_loss);
   const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
+  const entry = pos.entry_price === undefined ? null : Number(pos.entry_price);
+  if (sl !== null && tp !== null && prevBid !== null && Number.isFinite(prevBid) && prevBid < sl && bid > tp) {
+    return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';
+  }
   if (tp !== null && bid >= tp) return 'TAKE_PROFIT';
   if (sl !== null && bid <= sl) {
-    const entry = pos.entry_price === undefined ? null : Number(pos.entry_price);
     return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';
   }
   return null;

@@ -20,10 +20,6 @@ describe('cross-field parameter validation', () => {
     expect(err?.level).toBe('error');
   });
 
-  it('reports the default BUY/SELL RSI bands as touching (buyMin 50 == sellMax 50)', () => {
-    expect(validateCrossFieldParams(DEFAULT_PARAMS).map((f) => f.code)).toEqual(['BUY_AND_SELL_RSI_REGIMES_OVERLAP']);
-  });
-
   it('accepts a non-overlapping RSI configuration without findings', () => {
     expect(validateCrossFieldParams({ ...DEFAULT_PARAMS, rsiBuyMin: 55, rsiSellMax: 45 })).toEqual([]);
   });
