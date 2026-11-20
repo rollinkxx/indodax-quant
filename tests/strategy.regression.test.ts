@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { shouldExitOnSignal } from '../shared/paper';
 import { applyMtfToMarketAction, type TfState } from '../shared/mtf';
-import { DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
+import { DEFAULT_PARAMS, diagnoseSellSignalWindow, evaluateMarketAction, evaluateSignalWindow, mergeParams, validateBracketEconomics, validateCrossFieldParams, type IndicatorRow, type MarketActionDecision, type SignalDecision } from '../shared/strategy';
 
 describe('FIX-02 graded signal exit policy', () => {
   const policy = { requireProfit: true, forceStrength: 70, forceOnRiskBlock: true };
@@ -126,5 +126,20 @@ describe('FIX-05 SELL cross lookback', () => {
     expect(evaluateMarketAction(rows, volumes, confirm)).toMatchObject({
       action: 'HOLD', signal: null, reason: 'sell_blocked_already_qualified',
     });
+  });
+});
+
+describe('FIX-06 bracket validation uses NET reward/risk', () => {
+  it('T19 rejects a bracket that only clears the threshold before costs', () => {
+    const errors = validateBracketEconomics(mergeParams({
+      atrStopMultiplier: 1.5, atrTakeProfitMultiplier: 3, feePct: 0.5, slippageBps: 50,
+    }));
+    expect(errors.join()).toMatch(/net reward\/risk ATR 0\.\d+ .* < minNetRewardRiskRatio/);
+    // The gross ratio (2.0) would have passed the old check.
+    expect(errors.join()).not.toMatch(/atrTakeProfitMultiplier \/ atrStopMultiplier/);
+  });
+
+  it('T20 keeps the shipped defaults valid', () => {
+    expect(validateBracketEconomics(DEFAULT_PARAMS)).toEqual([]);
   });
 });

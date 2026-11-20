@@ -1,5 +1,6 @@
 // Strategy: EMA crossover + RSI + volume confirmation on completed candles.
 import { atr, ema, macd, rsi, sma, supportResistance } from './indicators';
+import { roundTripCostPct } from './paper';
 import type { Candle } from './candles';
 
 export interface StrategyParams {
@@ -293,13 +294,44 @@ export function validateParams(input: Record<string, unknown>): string[] {
  * falls back to DEFAULT_PARAMS on any error, so an impossible stored bracket would silently
  * reset every other parameter instead of surfacing. This runs where a human saves a config.
  */
+/**
+ * Reject a bracket whose NET reward/risk cannot clear `minNetRewardRiskRatio`.
+ *
+ * The gross ratio (tp/sl multipliers) is not the quantity the runtime gate checks: fees and
+ * slippage are charged on both legs, so gross > net always, and a config that looked fine on the
+ * multipliers could still reject every entry as `net_reward_risk_below_minimum`. Both the ATR
+ * bracket and the percentage fallback used when ATR is unavailable are projected at a 1% ATR.
+ */
 export function validateBracketEconomics(merged: StrategyParams): string[] {
   if (!(merged.atrStopMultiplier > 0)) return ['atrStopMultiplier must be positive'];
-  const grossRatio = merged.atrTakeProfitMultiplier / merged.atrStopMultiplier;
-  if (grossRatio < merged.minNetRewardRiskRatio) {
-    return [`atrTakeProfitMultiplier / atrStopMultiplier (${grossRatio.toFixed(3)}) is below minNetRewardRiskRatio (${merged.minNetRewardRiskRatio}); no entry can pass the net reward/risk gate`];
+
+  const costPct = roundTripCostPct(merged.feePct, merged.slippageBps);
+
+  const atrPct = 1;
+  const slDistAtr = merged.atrStopMultiplier * atrPct;
+  const tpDistAtr = merged.atrTakeProfitMultiplier * atrPct;
+  const netRiskAtr = slDistAtr + costPct;
+  const netRewardAtr = tpDistAtr - costPct;
+  const netRatioAtr = netRiskAtr > 0 ? netRewardAtr / netRiskAtr : 0;
+
+  const netRiskPct = merged.fallbackStopPct + costPct;
+  const netRewardPct = merged.fallbackTakeProfitPct - costPct;
+  const netRatioPct = netRiskPct > 0 ? netRewardPct / netRiskPct : 0;
+
+  const errors: string[] = [];
+  if (!(netRewardAtr > 0)) {
+    errors.push(`ATR bracket: take profit ${tpDistAtr.toFixed(2)}% does not cover the ${costPct.toFixed(2)}% round-trip cost`);
   }
-  return [];
+  if (!(netRewardPct > 0)) {
+    errors.push(`fallback bracket: take profit ${merged.fallbackTakeProfitPct}% does not cover the ${costPct.toFixed(2)}% round-trip cost`);
+  }
+  if (netRatioAtr < merged.minNetRewardRiskRatio) {
+    errors.push(`net reward/risk ATR ${netRatioAtr.toFixed(3)} (after ${costPct.toFixed(2)}% cost) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
+  }
+  if (netRatioPct < merged.minNetRewardRiskRatio) {
+    errors.push(`net reward/risk fallback ${netRatioPct.toFixed(3)} (after ${costPct.toFixed(2)}% cost) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
+  }
+  return errors;
 }
 
 /**
