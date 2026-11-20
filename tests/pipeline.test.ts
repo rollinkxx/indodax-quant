@@ -1,6 +1,6 @@
 // End-to-end pipeline run against fake Supabase RPCs + fake INDODAX: dynamic universe, HTF backfill and MTF wiring.
 import { describe, expect, it } from 'vitest';
-import { runPipeline } from '../worker/src/pipeline';
+import { HISTORY_BACKFILL_PER_RUN, runPipeline } from '../worker/src/pipeline';
 import { env, fakeFetch, json, SB } from './fakes';
 
 const NOW = 1_800_000_000 - (1_800_000_000 % 900) + 30; // 30 s after a quarter-hour boundary
@@ -14,7 +14,7 @@ function candleRows(n: number, endT: number, step: number, fn: (i: number) => nu
   });
 }
 
-function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null } = {}) {
+function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -31,18 +31,31 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
           return json({
             ok: true, run_id: 7, config: { ...(opts.strategyParams ?? {}), ...(opts.mtfMode ? { mtfMode: opts.mtfMode } : {}) },
             account: { id: 1, status: 'RUNNING', kill_switch: false, cash_balance: 1e7, equity: 1e7, peak_equity: 1e7, max_drawdown_pct: 0, reset_at: '2026-01-01T00:00:00Z' },
-            pairs: [{ id: 'btcidr', symbol: 'BTCIDR', ticker_id: 'btc_idr', is_maintenance: false, is_tracked: true, in_universe: false, trade_min_base_currency: 10000,
+            pairs: [
+              { id: 'btcidr', symbol: 'BTCIDR', ticker_id: 'btc_idr', is_maintenance: false, is_tracked: true, in_universe: false, trade_min_base_currency: 10000,
               trade_fee_percent_taker: opts.pairTakerFee === undefined ? 0.2 : opts.pairTakerFee,
               price_precision: opts.pairPricePrecision ?? null,
               covered_until: new Date((Math.floor(NOW / 60) * 60 - 60) * 1000).toISOString(), last_trade_time: null, last_trade_tid: null,
-              htf_backfilled_at: opts.htfBackfilled ? '2026-01-01T00:00:00Z' : null }],
+              htf_backfilled_at: opts.htfBackfilled ? '2026-01-01T00:00:00Z' : null },
+              ...(opts.extraPairs ?? []).map((id) => ({
+                id, symbol: id.toUpperCase(), ticker_id: id.replace('idr', '_idr'), is_maintenance: false, is_tracked: false,
+                in_universe: true, trade_min_base_currency: 10000, trade_fee_percent_taker: 0.2, price_precision: null,
+                // A newly admitted pair with no stored bars has no cursor at all.
+                covered_until: opts.staleCoverage ? new Date((Math.floor(NOW / 60) * 60 - 3 * 3600) * 1000).toISOString() : null,
+                last_trade_time: null, last_trade_tid: null, htf_backfilled_at: '2026-01-01T00:00:00Z',
+              })),
+            ],
             catalog: { btcidr: false, pepeidr: false, usdtidr: false, dogeidr: false },
             open_positions: opts.openPositions ?? [], day_start_equity: 1e7, pair_catalog_age_seconds: 60,
           });
         case 'get_recent_candles': {
           const rows = candleRows(250, expectedLast, 300, (i) => 1000 + i);
           if (opts.oldGap5mAt !== undefined) rows.splice(opts.oldGap5mAt, 1);
-          return json({ btcidr: rows });
+          // Production returns null for a pair with no stored bars (jsonb_agg over an empty set),
+          // which is exactly what broke load_coverage_state.
+          const out: Record<string, unknown> = { btcidr: rows };
+          for (const id of opts.nullCandlePairs ?? []) out[id] = null;
+          return json(out);
         }
         case 'get_recent_candles_multi': {
           const last15m = Math.floor((expectedLast + 300) / 900) * 900 - 900;
@@ -431,3 +444,73 @@ describe('pipeline: persisted SELL exits (F3)', () => {
     expect(r.errors).toContainEqual(expect.stringContaining('pending sell lookup failed'));
   });
 });
+
+describe('pipeline: unwarmed universe members must not break the run', () => {
+  // 2026-11-20: arbidr joined the universe with zero stored candles. get_recent_candles returned
+  // {"arbidr": null} (jsonb_agg over an empty set), load_coverage_state threw on rows.length, the
+  // recovery cursor fell back to a stale covered_until, and every pair scanned a full 24h window.
+  // Those relay calls exhausted the Worker subrequest budget ("Too many subrequests"), so
+  // store_market/analyze/finish_run never ran and cron runs were killed by the lease watchdog.
+  it('keeps going when a pair has no stored candles (null rows)', async () => {
+    const o = setup({ nullCandlePairs: ['arbidr'], extraPairs: ['arbidr'] });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('SUCCESS');
+    expect(r.errors).toEqual([]);
+    expect((r.steps as any).load_coverage_state.info.arbidr).toBe(0);
+    expect((r.steps as any).build_candles.ok).toBe(true);
+  });
+
+  it('caps 1m history backfill per run so a burst of new pairs cannot exhaust subrequests', async () => {
+    const extraPairs = ['p1idr', 'p2idr', 'p3idr', 'p4idr', 'p5idr', 'p6idr', 'p7idr', 'p8idr'];
+    const o = setup({ extraPairs, nullCandlePairs: extraPairs });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('SUCCESS');
+    const oneMinute = o.indodax.filter((p) => p.startsWith('/tradingview/history_v2')
+      && new URLSearchParams(p.split('?')[1]).get('tf') === '1');
+    expect(oneMinute).toHaveLength(HISTORY_BACKFILL_PER_RUN);
+
+    // Deferred pairs keep their old cursor instead of pretending the hole was repaired.
+    const stepInfo = (r.steps as any).build_candles.info;
+    const deferred = Object.values(stepInfo).filter((v: any) => v?.history_deferred).length;
+    expect(deferred).toBeGreaterThanOrEqual(extraPairs.length - HISTORY_BACKFILL_PER_RUN);
+  });
+
+  it('rotates the backfill queue so one pair cannot starve the rest', async () => {
+    const extraPairs = ['p1idr', 'p2idr', 'p3idr', 'p4idr', 'p5idr'];
+    const first = setup({ extraPairs, nullCandlePairs: extraPairs });
+    await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: first.f, now: () => NOW * 1000 });
+    const second = setup({ extraPairs, nullCandlePairs: extraPairs });
+    await runPipeline(env(), { scheduledTime: (NOW + 60) * 1000, trigger: 'cron', fetchImpl: second.f, now: () => (NOW + 60) * 1000 });
+
+    const served = (o: typeof first) => o.indodax
+      .filter((p) => p.startsWith('/tradingview/history_v2') && new URLSearchParams(p.split('?')[1]).get('tf') === '1');
+    const a = served(first);
+    const b = served(second);
+    expect(a).toHaveLength(HISTORY_BACKFILL_PER_RUN);
+    expect(b).toHaveLength(HISTORY_BACKFILL_PER_RUN);
+    // The window moves, so the tail of the queue is not permanently starved.
+    expect(a.some((x) => !b.includes(x))).toBe(true);
+  });
+
+  // The real outage: Cloudflare rejects every subrequest past the cap. The invariant is that the run
+  // still reaches store_market and finish_run, so the pipeline degrades to PARTIAL instead of dying
+  // mid-flight and being killed by the lease watchdog.
+  it('reserves budget so store_market and finish_run survive a tight subrequest cap', async () => {
+    const extraPairs = Array.from({ length: 12 }, (_, i) => `x${i}idr`);
+    const o = setup({ extraPairs, nullCandlePairs: extraPairs, mtfMode: 'on' });
+
+    // 30 is below what this universe needs, so only the reserve can keep the core steps alive.
+    const r = await runPipeline(env(), {
+      scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000, subrequestLimit: 30,
+    });
+
+    expect(r.status).not.toBe('FAILED');
+    expect((r.steps as any).store_market?.ok).toBe(true);
+    expect((r.steps as any).budget.info.used).toBeLessThanOrEqual(30);
+    const rpcNames = o.f.calls.map((c) => c.url.split('/rpc/')[1]).filter(Boolean);
+    expect(rpcNames).toContain('finish_run');
+  });
+});
+
