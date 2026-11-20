@@ -77,6 +77,29 @@ export const HISTORY_BACKFILL_PER_RUN = 4;
 /** Higher-timeframe buckets re-persisted per run (aggregated from 5m), per timeframe. */
 const HTF_PERSIST: Record<string, number> = { '15m': 4, '1h': 2 };
 
+/**
+ * How many pairs one run can keep fresh.
+ *
+ * `strategy_configs.params.universeSize` is a *total scope* target, not a member count:
+ * `selectUniverse` allocates `universeSize - pinned.size` slots to dynamic members, so with 8
+ * pinned pairs a `universeSize` of 25 yields 17 members and 25 pairs in scope.
+ *
+ * Every pair in scope costs one trade fetch (3 subrequests when it retries), and the remaining
+ * optional budget then funds the 1m/HTF backfill queues. With `SUBREQUEST_RESERVE` held back for
+ * the mandatory steps, a 50-subrequest Free plan fits ~20 pairs per minute. Anything above this is
+ * deferred to a later minute, so its candles lag by a few minutes — correct, but not "fresh".
+ *
+ * Measured production usage: avg 37.2 / max 41 of 50 subrequests with 25 pairs in scope, which
+ * deferred ~5 pairs every run. Keep `universeSize` at or below this number on the Free plan; raise
+ * it only together with `SUBREQUEST_LIMIT`.
+ */
+export const TRADE_FETCH_PER_RUN = 20;
+
+/** True when the configured scope is larger than a single run can serve, so pairs will lag. */
+export function universeExceedsCapacity(scopeSize: number, perRun = TRADE_FETCH_PER_RUN): boolean {
+  return Number.isFinite(scopeSize) && scopeSize > perRun;
+}
+
 interface BeginRun {
   ok: boolean;
   reason?: string;
@@ -268,6 +291,13 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         });
         // one statement: membership changes + refreshed ranks
         await db.rpc('set_universe', { p_members: result.members.map((m) => ({ id: m.pair_id, rank: m.rank })) });
+        if (universeExceedsCapacity(ctx.pairs.length)) {
+          errors.push(
+            `universe_capacity: ${ctx.pairs.length} pairs in scope (pinned + universe) > TRADE_FETCH_PER_RUN ${TRADE_FETCH_PER_RUN}; ` +
+            'pairs beyond the per-run trade budget are deferred and their candles lag. ' +
+            'Lower universeSize or raise SUBREQUEST_LIMIT.',
+          );
+        }
         if (params.notifyUniverse && (result.added.length || result.removed.length)) {
           notes.push({
             event_type: 'universe', dedupe_key: `universe:${nowMin}`,

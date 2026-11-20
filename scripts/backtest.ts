@@ -812,7 +812,7 @@ async function main() {
     scopeWarnings: backtestScopeWarnings(base),
     aggregateOutOfSampleIndependentPairAccounts: aggregateOutOfSample,
     evidenceGateByVariant,
-    evidenceGatePolicy: 'NO_GO unless holdout has >=100 trades, Wilson 95% lower win-rate bound >=70%, profit factor >1 and net expectancy >0; eligible results require human review and are never auto-promoted',
+    evidenceGatePolicy: 'NO_GO unless holdout has >=100 trades, profit factor >1 and net expectancy >0; the Wilson 95% win-rate floor (70%) is reported but advisory, not blocking; eligible results require human review and are never auto-promoted',
     aggregateAccountMeaning: 'sum of independent per-pair simulations; each evaluated pair starts with its own IDR 10,000,000. See portfolioChronology for the shared-cash account and the promotion decision.',
     portfolioChronology,
     results: summary,

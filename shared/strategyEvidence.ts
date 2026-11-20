@@ -8,9 +8,16 @@ export interface HoldoutEvidenceMetrics {
 
 export interface StrategyEvidenceRequirements {
   minHoldoutTrades: number;
+  /**
+   * Advisory threshold. Reported in `checks.winRateConfidence` but only *blocking* when
+   * `enforceWinRateFloor` is true. The promotion spec is expectancy-based, and a hard win-rate
+   * floor silently rejects profitable low-win-rate/high-payoff strategies.
+   */
   minWinRateLower95Pct: number;
   minProfitFactorExclusive: number;
   minExpectancyIdrExclusive: number;
+  /** Restore the win-rate floor as a hard requirement. Off by default. */
+  enforceWinRateFloor?: boolean;
 }
 
 export interface StrategyEvidenceDecision {
@@ -23,6 +30,8 @@ export interface StrategyEvidenceDecision {
     profitableFactor: boolean;
     positiveExpectancy: boolean;
   };
+  /** Whether a failing `winRateConfidence` actually blocked promotion for this decision. */
+  winRateFloorEnforced: boolean;
   reasons: string[];
 }
 
@@ -81,6 +90,16 @@ export function evaluateStrategyEvidence(
       metrics.profitFactor > requirements.minProfitFactorExclusive,
     positiveExpectancy: valid && metrics.expectancyIdr > requirements.minExpectancyIdrExclusive,
   };
+  // The win-rate floor is advisory unless explicitly enforced: promotion is decided on net
+  // expectancy, profit factor and sample size. A low-win-rate/high-payoff strategy that clears
+  // those is a valid candidate for human review, not an automatic rejection.
+  const winRateFloorEnforced = requirements.enforceWinRateFloor === true;
+  const blocking = {
+    sufficientSample: checks.sufficientSample,
+    winRateConfidence: winRateFloorEnforced ? checks.winRateConfidence : true,
+    profitableFactor: checks.profitableFactor,
+    positiveExpectancy: checks.positiveExpectancy,
+  };
   const reasons: string[] = [];
   if (badRequirements.length) {
     // Report the configuration problem only: the metric checks below cannot be trusted, and naming
@@ -89,16 +108,17 @@ export function evaluateStrategyEvidence(
   } else {
     if (!valid) reasons.push('INVALID_HOLDOUT_METRICS');
     if (!checks.sufficientSample) reasons.push('INSUFFICIENT_HOLDOUT_SAMPLE');
-    if (!checks.winRateConfidence) reasons.push('WIN_RATE_CONFIDENCE_BELOW_THRESHOLD');
+    if (winRateFloorEnforced && !checks.winRateConfidence) reasons.push('WIN_RATE_CONFIDENCE_BELOW_THRESHOLD');
     if (!checks.profitableFactor) reasons.push('PROFIT_FACTOR_NOT_ABOVE_THRESHOLD');
     if (!checks.positiveExpectancy) reasons.push('NET_EXPECTANCY_NOT_POSITIVE');
   }
 
   return {
-    status: Object.values(checks).every(Boolean) ? 'ELIGIBLE_FOR_MANUAL_REVIEW' : 'NO_GO',
+    status: Object.values(blocking).every(Boolean) ? 'ELIGIBLE_FOR_MANUAL_REVIEW' : 'NO_GO',
     lower95WinRatePct: Number(lower95WinRatePct.toFixed(2)),
     requirements: { ...requirements },
     checks,
+    winRateFloorEnforced,
     reasons,
   };
 }

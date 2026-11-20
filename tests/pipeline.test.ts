@@ -1,6 +1,6 @@
 // End-to-end pipeline run against fake Supabase RPCs + fake INDODAX: dynamic universe, HTF backfill and MTF wiring.
 import { describe, expect, it } from 'vitest';
-import { HISTORY_BACKFILL_PER_RUN, runPipeline } from '../worker/src/pipeline';
+import { HISTORY_BACKFILL_PER_RUN, TRADE_FETCH_PER_RUN, runPipeline, universeExceedsCapacity } from '../worker/src/pipeline';
 import { env, fakeFetch, json, SB } from './fakes';
 
 const NOW = 1_800_000_000 - (1_800_000_000 % 900) + 30; // 30 s after a quarter-hour boundary
@@ -114,6 +114,27 @@ function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfH
   ]);
   return { f, rpcs, indodax };
 }
+
+describe('universeExceedsCapacity', () => {
+  it('accepts a universe that fits the per-run trade budget', () => {
+    expect(universeExceedsCapacity(TRADE_FETCH_PER_RUN)).toBe(false);
+    expect(universeExceedsCapacity(TRADE_FETCH_PER_RUN - 1)).toBe(false);
+  });
+
+  it('flags a universe larger than one run can serve', () => {
+    expect(universeExceedsCapacity(TRADE_FETCH_PER_RUN + 1)).toBe(true);
+    expect(universeExceedsCapacity(25)).toBe(true);
+  });
+
+  it('respects an explicit capacity override', () => {
+    expect(universeExceedsCapacity(25, 30)).toBe(false);
+    expect(universeExceedsCapacity(25, 20)).toBe(true);
+  });
+
+  it('treats non-finite input as within capacity instead of crashing', () => {
+    expect(universeExceedsCapacity(Number.NaN)).toBe(false);
+  });
+});
 
 describe('pipeline: MTF + dynamic universe', () => {
   it('selects the universe, backfills 15m/1h history once, analyses higher timeframes', async () => {
