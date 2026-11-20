@@ -15,6 +15,10 @@ name/description first and only loads the body and `references/`, `scripts/` on 
 | `ohlcv-processing` | agiprolabs/claude-trading-skills | same | MIT |
 | `regime-detection` | agiprolabs/claude-trading-skills | same | MIT |
 | `portfolio-analytics` | agiprolabs/claude-trading-skills | same | MIT |
+| `volatility-modeling` | agiprolabs/claude-trading-skills | same | MIT |
+| `mean-reversion` | agiprolabs/claude-trading-skills | same | MIT |
+| `cointegration-analysis` | agiprolabs/claude-trading-skills | same | MIT |
+| `market-microstructure-traditional` | agiprolabs/claude-trading-skills | same | MIT |
 
 ## Review performed before vendoring
 
@@ -25,11 +29,18 @@ name/description first and only loads the body and `references/`, `scripts/` on 
   suite.
 - Grepped for prompt-injection and exfiltration patterns (instruction override,
   `~/.ssh`, `id_rsa`, webhook/pastebin POST, credential env reads): no matches.
-- `regime-detection/scripts/detect_regime.py` and
-  `ohlcv-processing/scripts/process_ohlcv.py` contain an **optional** live-data path
-  that reads `BIRDEYE_API_KEY` and calls Birdeye (Solana). That path is irrelevant
-  here: this repo is INDODAX IDR spot pairs and has no Birdeye access. Use the
-  offline paths only, or the repo's own `npm run alpha:research` / `npm run backtest`.
+- `regime-detection/scripts/detect_regime.py`,
+  `ohlcv-processing/scripts/process_ohlcv.py`, `volatility-modeling/scripts/vol_forecast.py`
+  and `mean-reversion/scripts/mean_reversion_test.py` contain an **optional** live-data
+  path that reads `BIRDEYE_API_KEY` and calls Birdeye (Solana). That path is irrelevant
+  here: this repo is INDODAX IDR spot pairs and has no Birdeye access. Use the offline
+  paths only, or the repo's own `npm run alpha:research` / `npm run backtest`.
+- `market-microstructure-traditional` and `cointegration-analysis` have no network path
+  and no key handling at all.
+- Rejected on relevance, not safety: `market-microstructure` and `slippage-modeling`
+  (both assume AMM/Solana DEX mechanics, this repo is a CEX order-book spot market) and
+  `custom-indicators` (on-chain NVT/exchange-flow metrics that need data this repo does
+  not ingest).
 
 ## Applying them here
 
