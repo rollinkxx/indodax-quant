@@ -10,7 +10,7 @@ import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../..
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams, validateCrossFieldParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, shouldExitOnSignal, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
 import { assessQuote, valuationHealth, killSwitchState, type KillSwitchState } from '../../shared/quote';
 import { createLeaseKeeper } from '../../shared/lease';
 import { normalizeOrder } from '../../shared/orderNormalize';
@@ -921,6 +921,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       };
       const open = new Map<string, Position>(ctx.open_positions.map((p) => [p.pair_id, p]));
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
+      // Strength drives the exit policy (a strong SELL leaves even at a loss), so keep the per-pair value.
+      const sellStrength = new Map<string, number>();
+      for (const s of newSignals) if (s.side === 'SELL') sellStrength.set(s.pair_id, Number(s.strength));
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
       const pairFee = new Map(pairs.map((p) => [p.id, p.trade_fee_percent_taker]));
       const pairPrecision = new Map(pairs.map((p) => [p.id, p.price_precision ?? null]));
@@ -975,7 +978,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         try {
           const pending = await db.rpc<SignalRow[]>('get_pending_sell_signals', { p_pairs: pendingSellPairs });
           if (Array.isArray(pending)) {
-            for (const s of pending) if (s.side === 'SELL') sellSignals.add(s.pair_id);
+            for (const s of pending) {
+              if (s.side !== 'SELL') continue;
+              sellSignals.add(s.pair_id);
+              if (!sellStrength.has(s.pair_id)) sellStrength.set(s.pair_id, Number(s.strength ?? 0));
+            }
           }
         } catch (e) {
           const msg = `pending sell lookup failed: ${errorMessage(e)}`;
@@ -983,6 +990,15 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           degraded.push(msg);
         }
       }
+
+      // Risk state as of the last completed run, used by the exit policy. The post-mark-to-market
+      // state below governs entries; an exit must not depend on a valuation that has not run yet.
+      const riskAtExit = riskState({
+        equity: Number(account.equity),
+        peakEquity: Number(account.peak_equity),
+        dayStartEquity: ctx.day_start_equity === null ? null : Number(ctx.day_start_equity),
+        params,
+      });
 
       // a) Exits: stop loss / take profit / trailing stop / time stop / SELL signal. Open positions stay protected even when STOPPED.
       for (const pos of [...open.values()]) {
@@ -1012,10 +1028,30 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           }
         }
         if (!reason && timeStopHit(pos.opened_at ? Date.parse(pos.opened_at) : null, now(), params)) reason = 'TIME_STOP';
-        if (!reason && sellSignals.has(pos.pair_id) && signalExitCoversCosts({
-          entryPrice: Number(pos.entry_price), qty: Number(pos.qty), costBasis: Number(pos.cost_basis),
-          bid: t.bid, feePct: feePctFor(pos.pair_id), slippageBps: slipFor(pos.pair_id),
-        })) reason = 'SIGNAL';
+        if (!reason && sellSignals.has(pos.pair_id)) {
+          const covers = signalExitCoversCosts({
+            entryPrice: Number(pos.entry_price), qty: Number(pos.qty), costBasis: Number(pos.cost_basis),
+            bid: t.bid, feePct: feePctFor(pos.pair_id), slippageBps: slipFor(pos.pair_id),
+          });
+          const verdict = shouldExitOnSignal({
+            coversCosts: covers,
+            strength: sellStrength.get(pos.pair_id) ?? 0,
+            riskBlocked: riskAtExit.blockEntries,
+            drawdownPct: riskAtExit.drawdownPct,
+            maxDrawdownPct: params.maxDrawdownPct,
+            policy: {
+              requireProfit: params.signalExitRequireProfit,
+              forceStrength: params.signalExitForceStrength,
+              forceOnRiskBlock: true,
+            },
+          });
+          if (verdict.exit) {
+            reason = 'SIGNAL';
+            actions.push(`signal exit ${pos.pair_id}: ${verdict.reason}`);
+          } else {
+            actions.push(`signal exit ${pos.pair_id} withheld: ${verdict.reason}`);
+          }
+        }
         if (reason) await close(pos, reason, t.bid);
       }
 

@@ -129,6 +129,43 @@ export function roundTripCostPct(feePct: number, slippageBps: number, spreadPct 
   return fee * 2 + slip * 2 + spread;
 }
 
+/**
+ * Whether a SELL signal should close an open position.
+ *
+ * A SELL is the only exit the engine can take before a stop or target is touched, so gating it on
+ * "already profitable after costs" turns every adverse move into a wait for the stop: on 5m candles
+ * the exits that did fire averaged -0.97% net against a 4.2% win rate. Costs still matter for the
+ * *marginal* exit (a weak signal on a position that would book a loss), so the gate is graded
+ * instead of binary:
+ * - a risk block (kill switch / daily loss) exits regardless: protecting capital beats a fee;
+ * - a drawdown at half the limit exits regardless: the position is the reason for the block;
+ * - a strong signal exits regardless: it is the setup the strategy was built to obey;
+ * - otherwise the configured policy decides, and by default a SELL that cannot cover the round trip
+ *   is still withheld so the stop keeps control.
+ */
+export type SignalExitPolicy = {
+  requireProfit: boolean;
+  forceStrength: number;
+  forceOnRiskBlock: boolean;
+};
+
+export function shouldExitOnSignal(input: {
+  coversCosts: boolean;
+  strength: number;
+  riskBlocked: boolean;
+  drawdownPct: number;
+  maxDrawdownPct: number;
+  policy: SignalExitPolicy;
+}): { exit: boolean; reason: string } {
+  const { coversCosts, strength, riskBlocked, drawdownPct, maxDrawdownPct, policy } = input;
+  if (policy.forceOnRiskBlock && riskBlocked) return { exit: true, reason: 'risk_block' };
+  if (maxDrawdownPct > 0 && drawdownPct >= maxDrawdownPct * 0.5) return { exit: true, reason: 'drawdown_half' };
+  if (Number.isFinite(strength) && strength >= policy.forceStrength) return { exit: true, reason: 'strong_signal' };
+  if (!policy.requireProfit) return { exit: true, reason: 'policy_off' };
+  if (coversCosts) return { exit: true, reason: 'covers_costs' };
+  return { exit: false, reason: 'below_cost' };
+}
+
 export interface SizingInput {
   equity: number;
   cash: number;

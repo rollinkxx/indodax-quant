@@ -25,6 +25,10 @@ export interface StrategyParams {
   maxEntryExtensionPct: number;
   /** false = every fresh EMA cross-down exits/signals SELL; true = RSI and volume must confirm too. */
   sellRequireConfirm: boolean;
+  /** Gate a signal-driven exit on the position already covering the round trip (see shouldExitOnSignal). */
+  signalExitRequireProfit: boolean;
+  /** SELL strength at or above this exits regardless of profit (0 = never force). */
+  signalExitForceStrength: number;
   atrPeriod: number;
   atrStopMultiplier: number;
   atrTakeProfitMultiplier: number;
@@ -112,6 +116,8 @@ export const DEFAULT_PARAMS: StrategyParams = {
   entryRetryTtlCandles: 3,
   maxEntryExtensionPct: 1.5,
   sellRequireConfirm: false,
+  signalExitRequireProfit: true,
+  signalExitForceStrength: 70,
   atrPeriod: 14,
   atrStopMultiplier: 1.5,
   atrTakeProfitMultiplier: 3,
@@ -154,7 +160,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   notifyUniverse: true,
 };
 
-const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
+const BOOL_KEYS = new Set(['useTrendFilter', 'notifySignals', 'notifyUniverse', 'sellRequireConfirm', 'signalExitRequireProfit', 'trailingStopEnabled', 'closeOnDailyLoss', 'dynamicSlippage']);
 
 type NumKey = { [K in keyof StrategyParams]: StrategyParams[K] extends number ? K : never }[keyof StrategyParams];
 
@@ -171,6 +177,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   crossLookback: [1, 10, true],
   entryRetryTtlCandles: [1, 12, true],
   maxEntryExtensionPct: [0, 20],
+  signalExitForceStrength: [0, 100],
   atrPeriod: [2, 50, true],
   atrStopMultiplier: [0.1, 10],
   atrTakeProfitMultiplier: [0.1, 20],
