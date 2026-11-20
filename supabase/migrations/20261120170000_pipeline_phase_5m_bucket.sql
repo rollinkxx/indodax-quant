@@ -1,0 +1,173 @@
+-- CORRECTION to 20261120160000_pipeline_phase.
+--
+-- That migration derived `signals_due` with date_trunc('hour'), so signals were evaluated once per
+-- hour instead of once per 300s candle. Production confirmed it: after the 16:07 deploy exactly one
+-- run was a signal phase and the next 16 were mark phases, i.e. no entry was ever evaluated.
+--
+-- This migration replaces begin_run with a 5-minute bucket. It is additive and idempotent: the
+-- signature is unchanged and only the function body differs. Re-running it is a no-op.
+--
+-- Rollback: supabase/migrations/rollback/20261120170000_pipeline_phase_5m_bucket.rollback.sql
+--           (restores the 20261120160000 body, i.e. the per-hour behaviour).
+
+-- FIX-07: begin_run decides the run's phase and reports it.
+--
+-- The cron fires every 60s but signals are computed on 300s candles, so four of five runs re-evaluate
+-- an unchanged candle. begin_run now returns `signals_due` (no completed signal run yet this hour) and
+-- the `phase` it recorded. The Worker evaluates signals only on a signal phase and marks to market on
+-- every run. Ingest is never gated: /api/trades is a rolling window, so skipping it would punch holes
+-- in the 1m candles.
+--
+-- EXPAND step only: the signature is unchanged (still 3 arguments), execution_logs.phase is nullable,
+-- and the two new response keys are additive. The currently deployed Worker ignores them; a Worker
+-- that does not receive them treats the run as a signal phase, i.e. exactly the pre-FIX-07 behaviour.
+--
+-- Rollback: supabase/migrations/rollback/20261120160000_pipeline_phase.rollback.sql
+
+alter table public.execution_logs
+  add column if not exists phase text check (phase in ('signal', 'mark'));
+
+create or replace function public.begin_run(
+  p_scheduled timestamptz,
+  p_trigger text default 'cron',
+  p_lock_ttl_seconds integer default 55
+) returns jsonb
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_run_id bigint;
+  v_locked int;
+  v_token bigint;
+  v_account public.paper_accounts;
+  v_day_start timestamptz;
+  v_signals_due boolean;
+  v_phase text;
+begin
+  -- A signal evaluation is due when no completed signal-phase run exists yet in the current 5-minute
+  -- bucket. The bucket is the strategy's base timeframe: the cron fires every 60s, so this makes one
+  -- signal run per 300s candle and mark runs on the four ticks between. Deriving it here keeps the
+  -- cadence in one place and adds no subrequest to the Worker.
+  --
+  -- NOT date_trunc('hour'): that would evaluate signals 12x less often than the candle changes, so
+  -- entries would only ever be considered once an hour.
+  v_signals_due := not exists (
+    select 1 from execution_logs l
+     where l.status in ('SUCCESS', 'PARTIAL')
+       and l.phase = 'signal'
+       and l.scheduled_time >= date_trunc('hour', p_scheduled)
+                              + make_interval(secs => 300 * floor(extract(epoch from p_scheduled - date_trunc('hour', p_scheduled)) / 300))
+  );
+  v_phase := case when v_signals_due then 'signal' else 'mark' end;
+
+  insert into execution_logs (scheduled_time, trigger, status, phase)
+  values (p_scheduled, p_trigger, 'RUNNING', v_phase)
+  on conflict (scheduled_time) do nothing
+  returning id into v_run_id;
+
+  if v_run_id is null then
+    return jsonb_build_object('ok', false, 'reason', 'duplicate_tick');
+  end if;
+
+  -- Acquire the expired lease and bump the fence in one statement, so the returned token is the one
+  -- that now guards every later renewal and release.
+  update system_locks
+     set owner = v_run_id::text,
+         locked_until = now() + make_interval(secs => p_lock_ttl_seconds),
+         fence_token = fence_token + 1
+   where name = 'pipeline' and locked_until < now()
+   returning fence_token into v_token;
+  get diagnostics v_locked = row_count;
+
+  if v_locked = 0 then
+    update execution_logs
+       set status = 'SKIPPED',
+           finished_at = now(),
+           error = 'pipeline lock held by another run',
+           duration_ms = (extract(epoch from now() - started_at) * 1000)::int
+     where id = v_run_id;
+    return jsonb_build_object('ok', false, 'reason', 'locked', 'run_id', v_run_id);
+  end if;
+
+  update execution_logs
+     set status = 'FAILED',
+         steps = coalesce(steps, '{}'::jsonb) || jsonb_build_object(
+           'watchdog', jsonb_build_object(
+             'ok', false,
+             'reason', 'stale_run_without_lease',
+             'finalized_at', now(),
+             'stale_after_seconds', 180
+           )
+         ),
+         error = concat_ws(E'\n', nullif(error, ''),
+           'watchdog: stale RUNNING record finalized after its pipeline lease expired'),
+         finished_at = now(),
+         duration_ms = (extract(epoch from now() - started_at) * 1000)::int
+   where status = 'RUNNING'
+     and id <> v_run_id
+     and started_at < now() - interval '3 minutes';
+
+  select * into v_account from paper_accounts where name = 'default';
+  v_day_start := (date_trunc('day', now() at time zone 'Asia/Jakarta')) at time zone 'Asia/Jakarta';
+
+  return jsonb_build_object(
+    'ok', true,
+    'run_id', v_run_id,
+    'fence_token', v_token,
+    'lease_expires_at', (now() + make_interval(secs => p_lock_ttl_seconds)),
+    'config', (select params from strategy_configs where is_active limit 1),
+    'account', to_jsonb(v_account),
+    'pairs', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', p.id,
+        'symbol', p.symbol,
+        'ticker_id', p.ticker_id,
+        'is_maintenance', p.is_maintenance,
+        'is_tracked', p.is_tracked,
+        'in_universe', p.in_universe,
+        'trade_min_base_currency', p.trade_min_base_currency,
+        'trade_fee_percent_taker', p.trade_fee_percent_taker,
+        'price_precision', p.price_precision,
+        'covered_until', s.covered_until,
+        'last_trade_time', s.last_trade_time,
+        'last_trade_tid', s.last_trade_tid,
+        'htf_backfilled_at', s.htf_backfilled_at
+      ) order by p.id)
+      from market_pairs p
+      left join pair_sync_state s on s.pair_id = p.id
+      where p.is_tracked
+         or p.in_universe
+         or exists (
+           select 1
+           from paper_positions pp
+           where pp.pair_id = p.id
+             and pp.account_id = v_account.id
+             and pp.status = 'OPEN'
+         )
+    ), '[]'::jsonb),
+    'catalog', coalesce((
+      select jsonb_object_agg(id, is_maintenance) from market_pairs
+    ), '{}'::jsonb),
+    'open_positions', coalesce((
+      select jsonb_agg(to_jsonb(pp))
+      from paper_positions pp
+      where pp.account_id = v_account.id and pp.status = 'OPEN'
+    ), '[]'::jsonb),
+    'day_start_equity', (
+      select equity
+      from portfolio_snapshots
+      where account_id = v_account.id
+        and snapshot_time >= greatest(v_day_start, v_account.reset_at)
+      order by snapshot_time asc
+      limit 1
+    ),
+    'phase', v_phase,
+    'signals_due', v_signals_due,
+    'pair_catalog_age_seconds', (
+      select extract(epoch from now() - min(updated_at))::int
+      from market_pairs
+      where is_tracked
+    )
+  );
+end;
+$$;
