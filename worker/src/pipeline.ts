@@ -315,9 +315,10 @@ export const OUTAGE_ALARM_MINUTES = 15;
 /**
  * Build the outage alert for a run that has not produced a SUCCESS for a while.
  *
- * The check has to reach the operator while the pipeline lock is stuck: every alert the Worker emits
- * lives inside the run, and a run that cannot take the lock returns before the notifications step.
- * Between 2026-11-19 14:00Z and 2026-11-20 09:03Z 1.011 runs died that way and no alarm fired.
+ * The check has to run before `begin_run` acquires the pipeline lock: while the lock is stuck every
+ * tick returns SKIPPED immediately, so nothing inside the run — including the notifications step —
+ * ever executes. Between 2026-11-19 14:00Z and 2026-11-20 09:03Z 1.011 runs died that way and no
+ * alarm fired.
  *
  * Returns null when the log is fresh, or when the RPC is unusable: a missing migration must not turn
  * every tick into a false alarm.
@@ -1001,7 +1002,15 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
       // Strength drives the exit policy (a strong SELL leaves even at a loss), so keep the per-pair value.
       const sellStrength = new Map<string, number>();
-      for (const s of newSignals) if (s.side === 'SELL') sellStrength.set(s.pair_id, Number(s.strength));
+      // The SELL signal that triggered an exit is recorded on the resulting order so the exit signal's
+      // own quality can be measured later (16/16 SELL orders used to store a NULL signal_id).
+      const sellSignalId = new Map<string, number>();
+      for (const s of newSignals) {
+        if (s.side === 'SELL') {
+          sellStrength.set(s.pair_id, Number(s.strength));
+          sellSignalId.set(s.pair_id, Number(s.id));
+        }
+      }
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
       const pairFee = new Map(pairs.map((p) => [p.id, p.trade_fee_percent_taker]));
       const pairPrecision = new Map(pairs.map((p) => [p.id, p.price_precision ?? null]));
@@ -1038,6 +1047,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
         const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
           p_position_id: pos.id, p_requested_price: fillBid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
+          // Only a signal exit has a signal behind it; a bracket or a risk exit has none.
+          p_signal_id: reason === 'SIGNAL' ? (sellSignalId.get(pos.pair_id) ?? null) : null,
         });
         if (r?.ok) {
           open.delete(pos.pair_id);
@@ -1066,6 +1077,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               if (s.side !== 'SELL') continue;
               sellSignals.add(s.pair_id);
               if (!sellStrength.has(s.pair_id)) sellStrength.set(s.pair_id, Number(s.strength ?? 0));
+              if (!sellSignalId.has(s.pair_id)) sellSignalId.set(s.pair_id, Number(s.id));
             }
           }
         } catch (e) {

@@ -50,7 +50,7 @@ BEGIN
     'public.set_universe(jsonb)',
     'public.save_analysis(jsonb,jsonb,jsonb)',
     'public.paper_open_position(bigint,text,numeric,numeric,numeric,numeric,numeric,numeric,numeric,bigint,text,text)',
-    'public.paper_close_position(bigint,numeric,numeric,numeric,numeric,text)',
+    'public.paper_close_position(bigint,numeric,numeric,numeric,numeric,text,bigint)',
     'public.last_success_at(bigint)',
     'public.paper_mark_to_market(bigint,jsonb,timestamptz)',
     'public.paper_set_status(bigint,text,text)',
