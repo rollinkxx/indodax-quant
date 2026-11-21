@@ -36,6 +36,7 @@ const GROUPS: { title: string; desc: string; icon: IconName; fields: Field[] }[]
     { key: 'closeOnDailyLoss', label: 'Tutup semua posisi saat batas rugi harian tercapai', bool: true },
     { key: 'dynamicSlippage', label: 'Slippage dinamis untuk pair tipis', bool: true }, { key: 'dailyLossLimitPct', label: 'Batas rugi harian (%)', step: 0.1 },
     { key: 'maxDrawdownPct', label: 'Max drawdown → kill switch (%)', step: 0.5 },
+    { key: 'minNetTargetPct', label: 'Margin take profit di atas biaya bolak-balik (%)', step: 0.05, hint: 'entry ditolak bila jarak TP dikurangi biaya round-trip kurang dari ini' },
     { key: 'feeModel', label: 'Model biaya', options: [
       { value: 'assumption', label: 'Asumsi manual (fee per sisi di bawah)' },
       { value: 'pair_taker', label: 'Taker per pair (dari katalog INDODAX, mis. 0.2%)' },

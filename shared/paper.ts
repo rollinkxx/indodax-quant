@@ -359,21 +359,118 @@ export function netRewardRiskGate(i: NetRewardRiskInput): string | null {
   return netRewardRiskDiagnostics(i).reason;
 }
 
+/**
+ * Default minimum distance between the take profit and the round-trip cost, in percentage points.
+ * A gate at exactly 0 only rejects a target that cannot pay for itself; a small positive margin also
+ * rejects targets that cover the round trip but leave nothing for the risk taken to reach them.
+ */
+export const DEFAULT_MIN_NET_TARGET_PCT = 0.1;
+
+export interface TargetFeasibilityInput {
+  entry: number;
+  takeProfit: number;
+  /** Per-side fee in percentage points, as actually charged for the pair. */
+  feePct: number;
+  slippageBps: number;
+  /** Minimum net target distance in percentage points; defaults to DEFAULT_MIN_NET_TARGET_PCT. */
+  minNetTargetPct?: number;
+}
+
+export interface TargetFeasibility {
+  reason: string | null;
+  grossTargetPct: number;
+  roundTripCostPct: number;
+  netTargetPct: number;
+}
+
+/**
+ * Pre-trade feasibility of the bracket's target: `tpDistancePct - roundTripCostPct(feePct, slippageBps)`.
+ *
+ * The net reward/risk gate already rejects a target that does not clear costs, but it reports the
+ * verdict as a ratio, so an entry blocked because its target is 0.4% wide against a 0.6% round trip
+ * is indistinguishable from one blocked by a bracket shape. This is the same arithmetic stated in
+ * the units the bracket is built from, checked before sizing, and it adds the margin
+ * `minNetTargetPct` that a target must clear on top of the cost.
+ */
+export function targetFeasibility(i: TargetFeasibilityInput): TargetFeasibility {
+  const cost = roundTripCostPct(i.feePct, i.slippageBps);
+  const gross = i.entry > 0 && Number.isFinite(i.takeProfit) ? (i.takeProfit - i.entry) / i.entry * 100 : 0;
+  const net = gross - cost;
+  const min = Number.isFinite(i.minNetTargetPct) ? (i.minNetTargetPct as number) : DEFAULT_MIN_NET_TARGET_PCT;
+  const reason = !(i.entry > 0) || !(i.takeProfit > i.entry)
+    ? 'invalid_target'
+    : !(net > 0)
+      ? 'target_below_round_trip_cost'
+      : net < min
+        ? 'target_net_below_minimum'
+        : null;
+  return { reason, grossTargetPct: gross, roundTripCostPct: cost, netTargetPct: net };
+}
+
+/** Blocks an entry whose take profit cannot clear the round trip plus `minNetTargetPct`. */
+export function targetFeasibilityGate(i: TargetFeasibilityInput): string | null {
+  return targetFeasibility(i).reason;
+}
+
 export type ExitReason = 'STOP_LOSS' | 'TRAILING_STOP' | 'TAKE_PROFIT';
+
+/**
+ * ATR-equivalent scale of the position's own bracket: the unit `trailActivationAtr` and
+ * `trailDistanceAtr` multiply.
+ *
+ * Sizing the trail off the raw `atr14` is only right while the position was actually opened on the
+ * ATR bracket. `computeStops` rejects that bracket when it is too tight to be meaningful and falls
+ * back to the percentage bracket (2% stop / 4% target by default), and there the raw ATR can be an
+ * order of magnitude tighter than the stop it is supposed to govern: BTC's median 5m ATR is 0.121%,
+ * so a 2% stop was being trailed at 0.12%, arming below the break-even floor and then pinning the
+ * stop there instead of letting the trade run to its 4% target.
+ *
+ * The stop the position was opened with *is* the bracket's risk, so `stopDistance / atrStopMultiplier`
+ * is the ATR that would have produced that stop. The stop only ever ratchets up, and only above the
+ * break-even floor (>= entry), so a stop at or below entry is still the bracket's own. After it has
+ * ratcheted, the take profit - which the trail never rewrites - keeps the bracket's scale.
+ */
+export function trailUnit(
+  pos: { entry_price: number | string; stop_loss: number | string | null; take_profit: number | string | null },
+  atrValue: number | null,
+  p: Pick<StrategyParams, 'atrStopMultiplier' | 'atrTakeProfitMultiplier'>,
+): number | null {
+  const atr = atrValue !== null && Number.isFinite(atrValue) && atrValue > 0 ? atrValue : 0;
+  const entry = Number(pos.entry_price);
+  if (!(entry > 0)) return atr > 0 ? atr : null;
+  const sl = pos.stop_loss === null || pos.stop_loss === undefined ? null : Number(pos.stop_loss);
+  const fromStop = sl !== null && Number.isFinite(sl) && sl < entry && p.atrStopMultiplier > 0
+    ? (entry - sl) / p.atrStopMultiplier
+    : 0;
+  const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
+  const fromTarget = tp !== null && Number.isFinite(tp) && tp > entry && p.atrTakeProfitMultiplier > 0
+    ? (tp - entry) / p.atrTakeProfitMultiplier
+    : 0;
+  // The stop wins while it is untouched (it is the risk the position was given); the target covers
+  // the position after the trail has ratcheted the stop above entry. The raw ATR is only the last
+  // resort, for a position with no bracket left to read (null stop and target).
+  const unit = fromStop > 0 ? fromStop : fromTarget > 0 ? fromTarget : atr;
+  return unit > 0 ? unit : null;
+}
 
 /** Ratchets the stop up (never down) once price is far enough above entry. Returns the new stop or null. */
 export function trailingStop(
-  pos: { entry_price: number | string; stop_loss: number | string | null },
+  // `take_profit` is required so no caller can silently trail off the raw ATR again: every call site
+  // has the position's target, and the unit is derived from the bracket it belongs to.
+  pos: { entry_price: number | string; stop_loss: number | string | null; take_profit: number | string | null },
   bid: number,
   atrValue: number | null,
-  p: Pick<StrategyParams, 'trailingStopEnabled' | 'trailActivationAtr' | 'trailDistanceAtr'>,
+  p: Pick<StrategyParams, 'trailingStopEnabled' | 'trailActivationAtr' | 'trailDistanceAtr' | 'atrStopMultiplier' | 'atrTakeProfitMultiplier'>,
   /** Round-trip cost in percent; the ratchet never sets a stop that would still lose after it. */
   costPct = 0,
 ): number | null {
+  // No ATR means no verified volatility for this pair in this run; the trail stays off (fail closed).
   if (!p.trailingStopEnabled || atrValue === null || !(atrValue > 0)) return null;
+  const unit = trailUnit(pos, atrValue, p);
+  if (unit === null) return null;
   const entry = Number(pos.entry_price);
-  if (!(bid >= entry + p.trailActivationAtr * atrValue)) return null;
-  const candidate = bid - p.trailDistanceAtr * atrValue;
+  if (!(bid >= entry + p.trailActivationAtr * unit)) return null;
+  const candidate = bid - p.trailDistanceAtr * unit;
   // A stop below the break-even price locks in a loss the round trip has already decided.
   // On 5m candles 1x ATR is often ~0.2%, i.e. half the 0.4% taker round trip, so trailing
   // unguarded produced exits with a positive gross move that still settled net negative.

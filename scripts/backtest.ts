@@ -14,7 +14,7 @@ import {
 import { applyBacktestOverrides, parseBacktestOverrides } from '../shared/backtestOverrides';
 import {
   buyFillPrice, computeStats, computeStops, dynamicSlippageBps, effectiveFeePct, feeFor,
-  netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, signalExitCoversCosts, trailingStop,
+  netRewardRiskGate, positionSize, roundTripCostPct, sellFillPrice, signalExitCoversCosts, targetFeasibility, trailingStop,
 } from '../shared/paper';
 import { fillGaps, isValidCandle, type Candle } from '../shared/candles';
 import { backtestScopeWarnings, hasBacktestDataQuality } from '../shared/backtestScope';
@@ -360,7 +360,7 @@ export function simulate(
       let exit: number | null = protectiveExit?.price ?? null;
       let reason = protectiveExit?.reason ?? '';
       if (exit === null) {
-        const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, c.c, rows[i].atr14, p, roundTripCostPct(feePct, slip));
+        const nsl = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl, take_profit: pos.tp }, c.c, rows[i].atr14, p, roundTripCostPct(feePct, slip));
         if (nsl !== null) pos.sl = nsl;
         if (p.timeStopMinutes > 0 && (i - pos.openedIdx) * (intervalSec / 60) >= p.timeStopMinutes) {
           exit = c.c; reason = 'TIME_STOP';
@@ -409,6 +409,9 @@ export function simulate(
     if (next.source === 'synthetic' || !isValidCandle(next) || next.v <= 0) continue;
     const fill = buyFillPrice(next.o, slip);
     const stops = computeStops(fill, rows[i].atr14, p);
+    if (targetFeasibility({
+      entry: fill, takeProfit: stops.takeProfit, feePct, slippageBps: slip, minNetTargetPct: p.minNetTargetPct,
+    }).reason) continue;
     if (netRewardRiskGate({
       entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
       feePct, exitSlippageBps: slip, minRatio: p.minNetRewardRiskRatio,

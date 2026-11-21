@@ -73,6 +73,12 @@ export interface StrategyParams {
    * allow a nearer target and therefore a higher hit rate; see MIN_NET_REWARD_RISK_RATIO.
    */
   minNetRewardRiskRatio: number;
+  /**
+   * Minimum distance between the bracket's take profit and the round-trip cost, in percentage points.
+   * The feasibility gate rejects an entry whose target cannot clear the cost plus this margin, so a
+   * bracket that pays for the round trip but earns nothing on top of it never opens a position.
+   */
+  minNetTargetPct: number;
   /** Which per-side fee the paper engine charges; see FeeModel. Default 'assumption' (legacy). */
   feeModel: FeeModel;
   feePct: number;
@@ -170,6 +176,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   closeOnDailyLoss: true,
   dynamicSlippage: true,
   minNetRewardRiskRatio: 1,
+  minNetTargetPct: 0.1,
   feeModel: 'pair_taker',
   // Conservative fallback only. With feeModel='pair_taker' the real per-pair taker fee is charged
   // and a missing catalog value rejects the entry, so this value can never silently under-charge.
@@ -229,6 +236,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   maxEntryDriftPct: [0, 10],
   maxRetryDriftPct: [0, 10],
   minNetRewardRiskRatio: [0.05, 10],
+  minNetTargetPct: [0, 10],
   maxTotalExposurePct: [5, 100],
   trailActivationAtr: [0.1, 20],
   trailDistanceAtr: [0.1, 20],
