@@ -9,6 +9,12 @@ export interface Env {
    * behaviour that existed before the queue.
    */
   NOTIFY_QUEUE?: Queue<NotificationItem>;
+  /**
+   * Out-of-band pipeline watchdog. Its alarm runs independently of the cron trigger, so an outage is
+   * still reported when the cron stops invoking the Worker at all. Optional: without the binding the
+   * in-run outage alarm is the only one.
+   */
+  WATCHDOG?: DurableObjectNamespace;
   /** Public (safe to expose) */
   SUPABASE_URL: string;
   SUPABASE_PUBLISHABLE_KEY: string;

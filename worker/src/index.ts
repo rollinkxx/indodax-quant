@@ -10,6 +10,9 @@ import { buildPipelinePostHogEvents, sendPostHogBatch } from './posthog';
 import { Db } from './db';
 import { dispatchNotifications } from './notify';
 import type { NotificationItem } from './telegram';
+import { PipelineWatchdog } from './watchdog';
+
+export { PipelineWatchdog };
 
 const SECURITY_HEADERS: Record<string, string> = {
   'x-frame-options': 'DENY',
@@ -38,6 +41,16 @@ export default {
           fetchImpl: withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL, env.SUPABASE_SERVICE_ROLE_KEY),
         });
         console.log(`[cron] ${result.status}${result.reason ? ` (${result.reason})` : ''} run=${result.runId ?? '-'}`);
+        // Keep the out-of-band watchdog armed. Best effort: a missing binding or a DO hiccup must not
+        // fail the run, because the run itself already carries the in-band outage alarm.
+        if (env.WATCHDOG) {
+          try {
+            const stub = env.WATCHDOG.get(env.WATCHDOG.idFromName('pipeline'));
+            await stub.fetch('https://watchdog.internal/arm');
+          } catch (e) {
+            console.error('[watchdog] arm failed', errorMessage(e));
+          }
+        }
         await sendPostHogBatch(env, buildPipelinePostHogEvents(result, 'cron', Date.now() - startedAt));
       } catch (e) {
         console.error('[cron] fatal', errorMessage(e));
