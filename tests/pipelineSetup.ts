@@ -13,7 +13,7 @@ export function candleRows(n: number, endT: number, step: number, fn: (i: number
   });
 }
 
-export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; emptyHistoryPairs?: string[]; shortHistoryPairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number; candleVolume?: (i: number) => number; lastSuccessAt?: string | null; beginRun?: Record<string, unknown>; closeRejectsSignalId?: boolean } = {}) {
+export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; pairMakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; emptyHistoryPairs?: string[]; shortHistoryPairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number; candleVolume?: (i: number) => number; lastSuccessAt?: string | null; beginRun?: Record<string, unknown>; closeRejectsSignalId?: boolean } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -38,12 +38,14 @@ export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolea
             pairs: [
               { id: 'btcidr', symbol: 'BTCIDR', ticker_id: 'btc_idr', is_maintenance: false, is_tracked: true, in_universe: false, trade_min_base_currency: 10000,
               trade_fee_percent_taker: opts.pairTakerFee === undefined ? 0.2 : opts.pairTakerFee,
+              trade_fee_percent_maker: opts.pairMakerFee === undefined ? 0.1 : opts.pairMakerFee,
               price_precision: opts.pairPricePrecision ?? null,
               covered_until: new Date((Math.floor(NOW / 60) * 60 - 60) * 1000).toISOString(), last_trade_time: null, last_trade_tid: null,
               htf_backfilled_at: opts.htfBackfilled ? '2026-01-01T00:00:00Z' : null },
               ...(opts.extraPairs ?? []).map((id) => ({
                 id, symbol: id.toUpperCase(), ticker_id: id.replace('idr', '_idr'), is_maintenance: false, is_tracked: false,
-                in_universe: true, trade_min_base_currency: 10000, trade_fee_percent_taker: 0.2, price_precision: null,
+                in_universe: true, trade_min_base_currency: 10000, trade_fee_percent_taker: 0.2,
+                trade_fee_percent_maker: opts.pairMakerFee === undefined ? 0.1 : opts.pairMakerFee, price_precision: null,
                 // A newly admitted pair with no stored bars has no cursor at all.
                 covered_until: opts.staleCoverage ? new Date((Math.floor(NOW / 60) * 60 - 3 * 3600) * 1000).toISOString() : null,
                 last_trade_time: null, last_trade_tid: null, htf_backfilled_at: '2026-01-01T00:00:00Z',

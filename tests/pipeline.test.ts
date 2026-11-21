@@ -315,6 +315,44 @@ describe('pipeline: paper-only BUY / HOLD execution contract', () => {
     }));
   });
 
+  it('charges the pair maker fee and no tax on the entry when feeModel=pair_maker', async () => {
+    const signal = {
+      id: 205, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 8 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const runModel = async (feeModel: 'pair_taker' | 'pair_maker') => {
+      const o = setup({
+        mtfMode: 'off', newSignals: [signal], pairTakerFee: 0.2, pairMakerFee: 0.1,
+        strategyParams: { feeModel, crossLookback: 2 },
+        openResult: { ok: true, position_id: 58, cash_after: 9_700_000 },
+      });
+      const result = await run(o);
+      expect(result.status).toBe('SUCCESS');
+      const open = o.rpcs.find((x) => x.fn === 'paper_open_position');
+      expect(open).toBeDefined();
+      const notional = open!.body.p_qty * open!.body.p_fill_price;
+      return { fee: open!.body.p_fee, rate: open!.body.p_fee / notional * 100 };
+    };
+    const taker = await runModel('pair_taker');
+    const maker = await runModel('pair_maker');
+    expect(taker.rate).toBeCloseTo(0.2, 4);
+    // 0.1% per side: the tax is a closing-leg charge and must not appear on the entry.
+    expect(maker.rate).toBeCloseTo(0.1, 4);
+  });
+
+  it('rejects an entry under pair_maker when the maker fee is missing, instead of falling back', async () => {
+    const signal = {
+      id: 206, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 8 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    const o = setup({ mtfMode: 'off', newSignals: [signal], pairMakerFee: null, strategyParams: { feeModel: 'pair_maker' } });
+    const result = await run(o);
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    expect((result.steps as any).paper_trading.info.entry_rejections).toContainEqual(expect.objectContaining({
+      pair_id: 'btcidr', signal_id: 206, stage: 'fee_gate', reason: 'missing_pair_fee',
+    }));
+  });
+
   it('rejects an entry under pair_taker when the pair taker fee is missing, instead of falling back', async () => {
     const signal = {
       id: 204, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
@@ -334,6 +372,25 @@ describe('pipeline: persisted SELL exits (F3)', () => {
   const position = { id: 5, pair_id: 'btcidr', qty: 1, entry_price: 1000, cost_basis: 1000, stop_loss: 500, take_profit: 5000, opened_at: new Date((NOW - 600) * 1000).toISOString() };
   const sell = { id: 41, pair_id: 'btcidr', side: 'SELL', price: 1000, strength: 60, reasons: ['test'], indicators: {}, candle_time: new Date(expectedLast * 1000).toISOString() };
   const closes = (o: ReturnType<typeof setup>) => o.rpcs.filter((x) => x.fn === 'paper_close_position');
+
+  it('charges the sell-side tax once on the close, and never on the entry, under pair_maker', async () => {
+    const stopped = { ...position, id: 6, qty: 1000, entry_price: 1100, cost_basis: 1_100_000, stop_loss: 1001, take_profit: 5000 };
+    const runClose = async (feeModel: 'pair_taker' | 'pair_maker') => {
+      const o = setup({
+        mtfMode: 'off', openPositions: [stopped], strategyParams: { feeModel, crossLookback: 2 },
+        pairTakerFee: 0.2, pairMakerFee: 0.1,
+      });
+      const result = await run(o);
+      expect(result.status).toBe('SUCCESS');
+      const closed = closes(o);
+      expect(closed).toHaveLength(1);
+      expect(closed[0].body.p_reason).toBe('STOP_LOSS');
+      return closed[0].body.p_fee / (stopped.qty * closed[0].body.p_fill_price) * 100;
+    };
+    expect(await runClose('pair_taker')).toBeCloseTo(0.2, 4);
+    // 0.1% maker + 0.21% PPh, charged once on the closing leg.
+    expect(await runClose('pair_maker')).toBeCloseTo(0.31, 4);
+  });
 
   it('closes with SIGNAL on a later run even though save_analysis returns no new signals', async () => {
     // Run 1: SELL is saved as new, but the ticker is stale so the exit check is skipped.

@@ -50,36 +50,75 @@ export function feeFor(notional: number, feePct: number): number {
   return round(notional * feePct / 100, 2);
 }
 
+/** The per-pair catalog fee the model resolves: maker under 'pair_maker', taker otherwise. */
+function catalogFeePct(
+  p: Pick<StrategyParams, 'feeModel'>,
+  pairTakerFeePct: number | null | undefined,
+  pairMakerFeePct: number | null | undefined,
+): number | null | undefined {
+  return p.feeModel === 'pair_maker' ? pairMakerFeePct : pairTakerFeePct;
+}
+
 /**
  * Per-side fee (percentage points) actually charged for a pair.
- * 'assumption' always uses `feePct`. 'pair_taker' uses the pair's real INDODAX taker fee when it
- * is a valid non-negative number, otherwise falls back to `feePct`. Exit-side callers use this so a
- * missing catalog value cannot abort a close that must happen; entries use `entryFeePct`, which
- * rejects instead of falling back. A taker fee of exactly 0 is honoured (some zero-fee campaigns).
+ * 'assumption' always uses `feePct`. 'pair_taker' / 'pair_maker' use the pair's real INDODAX taker /
+ * maker fee when it is a valid non-negative number, otherwise fall back to `feePct`. Exit-side callers
+ * use this so a missing catalog value cannot abort a close that must happen; entries use
+ * `entryFeePct`, which rejects instead of falling back. A fee of exactly 0 is honoured (some zero-fee
+ * campaigns).
  */
 export function effectiveFeePct(
   p: Pick<StrategyParams, 'feeModel' | 'feePct'>,
   pairTakerFeePct: number | null | undefined,
+  pairMakerFeePct: number | null | undefined = null,
 ): number {
-  if (p.feeModel !== 'pair_taker') return p.feePct;
-  if (pairTakerFeePct === null || pairTakerFeePct === undefined) return p.feePct;
-  const taker = Number(pairTakerFeePct);
-  return Number.isFinite(taker) && taker >= 0 ? taker : p.feePct;
+  if (p.feeModel === 'assumption') return p.feePct;
+  const catalog = catalogFeePct(p, pairTakerFeePct, pairMakerFeePct);
+  if (catalog === null || catalog === undefined) return p.feePct;
+  const fee = Number(catalog);
+  return Number.isFinite(fee) && fee >= 0 ? fee : p.feePct;
 }
 
 /**
- * Entry-side fee resolution. Unlike `effectiveFeePct`, a missing/invalid per-pair taker fee is a
- * hard rejection under 'pair_taker' instead of a silent fallback: falling back would under-charge
- * the round trip and let the net reward/risk gate pass trades that cannot pay for themselves.
+ * Entry-side fee resolution. Unlike `effectiveFeePct`, a missing/invalid per-pair fee is a hard
+ * rejection under 'pair_taker' / 'pair_maker' instead of a silent fallback: falling back would
+ * under-charge the round trip and let the net reward/risk gate pass trades that cannot pay for
+ * themselves.
  */
 export function entryFeePct(
   p: Pick<StrategyParams, 'feeModel' | 'feePct'>,
   pairTakerFeePct: number | null | undefined,
+  pairMakerFeePct: number | null | undefined = null,
 ): { pct: number } | { reason: 'missing_pair_fee' } {
-  if (p.feeModel !== 'pair_taker') return { pct: p.feePct };
-  if (pairTakerFeePct === null || pairTakerFeePct === undefined) return { reason: 'missing_pair_fee' };
-  const taker = Number(pairTakerFeePct);
-  return Number.isFinite(taker) && taker >= 0 ? { pct: taker } : { reason: 'missing_pair_fee' };
+  if (p.feeModel === 'assumption') return { pct: p.feePct };
+  const catalog = catalogFeePct(p, pairTakerFeePct, pairMakerFeePct);
+  if (catalog === null || catalog === undefined) return { reason: 'missing_pair_fee' };
+  const fee = Number(catalog);
+  return Number.isFinite(fee) && fee >= 0 ? { pct: fee } : { reason: 'missing_pair_fee' };
+}
+
+/**
+ * Sell-side tax (percentage points) actually charged for a config.
+ *
+ * Indonesia levies a final PPh on the sale (0.21%, PMK 50/2025) on makers and takers alike, and no
+ * PPN on the purchase. It is applied only under 'pair_maker': the legacy models keep the taker-only
+ * cost model they were calibrated on, so enabling this plumbing cannot silently reprice them.
+ */
+export function sellTaxPct(p: Pick<StrategyParams, 'feeModel' | 'sellTaxPct'>): number {
+  if (p.feeModel !== 'pair_maker') return 0;
+  const tax = Number(p.sellTaxPct);
+  return Number.isFinite(tax) && tax > 0 ? tax : 0;
+}
+
+/**
+ * Fee percentage points charged on the closing leg: the per-side fee plus the sell-side tax, charged
+ * exactly once. The entry always uses the bare per-side fee (`entryFeePct`).
+ */
+export function closeFeePct(
+  p: Pick<StrategyParams, 'feeModel' | 'sellTaxPct'>,
+  feePct: number,
+): number {
+  return feePct + sellTaxPct(p);
 }
 
 export interface Stops {
@@ -134,13 +173,16 @@ export function signalExitCoversCosts(input: {
  * exits at the bid, so a position must gain the full spread before it breaks even. Leaving it
  * out understated the break-even price on wide pairs, which let the trailing stop ratchet to a
  * level that still settled net negative. Callers without a live quote (the candle-only
- * backtest) pass 0 and keep the previous behaviour.
+ * backtest) pass 0 and keep the previous behaviour. `taxPct` is the sell-side tax (see
+ * `sellTaxPct`), charged once on the closing leg; it defaults to 0 so legacy callers are unchanged.
  */
-export function roundTripCostPct(feePct: number, slippageBps: number, spreadPct = 0): number {
+export function roundTripCostPct(feePct: number, slippageBps: number, spreadPct = 0, taxPct = 0): number {
   const fee = Number.isFinite(feePct) && feePct > 0 ? feePct : 0;
   const slip = Number.isFinite(slippageBps) && slippageBps > 0 ? slippageBps / 100 : 0;
   const spread = Number.isFinite(spreadPct) && spreadPct > 0 ? spreadPct : 0;
-  return fee * 2 + slip * 2 + spread;
+  // The sell-side tax is charged once, on the closing leg, so it enters the round trip once.
+  const tax = Number.isFinite(taxPct) && taxPct > 0 ? taxPct : 0;
+  return fee * 2 + slip * 2 + spread + tax;
 }
 
 /**
@@ -263,6 +305,8 @@ export interface NetRewardRiskInput {
   stopLoss: number;
   takeProfit: number;
   feePct: number;
+  /** Fee charged on the closing leg; defaults to `feePct`. Set it to `closeFeePct(...)` to include the sell-side tax. */
+  exitFeePct?: number;
   exitSlippageBps: number;
   /** Minimum net reward per unit of net risk. Defaults to MIN_NET_REWARD_RISK_RATIO. */
   minRatio?: number;
@@ -328,12 +372,15 @@ export function netRewardRiskDiagnostics(i: NetRewardRiskInput): NetRewardRiskDi
   ) return { reason: 'invalid_reward_risk_inputs', metrics };
 
   // Entry is already the simulated ask + entry slippage fill. Model each possible exit at
-  // its stop/target trigger less exit slippage, then deduct the fee on each side.
+  // its stop/target trigger less exit slippage, then deduct the fee on each side. The closing leg can
+  // cost more than the entry when a sell-side tax applies, so it takes its own fee.
+  const exitFeePct = Number.isFinite(i.exitFeePct) ? (i.exitFeePct as number) : i.feePct;
+  if (exitFeePct < 0 || exitFeePct >= 100) return { reason: 'invalid_reward_risk_inputs', metrics };
   const entryCost = i.entry * (1 + i.feePct / 100);
   const stopExitFill = sellFillPrice(i.stopLoss, i.exitSlippageBps);
   const targetExitFill = sellFillPrice(i.takeProfit, i.exitSlippageBps);
-  const netStopProceeds = stopExitFill * (1 - i.feePct / 100);
-  const netTargetProceeds = targetExitFill * (1 - i.feePct / 100);
+  const netStopProceeds = stopExitFill * (1 - exitFeePct / 100);
+  const netTargetProceeds = targetExitFill * (1 - exitFeePct / 100);
   const netRisk = entryCost - netStopProceeds;
   const netReward = netTargetProceeds - entryCost;
   const ratio = netRisk > 0 ? netReward / netRisk : 0;
@@ -372,6 +419,8 @@ export interface TargetFeasibilityInput {
   /** Per-side fee in percentage points, as actually charged for the pair. */
   feePct: number;
   slippageBps: number;
+  /** Sell-side tax in percentage points, charged once on the closing leg; defaults to 0. */
+  sellTaxPct?: number;
   /** Minimum net target distance in percentage points; defaults to DEFAULT_MIN_NET_TARGET_PCT. */
   minNetTargetPct?: number;
 }
@@ -393,7 +442,7 @@ export interface TargetFeasibility {
  * `minNetTargetPct` that a target must clear on top of the cost.
  */
 export function targetFeasibility(i: TargetFeasibilityInput): TargetFeasibility {
-  const cost = roundTripCostPct(i.feePct, i.slippageBps);
+  const cost = roundTripCostPct(i.feePct, i.slippageBps, 0, i.sellTaxPct ?? 0);
   const gross = i.entry > 0 && Number.isFinite(i.takeProfit) ? (i.takeProfit - i.entry) / i.entry * 100 : 0;
   const net = gross - cost;
   const min = Number.isFinite(i.minNetTargetPct) ? (i.minNetTargetPct as number) : DEFAULT_MIN_NET_TARGET_PCT;

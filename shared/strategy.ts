@@ -1,6 +1,6 @@
 // Strategy: EMA crossover + RSI + volume confirmation on completed candles.
 import { atr, ema, macd, rsi, sma, supportResistance } from './indicators';
-import { roundTripCostPct } from './paper';
+import { roundTripCostPct, sellTaxPct } from './paper';
 import type { Candle } from './candles';
 
 export interface StrategyParams {
@@ -92,6 +92,13 @@ export interface StrategyParams {
    * under 1.
    */
   assumedPairFeePct: number;
+  /**
+   * Sell-side tax in percentage points, charged once on the closing leg and never on the entry.
+   * Indonesia charges a final PPh of 0.21% on the sale (PMK 50/2025) to makers and takers alike, and
+   * no PPN on the purchase, so a maker round trip costs 0.1 + 0.1 + 0.21 = 0.41%. Applied only under
+   * feeModel='pair_maker' so the legacy models keep their historical, taker-only cost model.
+   */
+  sellTaxPct: number;
   slippageBps: number;
   dailyLossLimitPct: number;
   maxDrawdownPct: number;
@@ -127,9 +134,12 @@ export const UNIVERSE_MODES: UniverseMode[] = ['manual', 'dynamic'];
  * - 'assumption': charge `feePct` for every pair (legacy behaviour; the working assumption).
  * - 'pair_taker': charge each pair's real INDODAX taker fee (`market_pairs.trade_fee_percent_taker`),
  *   falling back to `feePct` only when that value is missing or invalid.
+ * - 'pair_maker': charge each pair's real INDODAX maker fee (`market_pairs.trade_fee_percent_maker`)
+ *   and the sell-side tax (`sellTaxPct`) once on the closing leg. A missing maker fee is a hard entry
+ *   rejection, exactly like 'pair_taker'. Opt-in: the other models keep the taker-only cost model.
  */
-export type FeeModel = 'assumption' | 'pair_taker';
-export const FEE_MODELS: FeeModel[] = ['assumption', 'pair_taker'];
+export type FeeModel = 'assumption' | 'pair_taker' | 'pair_maker';
+export const FEE_MODELS: FeeModel[] = ['assumption', 'pair_taker', 'pair_maker'];
 /** Stablecoins move with USD/IDR, not with crypto momentum: excluded from the dynamic universe by default. */
 export const DEFAULT_UNIVERSE_EXCLUDE = ['usdtidr', 'usdcidr', 'busdidr', 'daiidr', 'tusdidr', 'fdusdidr', 'pyusdidr', 'usdeidr',
   // gold-backed tokens track XAU/USD, not crypto momentum
@@ -182,6 +192,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   // and a missing catalog value rejects the entry, so this value can never silently under-charge.
   feePct: 0.2,
   assumedPairFeePct: 0.2,
+  sellTaxPct: 0.21,
   slippageBps: 10,
   dailyLossLimitPct: 3,
   maxDrawdownPct: 15,
@@ -243,6 +254,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   timeStopMinutes: [0, 20160, true],
   feePct: [0, 2],
   assumedPairFeePct: [0, 5],
+  sellTaxPct: [0, 2],
   slippageBps: [0, 500],
   dailyLossLimitPct: [0.1, 50],
   maxDrawdownPct: [1, 90],
@@ -361,12 +373,17 @@ export function validateParams(input: Record<string, unknown>): string[] {
 export function validateBracketEconomics(merged: StrategyParams): string[] {
   if (!(merged.atrStopMultiplier > 0)) return ['atrStopMultiplier must be positive'];
 
-  // Charge the fee the engine will really pay. Under 'pair_taker' that is the catalog fee of the
-  // pair being traded, which this static check cannot see, so it uses the configured assumption
-  // instead of the nominal feePct (which only applies to the legacy 'assumption' model).
-  const checkedFeePct = merged.feeModel === 'pair_taker' ? merged.assumedPairFeePct : merged.feePct;
-  const feeLabel = merged.feeModel === 'pair_taker' ? `assumed pair fee ${checkedFeePct}%` : `fee ${checkedFeePct}%`;
-  const costPct = roundTripCostPct(checkedFeePct, merged.slippageBps);
+  // Charge the fee the engine will really pay. Under the per-pair models that is the catalog fee of
+  // the pair being traded, which this static check cannot see, so it uses the configured assumption
+  // instead of the nominal feePct (which only applies to the legacy 'assumption' model). The
+  // sell-side tax is part of the true round trip, so it is charged here exactly as the engine does.
+  const perPair = merged.feeModel !== 'assumption';
+  const checkedFeePct = perPair ? merged.assumedPairFeePct : merged.feePct;
+  const taxPct = sellTaxPct(merged);
+  const feeLabel = perPair
+    ? `assumed pair fee ${checkedFeePct}%${taxPct > 0 ? ` + ${taxPct}% sell tax` : ''}`
+    : `fee ${checkedFeePct}%`;
+  const costPct = roundTripCostPct(checkedFeePct, merged.slippageBps, 0, taxPct);
 
   const atrPct = 1;
   const slDistAtr = merged.atrStopMultiplier * atrPct;

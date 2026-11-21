@@ -10,7 +10,7 @@ import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../..
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams, validateCrossFieldParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, shouldExitOnSignal, signalExitCoversCosts, targetFeasibility, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, closeFeePct, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, sellTaxPct, shouldExitOnSignal, signalExitCoversCosts, targetFeasibility, timeStopHit, trailingStop } from '../../shared/paper';
 import { assessQuote, valuationHealth, killSwitchState, type KillSwitchState } from '../../shared/quote';
 import { createLeaseKeeper } from '../../shared/lease';
 import { normalizeOrder } from '../../shared/orderNormalize';
@@ -50,6 +50,7 @@ interface PairCtx {
   in_universe?: boolean;
   trade_min_base_currency: number | null;
   trade_fee_percent_taker: number | null;
+  trade_fee_percent_maker?: number | null;
   price_precision?: number | null;
   covered_until: string | null;
   last_trade_time: string | null;
@@ -1019,6 +1020,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       }
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
       const pairFee = new Map(pairs.map((p) => [p.id, p.trade_fee_percent_taker]));
+      const pairMakerFee = new Map(pairs.map((p) => [p.id, p.trade_fee_percent_maker ?? null]));
       const pairPrecision = new Map(pairs.map((p) => [p.id, p.price_precision ?? null]));
       const decisionCounters: DecisionCounters = emptyDecisionCounters();
 
@@ -1034,8 +1036,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const slipFor = (pairId: string, exitSide = false) => (params.dynamicSlippage
         ? dynamicSlippageBps(params.slippageBps, tickers.get(pairId)?.vol_idr, { maxMultiplier: exitSide ? 2 : 4 })
         : params.slippageBps);
-      // Per-side fee charged for a pair; 'pair_taker' uses the real INDODAX taker fee (see effectiveFeePct).
-      const feePctFor = (pairId: string) => effectiveFeePct(params, pairFee.get(pairId));
+      // Per-side fee charged for a pair; the per-pair models use the real INDODAX fee (see effectiveFeePct).
+      const feePctFor = (pairId: string) => effectiveFeePct(params, pairFee.get(pairId), pairMakerFee.get(pairId));
+      // The closing leg also carries the sell-side tax; the entry never does (see closeFeePct).
+      const closeFeePctFor = (pairId: string) => closeFeePct(params, feePctFor(pairId));
 
       // Note event type per close reason; anything unmapped (TIME_STOP, SIGNAL, DAILY_LOSS, ...) is a plain sell.
       const CLOSE_EVENT_TYPES: Record<string, string> = {
@@ -1050,7 +1054,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         // higher price was paper profit the market never had to give.
         const fillBid = fillBidOverride !== null ? fillBidOverride : bid;
         const fill = sellFillPrice(fillBid, slip);
-        const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
+        const fee = feeFor(Number(pos.qty) * fill, closeFeePctFor(pos.pair_id));
         const closeArgs = {
           p_position_id: pos.id, p_requested_price: fillBid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
         };
@@ -1124,7 +1128,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           // The break-even floor must cover the spread too: the exit fills at the bid, so a stop
           // set only above fees+slippage can still close net negative on a wide pair.
           const spreadPct = t.bid > 0 ? (t.ask - t.bid) / t.bid * 100 : 0;
-          const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id, true), spreadPct);
+          const trailCostPct = roundTripCostPct(feePctFor(pos.pair_id), slipFor(pos.pair_id, true), spreadPct, sellTaxPct(params));
           const newStop = trailingStop(pos, t.bid, lastIndicators.get(pos.pair_id)?.atr14 ?? null, params, trailCostPct);
           if (newStop !== null) {
             // The ratchet is a state mutation: never persist it under a lease we no longer hold.
@@ -1145,7 +1149,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         if (!reason && sellSignals.has(pos.pair_id)) {
           const covers = signalExitCoversCosts({
             entryPrice: Number(pos.entry_price), qty: Number(pos.qty), costBasis: Number(pos.cost_basis),
-            bid: t.bid, feePct: feePctFor(pos.pair_id), slippageBps: slipFor(pos.pair_id, true),
+            bid: t.bid, feePct: closeFeePctFor(pos.pair_id), slippageBps: slipFor(pos.pair_id, true),
           });
           const verdict = shouldExitOnSignal({
             coversCosts: covers,
@@ -1317,9 +1321,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const t = freshTicker(s.pair_id);
           if (!t) { rejectEntry(s, 'market_data_gate', 'stale_ticker'); continue; }
           const slip = slipFor(s.pair_id);
-          // Entry-side fee must be the real per-pair taker fee; a missing catalog value rejects the
-          // entry instead of falling back, so the economics gate below cannot be fed a cheap fee.
-          const feeRes = entryFeePct(params, pairFee.get(s.pair_id));
+          // Entry-side fee must be the real per-pair fee (taker or maker); a missing catalog value
+          // rejects the entry instead of falling back, so the economics gate below cannot be fed a
+          // cheap fee. The sell-side tax is not an entry cost and is only added to the closing leg.
+          const feeRes = entryFeePct(params, pairFee.get(s.pair_id), pairMakerFee.get(s.pair_id));
           if ('reason' in feeRes) { rejectEntry(s, 'fee_gate', feeRes.reason); continue; }
           const feePct = feeRes.pct;
           const fill = buyFillPrice(t.ask, slip);
@@ -1357,7 +1362,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           // minNetTargetPct) is unfillable whatever its reward/risk ratio looks like, and saying so
           // in percentage points is what makes the rejection readable.
           const feasibility = targetFeasibility({
-            entry: fill, takeProfit: stops.takeProfit, feePct, slippageBps: slip, minNetTargetPct: params.minNetTargetPct,
+            entry: fill, takeProfit: stops.takeProfit, feePct, slippageBps: slip,
+            sellTaxPct: sellTaxPct(params), minNetTargetPct: params.minNetTargetPct,
           });
           if (feasibility.reason) {
             rejectEntry(s, 'feasibility_gate', feasibility.reason, {
@@ -1375,7 +1381,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           }
           const economics = netRewardRiskDiagnostics({
             entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
-            feePct, exitSlippageBps: slip, minRatio: params.minNetRewardRiskRatio,
+            feePct, exitFeePct: closeFeePct(params, feePct), exitSlippageBps: slip, minRatio: params.minNetRewardRiskRatio,
           });
           if (economics.reason) {
             rejectEntry(s, 'economics_gate', economics.reason, {

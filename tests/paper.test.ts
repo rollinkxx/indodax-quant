@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buyFillPrice, computeStats, computeStops, effectiveFeePct, entryFeePct, exitReason, feeFor, netRewardRiskDiagnostics, positionSize, riskState, round, roundDown, roundTripPnl, sellFillPrice } from '../shared/paper';
+import { buyFillPrice, closeFeePct, computeStats, computeStops, effectiveFeePct, entryFeePct, exitReason, feeFor, netRewardRiskDiagnostics, positionSize, riskState, round, roundDown, roundTripCostPct, roundTripPnl, sellFillPrice, sellTaxPct } from '../shared/paper';
 import { DEFAULT_PARAMS } from '../shared/strategy';
 
 const P = DEFAULT_PARAMS;
@@ -37,6 +37,52 @@ describe('strict entry fee', () => {
     expect(entryFeePct({ feeModel: 'pair_taker', feePct: 0.2 }, 0.06)).toEqual({ pct: 0.06 });
     expect(entryFeePct({ feeModel: 'pair_taker', feePct: 0.2 }, 0)).toEqual({ pct: 0 });
     expect(entryFeePct({ feeModel: 'assumption', feePct: 0.2 }, null)).toEqual({ pct: 0.2 });
+  });
+});
+
+describe('pair_maker fee model and the sell-side tax', () => {
+  const maker = { feeModel: 'pair_maker' as const, feePct: 0.2, sellTaxPct: 0.21 };
+
+  it('resolves the maker fee per pair, not the taker fee', () => {
+    expect(effectiveFeePct(maker, 0.2, 0.1)).toBe(0.1);
+    expect(entryFeePct(maker, 0.2, 0.1)).toEqual({ pct: 0.1 });
+    // A pair with no maker fee is a hard entry rejection, never a silent fallback to 0.2%.
+    for (const bad of [null, undefined, -1, NaN]) {
+      expect(entryFeePct(maker, 0.2, bad)).toEqual({ reason: 'missing_pair_fee' });
+    }
+    // The exit-side resolver may still fall back: a close that must happen cannot be aborted.
+    expect(effectiveFeePct(maker, 0.2, null)).toBe(0.2);
+  });
+
+  it('charges the tax exactly once, on the closing leg only', () => {
+    // Entry: the bare per-side fee. Close: fee + tax.
+    expect(entryFeePct(maker, 0.2, 0.1)).toEqual({ pct: 0.1 });
+    expect(sellTaxPct(maker)).toBe(0.21);
+    expect(closeFeePct(maker, 0.1)).toBeCloseTo(0.31, 10);
+    // A maker round trip is 0.1 + 0.1 + 0.21 = 0.41%, not 0.20%.
+    expect(roundTripCostPct(0.1, 0, 0, sellTaxPct(maker))).toBeCloseTo(0.41, 10);
+  });
+
+  it('leaves the legacy fee models untouched: no tax, no maker fee', () => {
+    for (const feeModel of ['assumption', 'pair_taker'] as const) {
+      expect(sellTaxPct({ feeModel, sellTaxPct: 0.21 })).toBe(0);
+      expect(closeFeePct({ feeModel, sellTaxPct: 0.21 }, 0.2)).toBe(0.2);
+      expect(roundTripCostPct(0.2, 10, 0, sellTaxPct({ feeModel, sellTaxPct: 0.21 }))).toBeCloseTo(0.6, 10);
+      // The maker fee argument is ignored outside pair_maker.
+      expect(effectiveFeePct({ feeModel, feePct: 0.2 }, 0.2, 0.1)).toBe(0.2);
+    }
+  });
+
+  it('defaults sellTaxPct to 0.21 and keeps it inside its limit', () => {
+    expect(DEFAULT_PARAMS.sellTaxPct).toBe(0.21);
+  });
+
+  it('charges a dearer closing leg than the entry under pair_maker', () => {
+    const stops = computeStops(1001, 3, { ...DEFAULT_PARAMS, feeModel: 'pair_maker' });
+    const flat = netRewardRiskDiagnostics({ entry: 1001, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, feePct: 0.1, exitSlippageBps: 10 });
+    const taxed = netRewardRiskDiagnostics({ entry: 1001, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, feePct: 0.1, exitFeePct: closeFeePct(maker, 0.1), exitSlippageBps: 10 });
+    expect(taxed.metrics.net_reward_per_unit).toBeLessThan(flat.metrics.net_reward_per_unit);
+    expect(taxed.metrics.net_risk_per_unit).toBeGreaterThan(flat.metrics.net_risk_per_unit);
   });
 });
 
