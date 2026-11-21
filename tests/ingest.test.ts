@@ -95,6 +95,25 @@ describe('minute coverage recovery', () => {
     expect(built.newCoveredUntil).toBe(T0);
   });
 
+  // 2026-11-21: xlmidr sat with covered_until 2026-11-13 while its trades kept arriving, because
+  // INDODAX publishes no 1m OHLC for it at all (history_v2 returned [] for every window). Every run
+  // re-requested 24h, found 1265 "missing" minutes, refused to advance and alerted. An empty answer
+  // has nothing left to repair: the frontier must advance on the trade stream alone.
+  it('advances on a pair whose OHLC series is not published at all', () => {
+    const trades = [trade('1', 0), trade('2', 4)];
+    const plan = planCoverage(trades, T0, NOW);
+    expect(plan.historyRange).not.toBeNull();
+
+    const built = buildPairCandles(trades, plan, T0, []);
+
+    expect(built.historyComplete).toBe(true);
+    expect(built.newCoveredUntil).toBe(nowMin);
+    expect(built.missingMinutes).toBeGreaterThan(0);
+    // The pair keeps producing candles from trades instead of going dark for a week.
+    expect(built.m1.length).toBeGreaterThan(0);
+    expect(built.m5.length).toBeGreaterThan(0);
+  });
+
   it('does not move the coverage frontier when the OHLC request fails', () => {
     const plan = planCoverage([trade('1', 0), trade('2', 4)], T0, NOW);
     const built = buildPairCandles([trade('1', 0), trade('2', 4)], plan, T0, null);

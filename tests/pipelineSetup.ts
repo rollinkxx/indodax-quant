@@ -13,7 +13,7 @@ export function candleRows(n: number, endT: number, step: number, fn: (i: number
   });
 }
 
-export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number; candleVolume?: (i: number) => number } = {}) {
+export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; emptyHistoryPairs?: string[]; shortHistoryPairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number; candleVolume?: (i: number) => number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -109,7 +109,13 @@ export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolea
       }
       if (u.pathname === '/tradingview/history_v2') {
         const tf = Number(u.searchParams.get('tf')) * 60;
+        // INDODAX publishes no 1m series for some thin pairs: the endpoint answers with an empty array.
+        if (tf === 60 && (opts.emptyHistoryPairs ?? []).includes(String(u.searchParams.get('symbol')).toLowerCase())) return json([]);
         const end = Math.floor(NOW / tf) * tf; // includes the still-forming bucket, which must be dropped
+        // A partial 1m answer: the source has the series but returned only its tail.
+        if (tf === 60 && (opts.shortHistoryPairs ?? []).includes(String(u.searchParams.get('symbol')).toLowerCase())) {
+          return json(Array.from({ length: 5 }, (_, i) => ({ Time: end - (4 - i) * tf, Open: 1000, High: 1001, Low: 999, Close: 1000, Volume: 1 })));
+        }
         if (tf === 60) {
           const from = Number(u.searchParams.get('from'));
           const to = Number(u.searchParams.get('to'));
