@@ -309,6 +309,48 @@ export function parseSubrequestLimit(raw: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SUBREQUEST_LIMIT;
 }
 
+/** True when PostgREST could not resolve the function, i.e. its migration is not applied yet. */
+function isMissingRpc(e: unknown): boolean {
+  return e instanceof HttpError && e.status === 404 && /PGRST202/.test(e.body ?? '');
+}
+
+/** Minutes without a SUCCESS run before the operator is paged. */
+export const OUTAGE_ALARM_MINUTES = 15;
+
+/**
+ * Build the outage alert for a run that has not produced a SUCCESS for a while.
+ *
+ * The check has to run before `begin_run` acquires the pipeline lock: while the lock is stuck every
+ * tick returns SKIPPED immediately, so nothing inside the run — including the notifications step —
+ * ever executes. Between 2026-11-19 14:00Z and 2026-11-20 09:03Z 1.011 runs died that way and no
+ * alarm fired.
+ *
+ * Returns null when the log is fresh, or when the RPC is unusable: a missing migration must not turn
+ * every tick into a false alarm.
+ */
+export async function outageAlarmNote(
+  db: Pick<Db, 'rpc'>, nowSec: number, nowMin: number,
+): Promise<NotificationItem | null> {
+  let lastOk: string | null;
+  try {
+    // execution_logs has no account_id column yet, so the RPC ignores the argument (see the migration).
+    lastOk = await db.rpc<string | null>('last_success_at', { p_account_id: 0 }, { retries: 1 });
+  } catch {
+    return null;
+  }
+  if (typeof lastOk !== 'string') return null;
+  const lastOkMs = Date.parse(lastOk);
+  if (!Number.isFinite(lastOkMs)) return null;
+  const staleMin = Math.floor((nowSec * 1000 - lastOkMs) / 60000);
+  if (staleMin < OUTAGE_ALARM_MINUTES) return null;
+  return {
+    event_type: 'outage',
+    // One alert per 15-minute bucket: a stuck lock fails every tick for hours.
+    dedupe_key: `outage:${Math.floor(nowMin / 900)}`,
+    message: `⚠️ <b>PIPELINE OUTAGE</b>\nTidak ada run SUCCESS selama ${staleMin} menit.\nTerakhir: ${lastOk}`,
+  };
+}
+
 export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunResult> {
   const rawFetch = opts.fetchImpl ?? fetch;
   const limit = opts.subrequestLimit ?? parseSubrequestLimit(env.SUBREQUEST_LIMIT);
@@ -323,10 +365,19 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   const scheduledIso = opts.trigger === 'cron'
     ? iso(floorTo(Math.floor(opts.scheduledTime / 1000), 60))
     : new Date(opts.scheduledTime).toISOString();
+  // A stuck lock makes this tick return below, so it never reaches the notifications step where the
+  // alarm normally rides. The check is cheap here: the run does nothing else.
+  const bootSec = Math.floor(now() / 1000);
   const ctx = await db.rpc<BeginRun>('begin_run', {
     p_scheduled: scheduledIso, p_trigger: opts.trigger, p_lock_ttl_seconds: LEASE_TTL_SECONDS,
   });
-  if (!ctx?.ok) return { status: 'SKIPPED', reason: ctx?.reason ?? 'unknown', runId: ctx?.run_id };
+  if (!ctx?.ok) {
+    const note = await outageAlarmNote(db, bootSec, floorTo(bootSec, 60));
+    if (note) {
+      try { await dispatchNotifications(env, db, [note], fetchImpl); } catch { /* best effort */ }
+    }
+    return { status: 'SKIPPED', reason: ctx?.reason ?? 'unknown', runId: ctx?.run_id };
+  }
 
   // Fencing token for this lease. Every heartbeat renewal and the final release must present it, so a
   // run that overran its TTL can never mutate state or free a lease another run now owns.
@@ -956,7 +1007,15 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       const sellSignals = new Set(newSignals.filter((s) => s.side === 'SELL').map((s) => s.pair_id));
       // Strength drives the exit policy (a strong SELL leaves even at a loss), so keep the per-pair value.
       const sellStrength = new Map<string, number>();
-      for (const s of newSignals) if (s.side === 'SELL') sellStrength.set(s.pair_id, Number(s.strength));
+      // The SELL signal that triggered an exit is recorded on the resulting order so the exit signal's
+      // own quality can be measured later (16/16 SELL orders used to store a NULL signal_id).
+      const sellSignalId = new Map<string, number>();
+      for (const s of newSignals) {
+        if (s.side === 'SELL') {
+          sellStrength.set(s.pair_id, Number(s.strength));
+          sellSignalId.set(s.pair_id, Number(s.id));
+        }
+      }
       const pairMin = new Map(pairs.map((p) => [p.id, p.trade_min_base_currency]));
       const pairFee = new Map(pairs.map((p) => [p.id, p.trade_fee_percent_taker]));
       const pairPrecision = new Map(pairs.map((p) => [p.id, p.price_precision ?? null]));
@@ -991,8 +1050,19 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const fillBid = fillBidOverride !== null ? fillBidOverride : bid;
         const fill = sellFillPrice(fillBid, slip);
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
-        const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
+        const closeArgs = {
           p_position_id: pos.id, p_requested_price: fillBid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
+        };
+        // Deploy order must not matter. A database that has not taken the signal_id migration answers
+        // 404 for the seven-argument form, and a position must still be closed: the id is bookkeeping,
+        // so it is dropped rather than leaving the position unprotected.
+        const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
+          ...closeArgs,
+          // Only a signal exit has a signal behind it; a bracket or a risk exit has none.
+          p_signal_id: reason === 'SIGNAL' ? (sellSignalId.get(pos.pair_id) ?? null) : null,
+        }).catch((e: unknown) => {
+          if (!isMissingRpc(e)) throw e;
+          return db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', closeArgs);
         });
         if (r?.ok) {
           open.delete(pos.pair_id);
@@ -1021,6 +1091,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               if (s.side !== 'SELL') continue;
               sellSignals.add(s.pair_id);
               if (!sellStrength.has(s.pair_id)) sellStrength.set(s.pair_id, Number(s.strength ?? 0));
+              if (!sellSignalId.has(s.pair_id)) sellSignalId.set(s.pair_id, Number(s.id));
             }
           }
         } catch (e) {
@@ -1488,6 +1559,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     }
 
     // 8. Telegram: system errors (max one per hour per error set) and hourly worker status
+    // The outage check sits here, after every budget allocation is settled, so the extra subrequest is
+    // paid from the reserve instead of shrinking the trade/history window computed earlier in the run.
+    const outageNote = await outageAlarmNote(db, nowSec, nowMin);
+    if (outageNote) notes.push(outageNote);
     if (errors.length) {
       const sig = errors.map((e) => e.split(':')[0]).sort().join(',');
       notes.push({ event_type: 'system_error', dedupe_key: `error:${floorTo(nowSec, 3600)}:${sig}`, message: messages.error(errors) });
