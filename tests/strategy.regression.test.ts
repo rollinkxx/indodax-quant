@@ -61,9 +61,14 @@ describe('FIX-03 MTF sell filter', () => {
     expect(out.action.reason).toBe('mtf_blocked_mtf_sell_against_uptrend');
   });
 
-  it('T11 lets a strong SELL through the same uptrend', () => {
-    const out = run(85, [tf('15m', 'bull'), tf('1h', 'bull')]);
-    expect(out.action.action).toBe('SELL');
+  // T11 originally expected raw strength 85 to pass, which only held because the filter compared the
+  // strength before the timeframe adjustment. N4 judges the adjusted value: 85 - 30 = 55 is weak, so
+  // the SELL that survives the same uptrend is the one that still clears the bar after the penalty.
+  it('T11 lets a SELL through the same uptrend only if it still clears the bar after the penalty', () => {
+    expect(run(100, [tf('15m', 'bull'), tf('1h', 'bull')]).action.action).toBe('SELL');
+    expect(run(85, [tf('15m', 'bull'), tf('1h', 'bull')]).action).toMatchObject({
+      action: 'HOLD', reason: 'mtf_blocked_mtf_sell_against_uptrend',
+    });
   });
 
   it('T12 does not block a SELL when the 1h anchor is not bullish', () => {

@@ -197,15 +197,6 @@ export function applyMtf(decision: SignalDecision | null, states: TfState[], mod
     if (anchor.trend !== want) return { decision: null, blocked: 'mtf_anchor_not_bullish', summary };
   }
 
-  if (mode === 'filter' && decision.side === 'SELL' && opts.filterSell) {
-    const anchor = states.find((s) => s.tf === '1h');
-    const fast = states.find((s) => s.tf === '15m');
-    const bothBull = anchor?.trend === 'bull' && fast?.trend === 'bull';
-    if (bothBull && decision.strength < opts.minSellStrength) {
-      return { decision: null, blocked: 'mtf_sell_against_uptrend', summary };
-    }
-  }
-
   let strength = decision.strength;
   if (mode === 'score' || mode === 'filter') {
     for (const s of states) {
@@ -213,11 +204,25 @@ export function applyMtf(decision: SignalDecision | null, states: TfState[], mod
       else if (s.trend === against) strength -= 15;
     }
   }
+  const finalStrength = Math.max(0, Math.min(100, strength));
+
+  // Judged on the adjusted strength: a SELL against two bullish timeframes loses 30 points, and it
+  // is that number the engine acts on. Filtering on the raw strength let through exactly the SELLs
+  // this filter exists to block.
+  if (mode === 'filter' && decision.side === 'SELL' && opts.filterSell) {
+    const anchor = states.find((s) => s.tf === '1h');
+    const fast = states.find((s) => s.tf === '15m');
+    const bothBull = anchor?.trend === 'bull' && fast?.trend === 'bull';
+    if (bothBull && finalStrength < opts.minSellStrength) {
+      return { decision: null, blocked: 'mtf_sell_against_uptrend', summary };
+    }
+  }
+
   const aligned = states.every((s) => s.trend === want);
   return {
     decision: {
       ...decision,
-      strength: Math.max(0, Math.min(100, strength)),
+      strength: finalStrength,
       reasons: [...decision.reasons, aligned ? `${text} (searah)` : text],
     },
     summary,
