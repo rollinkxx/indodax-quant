@@ -636,7 +636,9 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const prevCovered = toSec(p.covered_until);
         const plan = plans.get(p.id)!;
         const deferred = plan.historyRange !== null && !budgeted.has(p.id);
-        let history: Candle[] | null = [];
+        // null, not []: a deferred or unsent request must never look like "the source published
+        // nothing", which now means the frontier may advance.
+        let history: Candle[] | null = null;
         // Both causes leave the same evidence in the database: the cursor must not move past a hole
         // that this run did not repair, or the next run will trust it and skip the backfill.
         let held = deferred;
@@ -684,6 +686,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           trades: trades.length, new: fresh.length, m1: built.m1.length, m5: built.m5.length,
           backfilled: built.backfilled, recovery_from: recoveryStarts.get(p.id) ?? null,
           history_range: plan.historyRange, history_complete: built.historyComplete,
+          history_source: !plan.historyRange ? undefined : history === null ? 'error' : history.length === 0 ? 'unpublished' : 'ok',
           history_missing_minutes: built.missingMinutes, history_deferred: held || undefined,
         };
       }));

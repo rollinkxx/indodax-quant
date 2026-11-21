@@ -452,6 +452,35 @@ describe('pipeline: unwarmed universe members must not break the run', () => {
     expect((r.steps as any).budget.info.used).toBeLessThanOrEqual(50);
   });
 
+  // 2026-11-21: the Telegram alert "backfill xlmidr: incomplete_coverage (1265 missing minute(s))"
+  // every hour. INDODAX publishes no 1m OHLC for that pair, so the shortfall could never be repaired;
+  // the run went PARTIAL and the system-error notifier fired forever while the pair stored no candles.
+  it('does not alert when a pair has no published 1m history at all', async () => {
+    const o = setup({
+      extraPairs: ['xlmidr'], nullCandlePairs: ['xlmidr'], staleCoverage: true, emptyHistoryPairs: ['xlmidr'],
+    });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+
+    expect(r.errors).toEqual([]);
+    expect(r.status).toBe('SUCCESS');
+    const info = (r.steps as any).build_candles.info.xlmidr;
+    expect(info.history_complete).toBe(true);
+    expect(info.history_source).toBe('unpublished');
+    // The frontier moves to the current minute, which is what unblocks 5m aggregation next run.
+    const sync = (o.rpcs.find((x) => x.fn === 'ingest_market')!.body.p_sync as any[]).find((s) => s.pair_id === 'xlmidr');
+    expect(sync.covered_until).toBe(new Date(Math.floor(NOW / 60) * 60 * 1000).toISOString());
+    expect(info.history_missing_minutes).toBeGreaterThan(0);
+  });
+
+  it('still alerts when the OHLC response is partial rather than absent', async () => {
+    // A source that returned most of the window can usually return the rest, so this stays loud.
+    const o = setup({ extraPairs: ['xlmidr'], nullCandlePairs: ['xlmidr'], staleCoverage: true, shortHistoryPairs: ['xlmidr'] });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: o.f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('PARTIAL');
+    expect((r.errors ?? []).some((e) => e.includes('incomplete_coverage'))).toBe(true);
+  });
+
   it('reserves budget so store_market and finish_run survive a tight subrequest cap', async () => {
     const extraPairs = Array.from({ length: 12 }, (_, i) => `x${i}idr`);
     const o = setup({ extraPairs, nullCandlePairs: extraPairs, mtfMode: 'on' });

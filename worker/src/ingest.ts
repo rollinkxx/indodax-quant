@@ -134,7 +134,13 @@ export function buildPairCandles(trades: Trade[], plan: CoveragePlan, coveredUnt
       if (!byMinute.has(t)) missingMinutes++;
     }
   }
-  const historyComplete = !plan.historyRange || (history !== null && missingMinutes === 0);
+  // INDODAX publishes no 1m OHLC for some thin pairs: history_v2 answers [] for every window even
+  // while the trade stream keeps flowing (xlmidr, 2026-11-21). An empty answer has nothing left to
+  // repair, so the frontier advances on the trade stream alone — refusing to advance left that pair
+  // without a single 5m candle for 7 days and re-alerted every hour. A *partial* answer still holds
+  // the frontier back: a source that returned most of the window can usually return the rest.
+  const emptyHistory = plan.historyRange !== null && history !== null && history.length === 0;
+  const historyComplete = !plan.historyRange || (history !== null && (missingMinutes === 0 || emptyHistory));
   const newCoveredUntil = historyComplete ? Math.max(coveredUntil ?? plan.nowMin, plan.nowMin) : coveredUntil;
   const aggregateStart = plan.historyRange && historyComplete
     ? plan.historyRange.from
