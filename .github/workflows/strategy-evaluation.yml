@@ -13,6 +13,15 @@ on:
     # 17:00 UTC = 00:00 WIB, when INDODAX volume is at its daily low.
     - cron: '0 17 * * *'
   workflow_dispatch:
+    inputs:
+      days:
+        description: 'Official history window in days (1-180)'
+        required: false
+        # The nightly run keeps 30 days; a manual dispatch can widen the window without editing this
+        # file. 180 days is the supported maximum, and coalesced slot fetches keep a cold run of that
+        # size (23 requests per pair instead of 361) inside the job's timeout.
+        default: '30'
+        type: string
 
 concurrency:
   group: strategy-evaluation
@@ -27,7 +36,8 @@ jobs:
     timeout-minutes: 25
     env:
       SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
-      BACKTEST_HISTORY_DAYS: 30
+      # A dispatch passes `days`; the nightly schedule has no inputs, so it keeps the 30-day window.
+      BACKTEST_HISTORY_DAYS: ${{ github.event.inputs.days || '30' }}
       BACKTEST_HISTORY_CACHE: .cache/backtest-history
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
     steps:
@@ -36,9 +46,9 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --no-audit --no-fund
-      # Past 12h slots never change, so a run only fetches the two newest ones per pair. The key is
-      # unique per run (a cache entry is immutable) and restore-keys pulls the most recent one; the
-      # first cold run still costs the full ~12 minutes, every run after it is minutes cheaper.
+      # Past 12h slots never change, so a warm run only fetches the newest slot per pair. The key is
+      # unique per run (a cache entry is immutable) and restore-keys pulls the most recent one; a cold
+      # run pays for the whole window once, and coalesced requests keep even 180 days to ~23 per pair.
       - name: Restore cached official history
         uses: actions/cache@v4
         with:
