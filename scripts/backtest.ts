@@ -34,6 +34,7 @@ import { withIndodaxRelay } from '../worker/src/relay';
 import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, createRequestStartLimiter, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
 import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 import { createIndicatorRowsCache, signalAtBar } from '../shared/backtestSignal';
+import { alignedSlots, HISTORY_SLOT_SECONDS, isSlotComplete, SlotCache, slotLastClosedMinute } from './history-cache';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -60,7 +61,8 @@ const rateLimitedFetch: typeof fetch = async (input, init) => {
   return fetch(input, init);
 };
 const indodax = new IndodaxClient(withIndodaxRelay(rateLimitedFetch, proxyUrl, KEY), { timeoutMs: 8_000, retries: 2 });
-const HISTORY_CHUNK_SECONDS = 12 * 60 * 60;
+// Optional on-disk cache of past 12h slots. Unset = always refetch, so local runs behave as before.
+const historyCache = new SlotCache(process.env.BACKTEST_HISTORY_CACHE?.trim() || null);
 
 interface Row { open_time: string; open: number; high: number; low: number; close: number; volume: number; trade_count: number; source: string }
 interface StoredPair {
@@ -72,6 +74,7 @@ interface OfficialHistoryResult {
   metrics: {
     daysRequested: number;
     apiChunks: number;
+    cacheHits: number;
     minuteBarsReceived: number;
     complete5mBars: number;
     expected5mBars: number;
@@ -122,14 +125,28 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
   const { days, fromSec, toSec } = range;
   const oneMinute: Candle[] = [];
   let apiChunks = 0;
+  let cacheHits = 0;
 
-  for (let from = fromSec; from < toSec; from += HISTORY_CHUNK_SECONDS) {
-    const endExclusive = Math.min(from + HISTORY_CHUNK_SECONDS, toSec);
-    const lastClosedMinute = endExclusive - 60;
-    if (lastClosedMinute < from) continue;
-    const rows = await indodax.getHistory(symbol.toUpperCase(), '1', from, lastClosedMinute);
+  // Slots are aligned to the UTC 12h grid, not to the sliding window: a window-relative boundary
+  // moves every run, so nothing would ever hit the cache. Whole slots are fetched (the extra leading
+  // minutes are trimmed by the range filter below), which is what makes an interior slot stable.
+  for (const slotStart of alignedSlots(fromSec, toSec, HISTORY_SLOT_SECONDS)) {
+    const lastClosedMinute = slotLastClosedMinute(slotStart, toSec, HISTORY_SLOT_SECONDS);
+    if (lastClosedMinute < slotStart) continue;
+    const cached = await historyCache.read(symbol, slotStart, HISTORY_SLOT_SECONDS);
+    if (cached) {
+      oneMinute.push(...cached);
+      cacheHits++;
+      continue;
+    }
+    const rows = await indodax.getHistory(symbol.toUpperCase(), '1', slotStart, lastClosedMinute);
     oneMinute.push(...rows);
     apiChunks++;
+    if (isSlotComplete(slotStart, toSec, HISTORY_SLOT_SECONDS)) {
+      await historyCache.write(symbol, slotStart, rows).catch((e) => {
+        console.error(`[HISTORY CACHE] ${symbol} ${slotStart}: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }
   }
 
   const complete5m = aggregateCompleteMinuteHistory(oneMinute, fromSec, toSec);
@@ -142,6 +159,7 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
     metrics: {
       daysRequested: days,
       apiChunks,
+      cacheHits,
       minuteBarsReceived: oneMinute.length,
       complete5mBars: complete5m.length,
       historyCoveragePct,
@@ -507,7 +525,7 @@ async function main() {
       const fetched = await Promise.all(batch.map(async (pair) => {
         const result = await loadOfficialHistory(pair.symbol, historyRange);
         console.error(
-          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% OHLC), active 5m=${result.metrics.activeVolume5mBars} (${result.metrics.activeVolumeCoveragePct}%), zero-volume 1m=${result.metrics.zeroVolumeMinuteBars}`,
+          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, cached=${result.metrics.cacheHits}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% OHLC), active 5m=${result.metrics.activeVolume5mBars} (${result.metrics.activeVolumeCoveragePct}%), zero-volume 1m=${result.metrics.zeroVolumeMinuteBars}`,
         );
         return [pair.id, result] as const;
       }));
