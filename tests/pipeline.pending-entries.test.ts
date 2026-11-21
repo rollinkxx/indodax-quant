@@ -24,6 +24,16 @@ const queued = (over: Record<string, unknown> = {}) => ({
 
 const paperInfo = (r: Awaited<ReturnType<typeof runPipeline>>) => (r.steps as any).paper_trading.info;
 
+// The fixture's flat volume leaves volumeRatio at 1.0, below volumeMultiplier 1.2, so no BUY setup
+// can ever be valid. A heavy tail makes the last candles real volume expansion.
+const heavyTailVolume = (i: number) => (i >= 245 ? 50 : 2);
+// A drifting zigzag: RSI lands mid-band and EMA9 stays above EMA21, so the BUY setup is genuinely
+// valid (a straight ramp pins RSI at 100 and fails rsiBuyMax).
+const liveSetup = {
+  candleClose: (i: number) => 1000 + i * 0.5 + 5 * Math.sin(i / 2),
+  candleVolume: heavyTailVolume,
+};
+
 describe('FIX-01 pending entry retry queue', () => {
   it('T1 queues a BUY rejected by wide_spread with a TTL of entryRetryTtlCandles candles', async () => {
     // 0.11% spread against a 0.05% limit => entry_gate wide_spread.
@@ -47,6 +57,7 @@ describe('FIX-01 pending entry retry queue', () => {
       mtfMode: 'off',
       newSignals: [],
       pendingEntries: [queued()],
+      ...liveSetup,
       openResult: { ok: true, position_id: 77, cash_after: 9_700_000 },
     });
     const r = await run(o);
@@ -65,6 +76,7 @@ describe('FIX-01 pending entry retry queue', () => {
       mtfMode: 'off',
       newSignals: [],
       pendingEntries: [queued()],
+      candleVolume: heavyTailVolume,
       // Descending closes invert the EMA stack: setup_valid is false in the fresh diagnostics.
       candleClose: (i) => 2000 - i,
     });

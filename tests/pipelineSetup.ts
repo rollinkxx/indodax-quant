@@ -5,15 +5,15 @@ import { fakeFetch, json, SB } from './fakes';
 export const NOW = 1_800_000_000 - (1_800_000_000 % 900) + 30; // 30 s after a quarter-hour boundary
 export const expectedLast = Math.floor(NOW / 300) * 300 - 300;
 
-export function candleRows(n: number, endT: number, step: number, fn: (i: number) => number) {
+export function candleRows(n: number, endT: number, step: number, fn: (i: number) => number, vol: (i: number) => number = () => 2) {
   return Array.from({ length: n }, (_, i) => {
     const t = endT - (n - 1 - i) * step;
     const c = fn(i);
-    return [t, c, c + 1, c - 1, c, 2, 'trades'];
+    return [t, c, c + 1, c - 1, c, vol(i), 'trades'];
   });
 }
 
-export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number } = {}) {
+export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number; candleVolume?: (i: number) => number } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -50,7 +50,7 @@ export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolea
             ...(opts.signalsDue === undefined ? {} : { signals_due: opts.signalsDue, phase: opts.signalsDue ? 'signal' : 'mark' }),
           });
         case 'get_recent_candles': {
-          const rows = candleRows(250, expectedLast, 300, opts.candleClose ?? ((i) => 1000 + i));
+          const rows = candleRows(250, expectedLast, 300, opts.candleClose ?? ((i) => 1000 + i), opts.candleVolume);
           if (opts.oldGap5mAt !== undefined) rows.splice(opts.oldGap5mAt, 1);
           // Production returns null for a pair with no stored bars (jsonb_agg over an empty set),
           // which is exactly what broke load_coverage_state.
