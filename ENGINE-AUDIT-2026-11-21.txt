@@ -1,0 +1,364 @@
+================================================================================
+LAPORAN KOORDINASI — PERBAIKAN ENGINE indodax-quant
+Tanggal : 2026-11-21
+Repo    : https://github.com/rollinkxx/indodax-quant
+Peran   : koordinator 6 agen otonom
+================================================================================
+
+--------------------------------------------------------------------------------
+0. RINGKASAN EKSEKUTIF
+--------------------------------------------------------------------------------
+Pertanyaan yang harus dijawab: kenapa engine paper-trading ini tidak menghasilkan
+profit, dan bisakah diperbaiki.
+
+Jawaban akhir, setelah 6 agen dan ~3.900 evaluasi sinyal:
+
+  BUG ENGINE NYATA DITEMUKAN DAN SUDAH DIPERBAIKI (5 PR merged).
+  TETAPI PENYEBAB UTAMA KERUGIAN BUKAN BUG — MELAINKAIN BIAYA.
+  Sinyal yang dipakai tidak punya edge kotor (gross edge) yang cukup untuk
+  menutup biaya transaksi di bursa ini. Dan setelah 12 bulan data, tidak ada
+  satu pun keluarga sinyal yang bisa menutup biaya itu.
+
+Angka pemutusnya satu kalimat:
+  Edge terbaik yang bisa diukur dengan presisi tinggi (mean reversion 5m,
+  5.514 trade uji) bernilai 0,30% per transaksi bolak-balik. Bursa ini
+  memungut 0,40% HANYA dari fee taker, sebelum slippage dan spread.
+
+Artinya: bahkan dengan akun tanpa slippage dan tanpa spread, sinyal ini rugi.
+Ini bukan soal tuning parameter. Ini soal aritmetika.
+
+--------------------------------------------------------------------------------
+1. CARA KERJA KOORDINASI
+--------------------------------------------------------------------------------
+Enam agen dijalankan paralel lewat OpenHands Cloud API. Setiap agen diberi tugas
+sempit, batas keras (read-only atau file tertentu), dan kewajiban membuktikan
+klaimnya. Koordinator (agen ini) memverifikasi ulang klaim kritis secara mandiri,
+menggabungkan hasil, dan memberi tugas lanjutan bila hasilnya belum menentukan.
+
+  Agen  A  Audit adversarial atas diagnosis koordinator       (read-only)
+  Agen  B  Instrumentasi MFE/MAE di backtest                  (kode)
+  Agen  C  Throughput fetch history 180 hari                  (kode)
+  Agen  D  Perbaikan bracket + gate kelayakan biaya           (kode)
+  Agen  E  Riset sinyal: apakah ada edge yang menutup biaya   (riset, 2 putaran)
+  Agen  F  Koalesensi fetch + ketahanan error 4xx             (kode, 2 putaran)
+
+Agen E dipakai ulang untuk putaran kedua (sampel 12 bulan) dan ketiga (horizon
+panjang) tanpa membangun ulang harness — percakapan yang sudah selesai bisa
+dilanjutkan, sandbox dan konteksnya masih hidup.
+
+Pola keputusan yang dipakai:
+  1. Tiap agen wajib menyatakan apa yang TIDAK diperbaikinya.
+  2. Klaim angka diverifikasi ulang oleh koordinator sebelum dipakai.
+  3. Hasil yang tidak lolos uji yang ditetapkan SEBELUM melihat data = gugur,
+     walaupun angkanya bagus.
+
+--------------------------------------------------------------------------------
+2. KOREKSI ATAS DIAGNOSIS AWAL (bagian yang penting untuk jujur)
+--------------------------------------------------------------------------------
+Diagnosis awal koordinator SALAH di empat titik. Agen A membantahnya, dan
+koordinator memverifikasi ulang langsung ke kode:
+
+  (a) "avgWinPct 1,026% itu gross"          -> SALAH. Itu NET.
+      Bukti: scripts/backtest.ts
+        pnl = pos.qty * fill - fee - pos.cost
+        pos.cost = notional + fee entry   (shared/paper.ts::positionSize)
+      Jadi 1,026% sudah bersih dari dua kaki fee dan dua kaki slippage.
+      Klaim "pemenang nyaris tidak menutup biaya" tidak berdasar.
+
+  (b) "ATR sekitar 1,2% dari harga"         -> SALAH 4-10x.
+      ATR median sebenarnya: btc 0,121% | eth 0,150% | xrp 0,185% |
+      sol 0,200% | hype 0,249% | uai 1,014%. Tertimbang trade: 0,32%.
+
+  (c) "42 trade adalah hasil"               -> SALAH FRAMING.
+      35 dari 42 trade ada di wilayah in-sample. Holdout sebenarnya hanya
+      7 trade, net -199,67 IDR — praktis nol.
+
+  (d) "Biaya 0,62%"                         -> SALAH. Tertimbang 0,648%
+      (0,60% pair likuid / 0,70% menengah / 0,90% bri).
+
+Yang BENAR dari diagnosis awal: angka 42 trade, win 33,33%, payoff 0,5118,
+net -1.017.162 IDR — semuanya tereproduksi persis.
+
+Dan satu bug yang justru terlewat oleh koordinator, ditemukan Agen A:
+
+  computeStops menolak bracket ATR bila 5*ATR/harga < 0,002 (ATR < 0,133%).
+  Untuk BTC, 56,6% bar ada di bawah ambang itu, jadi BTC memakai bracket
+  fallback TETAP 2%/4%. Sementara trailingStop tetap menghitung jarak trail
+  dari ATR mentah 0,121%. Hasilnya: trailing stop 0,121% mengatur stop 2%.
+  Trail tidak bisa ratchet sampai harga naik >0,72%, lalu memaku stop di
+  titik break-even. Inilah sebabnya 5 exit trailing BTC rata-rata hanya
+  +0,296% net padahal targetnya 4%.
+
+  Bug ini nyata dan sudah diperbaiki (PR #88).
+
+--------------------------------------------------------------------------------
+3. TEMUAN UTAMA — VONIS 12 BULAN
+--------------------------------------------------------------------------------
+Agen E membangun ulang seluruh pengujian sinyal dari nol dengan disiplin ketat:
+tanpa lookahead, masuk di open bar berikutnya, split kronologis 60/40, hanya
+angka test-set yang dipakai untuk vonis, minimum 100 trade, plus dua uji null.
+
+DATA
+  Sumber   : endpoint publik INDODAX /tradingview/history_v2
+  Periode  : 2025-11-14 -> 2026-11-21 (12 bulan)
+  Cakupan  : 2.092.979 bar 5m, 21 pair, 0 gap, 0 duplikat (diverifikasi per pair)
+  Rezim    : 2 bull, 2 bear, 1 campuran
+             (2025-11 mania sempit, Q1 bear, Q2 campuran, Q3 bull, Q4 crash)
+
+SKALA PENCARIAN
+  1.936 evaluasi (159 set parameter x horizon x 5m/1h/4h x 21 pair)
+  982 evaluasi punya >= 100 trade di test-set
+  69 net-positif di test-set
+  8 positif di KEDUA belahan (train dan test) — semuanya mean reversion 1h/4h
+
+KEDELAPANNYA GUGUR, satu per satu, pada uji yang ditetapkan sebelum melihat data:
+
+  Uji stabilitas kuartal
+    MR 4h positif HANYA di dua kuartal bull, negatif di dua kuartal bear.
+    Itu bukan edge, itu beta long: beli saat turun, dan pantulan datang
+    karena semuanya sedang naik.
+    Hasil 1h yang spektakuler (+5,64%) mendapat seluruh keuntungannya dari
+    52 hari terakhir — satu rezim, dari 71 trade.
+
+  Uji konsentrasi pair
+    Konfigurasi terbaik (MR 4h, n=191): pair cstidr menyumbang 50,2% dari
+    seluruh gross, dari 17 trade. Tiga pair teratas = 63,7%.
+    Tanpa cstidr, rata-rata turun dari 2,33% ke 1,27%.
+    Hasil yang ditanggung satu pair bukan hasil.
+
+  Uji subset pair likuid (8 pair: btc, eth, sol, xrp, doge, pepe, hype, fartcoin)
+    Konfigurasi terbaik di seluruh universe: break-even 0,693%
+    [-0,459; +1,906] — confidence interval mencakup nol.
+    Konfigurasi pilihan train: gross -0,332%, NEGATIF.
+    Keluarga MR 5m jatuh ke +0,044% gross.
+    Artinya: di pair tempat Anda benar-benar bisa terisi order, tidak ada edge.
+
+  Uji null pemilihan (selection bias)
+    Seluruh pencarian dijalankan ulang di atas data yang return-nya diacak.
+    Hasil terbaik riil 5m  : +0,135%
+    Hasil terbaik 12 pass acak: rata-rata +4,45%, p95 +7,18%, max +9,01%
+    Hasil terbaik riil 1h  : +5,642% -> dikalahkan 3 dari 12 pass acak (p~0,25)
+    Hasil terbaik riil 4h  : +3,149% -> dikalahkan 8 dari 12 pass acak (p~0,67)
+
+  Uji horizon panjang (48j / 72j / 168j) — putaran ketiga
+    Gross memang naik dengan horizon (0,52% -> 0,68% -> 1,25%), dan konfigurasi
+    168 jam akhirnya melewati 0,65% net. TETAPI:
+      - pada 168 jam tiap pair hanya menghasilkan ~20 trade non-overlap,
+        sehingga sampel efektif hanya beberapa lusin,
+      - break-even CI di 168 jam selebar +-3%,
+      - 0 dari 9 konfigurasi pada pair likuid yang lolos,
+      - uji null: 20 dari 20 pass acak mengalahkan hasil terbaik riil (p=1,00).
+    Kesimpulan Agen E: "The constraint was never the holding period."
+
+HASIL PER KELUARGA SINYAL (test-set, biaya 0,65%)
+
+  Keluarga                              n test   gross/trade   net/trade   vonis
+  ------------------------------------  -------  -----------   ---------   ------------------
+  Trend continuation (PRODUKSI)          4.908     -0,061%      -0,711%    mati; 0/21 pair
+                                                                           positif; p=0,67
+                                                                           vs entry acak
+  Mean reversion z L=48 k=2.5 (5m,4h)    5.514     +0,299%      -0,351%    edge asli, tapi
+                                                                           separuh biaya
+  Mean reversion z L=192 k=2.5 (5m,24h)  1.452     +0,577%      -0,073%    hampir, tetap
+                                                                           kurang
+  RSI oversold thr=25 (5m,4h)            4.530     +0,587%      -0,063%    terdekat, tetap
+                                                                           kurang
+  Bollinger re-entry                     3.878     +0,121%      -0,529%    gagal
+  Donchian breakout N=24                 14.804    -0,111%      -0,761%    LEBIH BURUK
+                                                                           dari acak (p=0,98)
+  ATR range expansion                    13.225    -0,087%      -0,737%    LEBIH BURUK
+                                                                           dari acak (p=1,00)
+  Volume/volatility ratio                13.580    -0,036%      -0,686%    LEBIH BURUK
+                                                                           dari acak
+  Order flow (taker buy ratio)             311     +0,108%      -0,542%    data hanya 3 hari
+                                                                           (market_trades
+                                                                           mulai 2026-11-18)
+
+  Catatan: breakout, range expansion, dan volume spike secara statistik
+  SIGNIFIKAN LEBIH BURUK daripada masuk acak. Bukan hanya tidak berfungsi —
+  mereka memilih titik masuk yang merugikan.
+
+ANGKA PEMUTUS — BREAK-EVEN COST
+  Break-even = rata-rata gross per trade; CI = block bootstrap 4.000 draw
+  atas hari kalender (menjaga korelasi antar pair dalam hari yang sama).
+
+  Konfigurasi                    n test   break-even   CI 95%
+  ----------------------------   ------   ----------   -------------------
+  MR 5m L=48 k=2.5 H=48            5.514   0,299%      [0,166 ; 0,436]  <- presisi tinggi
+  RSI 5m thr=25 H=48               4.530   0,587%      [0,233 ; 1,188]
+  MR 4h L=48 k=2.5 H=12              123   0,864%      [-0,759 ; 2,899]
+  MR 4h L=24 k=2.5 H=12              191   2,326%      [0,607 ; 4,612]
+  MR 4h, subset likuid                87   0,693%      [-0,459 ; 1,906] <- mencakup nol
+
+  Biaya bursa (dari shared/paper.ts + config aktif):
+    round trip = 0,2% x 2 (taker) + 10bps x 2 x tier + spread
+               = 0,40%  +  0,20% x {1; 1,5; 2,5; 4}  + spread
+
+    Tier slippage  Turnover 24 jam   Fee+slip   Pair di universe ini
+    1x             >= 1e10           0,60%      btcidr
+    1,5x           2e9 - 1e10        0,70%      eth, sol, xrp, hype,
+                                                fartcoin, pepe, pippin, uai
+    2,5x           5e8 - 2e9         0,90%      doge, sui, ada, ondo, aster,
+                                                icn, cst, pieverse, pengu
+    4x             < 5e8             1,20%      near, link
+
+  Perbandingan yang menentukan:
+    Edge terbaik (presisi tinggi)   0,30%
+    Fee taker saja                  0,40%   <- sudah melebihi edge
+    Biaya realistis pair likuid     0,60-0,70%
+
+  Tidak ada susunan biaya di katalog yang bisa turun di bawah 0,30%:
+  information_schema menunjukkan TIDAK ADA kolom maker sama sekali. Satu-satunya
+  kolom fee adalah market_pairs.trade_fee_percent_taker, nilainya 0,2 untuk
+  seluruh 438 pair. Engine juga tidak punya jalur order maker.
+
+VONIS AGEN E (kutipan)
+  "This venue cannot be traded profitably by a systematic bot at its own fee
+   schedule. ... The honest product statement is that the paper-trading engine
+   is an execution and risk simulator, not a profitable strategy: its live rule
+   is -0,711% net per trade with 0/21 pairs positive over 12 months, and the
+   best signal this market admits is worth roughly half of one taker fee."
+
+--------------------------------------------------------------------------------
+4. YANG SUDAH DIPERBAIKI DI ENGINE (5 PR merged ke main)
+--------------------------------------------------------------------------------
+#86  a950d78  Instrumentasi MFE/MAE per trade
+     Setiap SimTrade sekarang membawa mfePct, maePct, tpDistancePct,
+     reachedTakeProfit; measure() melaporkan p50/p75/p90/p95. Perilaku
+     dijamin tidak berubah lewat golden digest SHA-256 identik sebelum/sesudah,
+     dan MFE/MAE dihitung ulang independen dari candle.
+     Nilai: sekarang bisa membedakan "target tidak tercapai secara konstruksi"
+     dari "target tercapai tapi didahului exit".
+
+#87  0ef6dc8  Throughput fetch history
+     Limiter 500ms -> 400ms (150 req/menit vs kuota 180). Konkurensi terbatas.
+     Primitif koalesensi slot. TEMUAN PENTING: endpoint INDODAX diam-diam hanya
+     mengembalikan 12.961 bar 1m terbaru (~9 hari) bila diminta lebih — bukan
+     error, tapi memotong kepala data. Permintaan 30 hari tanpa paginasi akan
+     kehilangan bagian tertua tanpa peringatan.
+
+#88  e17b11c  Trail konsisten dengan bracket + gate kelayakan biaya
+     trailUnit(): jarak trail sekarang diskalakan dari bracket yang benar-benar
+     dipakai posisi, bukan dari ATR mentah.
+       Sebelum: stop 2%, ATR 0,12% -> trail aktif di +0,18%, ratchet pertama
+                di +0,72%, lebar 0,12%, dipaku di break-even.
+       Sesudah: trail aktif di +2,00% (satu jarak stop), ratchet pertama di
+                +2,00%, lebar 1,33%, sisa upside sampai target 4%.
+     take_profit jadi argumen wajib, sehingga compiler mencegah salah satu dari
+     tiga caller diam-diam kembali ke ATR mentah.
+     targetFeasibility() + feasibility_gate: menolak entry bila target bersih
+     tidak menutup biaya bolak-balik + margin minimum (param baru minNetTargetPct).
+     788 test lulus.
+
+#89  ee889d1  Koalesensi slot + input days
+     loadOfficialHistory memakai fetchSlotHistory: 361 -> 23 request per pair
+     untuk 180 hari (7.220 -> 460 total, ~48 menit -> ~3 menit).
+     Guard truncationReason() ('request_over_cap' / 'response_over_cap' /
+     'head_missing') plus syarat per-slot firstReturned <= slot: slot yang tidak
+     tercakup TIDAK di-cache, supaya run berikutnya mengambil ulang, bukan
+     mewarisi lubang beku.
+     workflow_dispatch mendapat input days (default 30; jadwal malam tetap 30).
+
+#90  14ec693  Ketahanan terhadap 4xx transien
+     Run 90 hari pertama mati dalam 24 detik karena satu respons 400
+     history_range_out_of_bounds dari ETHIDR — padahal request yang sama
+     berhasil saat diputar ulang, dan burst 24 request paralel semuanya 200.
+     Sekarang: klasifikasi transient / out_of_bounds / fatal; 3 percobaan dengan
+     backoff 250ms lalu 500ms; out_of_bounds pada request multi-slot MEMBELAH
+     jendela (supaya pair yang listing di tengah jendela tidak kehilangan 15 slot);
+     kegagalan menetap = partial fill, tidak ada bar yang dikarang, slot tidak
+     di-cache; 401/403 tetap fatal supaya relay rusak tidak tercatat sebagai
+     "pair ini tidak punya history".
+
+#91  3cdf3b2  Timeout evaluasi 25 -> 60 menit
+     Setelah fetch jadi cepat, hambatannya pindah ke simulasi candle-only yang
+     skalanya mengikuti panjang jendela: ~6 menit di 30 hari, ~18 menit di 90
+     hari, sehingga run 90 hari dibatalkan di batas 25 menit.
+
+--------------------------------------------------------------------------------
+5. SNAPSHOT PRODUKSI "SEBELUM" (database znikuooxiqfcicyuhqsx)
+--------------------------------------------------------------------------------
+  Posisi dibuka 24 jam terakhir      1
+  Posisi dibuka 7 hari terakhir     14
+  Posisi tertutup (total)           17
+  Posisi terbuka sekarang            0
+  PnL 24 jam                  -52.339 IDR
+  PnL 7 hari                 -290.380 IDR
+
+  Distribusi exit:
+    Alasan            n    avg PnL      avg %    rata-rata tahan   win%
+    STOP_LOSS        12   -37.861     -1,325%        20,1 menit     0,0
+    TRAILING_STOP     2   +15.678     +0,887%        74,9 menit    50,0
+    TAKE_PROFIT       2   +24.008     +1,270%        65,0 menit   100,0
+    SIGNAL            1   +23.680     +1,375%       331,7 menit   100,0
+
+  Win rate 29,4% (5/17), payoff ~0,33.
+  12 dari 17 posisi kena stop loss dengan rata-rata hanya 20 menit.
+  Ini konsisten dengan diagnosis: titik masuk buruk, stop tersentuh cepat.
+
+--------------------------------------------------------------------------------
+6. YANG TIDAK DIPERBAIKI (dan alasannya)
+--------------------------------------------------------------------------------
+- Alpha / profitabilitas. Tidak bisa diperbaiki dengan mengubah kode, karena
+  sinyalnya memang tidak punya edge yang menutup biaya. Semua perubahan entry
+  dan exit akan menghasilkan baris train-positif/test-negatif seperti yang
+  sudah terjadi berkali-kali di riset ini.
+- Realisme fill stop. Exit stop masih slip 0,21-0,57% melewati level stop.
+  Ini celah realisme backtest yang nyata, tapi terpisah dari pertanyaan edge.
+- Defect fee historis 2026-11-17/18 (posisi tercatat ~0,0055%/sisi, bukan 0,2%).
+  Sudah diperbaiki lewat config 2026-11-18. TIDAK di-backfill, karena backfill
+  akan merusak jejak audit PnL realisasi.
+- Jalur order maker. Tidak ada di produk, dan tidak ada kolom fee maker di
+  skema. Inilah satu-satunya perubahan yang secara aritmetika bisa membalik
+  kesimpulan, dan itu pekerjaan produk baru, bukan perbaikan bug.
+
+--------------------------------------------------------------------------------
+7. REKOMENDASI
+--------------------------------------------------------------------------------
+A. JANGAN lagi memposisikan engine ini sebagai "strategi yang sedang dicari
+   profitnya". Bukti 12 bulan sudah cukup kuat. Posisikan sebagai simulator
+   eksekusi dan risiko — dan itu memang sudah menjadi nilai produknya:
+   manajemen posisi, gate risiko, akuntansi fee/slippage, audit trail.
+
+B. BILA tujuannya tetap profit, satu-satunya jalan yang tersisa adalah
+   menurunkan biaya bolak-balik di bawah ~0,30% pada pair likuid. Itu berarti:
+     - entry dengan limit order (maker), bukan taker di ask, dan
+     - venue dengan fee maker ~0,05%/sisi, atau
+     - pair dengan spread jauh lebih tipis.
+   Ini pekerjaan produk: butuh jalur order maker, kolom fee maker di skema,
+   dan model fill parsial. Bukan pekerjaan tuning parameter.
+
+C. BILA tidak ada rencana ke arah B, maka keputusan yang jujur adalah
+   menghentikan akumulasi kerugian: matikan pembukaan posisi baru, biarkan
+   engine menyelesaikan posisi terbuka, dan simpan riwayatnya sebagai bukti
+   audit. Tidak ada gunanya membiarkannya terus membuka posisi yang secara
+   aritmetika tidak bisa menang.
+
+D. JANGAN mengulang sweep indikator. Riset ini sudah menguji 1.936 evaluasi
+   pada 12 bulan data dengan dua uji null. Sweep berikutnya akan menghasilkan
+   angka bagus yang gugur begitu diuji dengan benar.
+
+--------------------------------------------------------------------------------
+8. CARA MEREPRODUKSI
+--------------------------------------------------------------------------------
+  npm test                 # 821 test, 73 file
+  npm run typecheck
+  npm run backtest -- --overrides='{"trailActivationAtr":2.5}'
+  gh workflow run strategy-evaluation.yml -f days=90
+
+  Data riset 12 bulan: 2.092.979 bar, dibangun ulang dari endpoint publik
+  dengan paginasi 9 hari per request (karena cap 12.961 bar 1m).
+
+--------------------------------------------------------------------------------
+9. DAFTAR COMMIT
+--------------------------------------------------------------------------------
+  a950d78  #86  MFE/MAE instrumentation
+  0ef6dc8  #87  throughput fetch history
+  e17b11c  #88  bracket-consistent trail + feasibility gate
+  ee889d1  #89  coalesced slot fetch + days dispatch input
+  14ec693  #90  retry transient history 4xx
+  3cdf3b2  #91  evaluation timeout 60 minutes
+
+================================================================================
+AKHIR LAPORAN
+================================================================================
