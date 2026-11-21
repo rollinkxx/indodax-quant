@@ -25,7 +25,7 @@ import {
   maxPairContributionSharePct, maxRegimeContributionSharePct, netPnlExcludingTopTrades, walkForwardReport,
   type TradeObservation,
 } from '../shared/walkForward';
-import { scenarioSpreadBps, SPREAD_SCENARIOS } from '../shared/fillModel';
+import { percentile, scenarioSpreadBps, SPREAD_SCENARIOS } from '../shared/fillModel';
 import { indexQuotes, observedSpreads as observedSpreadsOf, type QuotePoint } from '../shared/quoteHistory';
 import { normalizeIntervals, type UniverseInterval } from '../shared/universe';
 import { TIMEFRAME_SPECS } from '../shared/timeframes';
@@ -265,6 +265,27 @@ export interface SimTrade {
   reason: string;
   entryTime: number;
   exitTime: number;
+  /** Max favourable excursion above the entry fill over the holding period, in percent (>= 0). */
+  mfePct: number;
+  /** Max adverse excursion below the entry fill over the holding period, in percent (>= 0, magnitude). */
+  maePct: number;
+  /** This trade's own take-profit distance: (takeProfit - entry) / entry * 100. */
+  tpDistancePct: number;
+  /** True when mfePct reached tpDistancePct, i.e. price tagged the target while the position was open. */
+  reachedTakeProfit: boolean;
+}
+
+/**
+ * Fold one observed bar into an open long's running excursions.
+ *
+ * Excursions are measured on the same observed bars the simulation walks, from the entry fill
+ * (the entry bar's open) to the bar the trade exits on, inclusive. OHLC cannot order a bar's
+ * high/low against the exit inside that bar, so a stop-out bar's high still counts as a
+ * favourable excursion: the numbers bound how far price ran, they do not prove the intrabar path.
+ */
+function trackExcursion(pos: { entry: number; mfePct: number; maePct: number }, candle: Candle): void {
+  pos.mfePct = Math.max(pos.mfePct, (candle.h - pos.entry) / pos.entry * 100);
+  pos.maePct = Math.max(pos.maePct, (pos.entry - candle.l) / pos.entry * 100);
 }
 
 /**
@@ -320,6 +341,7 @@ export function simulate(
   let pos: {
     qty: number; entry: number; cost: number; sl: number; tp: number;
     openedIdx: number; entryTime: number;
+    mfePct: number; maePct: number; tpDistancePct: number;
   } | null = null;
   let equity = equity0;
   const win = Math.max(3, p.crossLookback + 1);
@@ -331,6 +353,7 @@ export function simulate(
     if (c.source === 'synthetic' || c.v <= 0 || !isValidCandle(c)) continue;
 
     if (pos) {
+      trackExcursion(pos, c);
       // The entry candle is deliberately processed on the next loop iteration;
       // if both protective levels are touched, stop loss takes precedence.
       const protectiveExit = resolveProtectiveExit(pos.sl, pos.tp, c, pos.entry);
@@ -359,6 +382,8 @@ export function simulate(
         trades.push({
           pair, entry: pos.entry, exit: fill, pnl, cost: pos.cost, reason,
           entryTime: pos.entryTime, exitTime: c.t,
+          mfePct: pos.mfePct, maePct: pos.maePct,
+          tpDistancePct: pos.tpDistancePct, reachedTakeProfit: pos.mfePct >= pos.tpDistancePct,
         });
         pos = null;
       }
@@ -399,6 +424,7 @@ export function simulate(
     pos = {
       qty: size.qty, entry: fill, cost: size.cost, sl: stops.stopLoss,
       tp: stops.takeProfit, openedIdx: i + 1, entryTime: next.t,
+      mfePct: 0, maePct: 0, tpDistancePct: (stops.takeProfit - fill) / fill * 100,
     };
     // Do not skip `next`: the next loop iteration must evaluate the entry candle's
     // high/low for same-candle stop-loss or take-profit execution.
@@ -416,13 +442,33 @@ export function simulate(
       }
     }
     if (!lastObserved) throw new Error(`Open position for ${pair} has no final observed candle`);
-    trades.push(finalizeEndOfDataTrade(pair, pos, lastObserved, slip, feePct));
+    trades.push({
+      ...finalizeEndOfDataTrade(pair, pos, lastObserved, slip, feePct),
+      mfePct: pos.mfePct, maePct: pos.maePct,
+      tpDistancePct: pos.tpDistancePct, reachedTakeProfit: pos.mfePct >= pos.tpDistancePct,
+    });
   }
 
   return trades;
 }
 
-interface Metrics {
+export interface ExcursionPercentiles {
+  p50: number;
+  p75: number;
+  p90: number;
+  p95: number;
+}
+
+/**
+ * p50/p75/p90/p95 of an excursion sample, rounded to 3dp like the other percent metrics.
+ * Linear interpolation (shared/fillModel.percentile); an empty sample reports 0.
+ */
+export function excursionPercentiles(values: readonly number[]): ExcursionPercentiles {
+  const at = (pct: number) => Number(percentile(values, pct).toFixed(3));
+  return { p50: at(50), p75: at(75), p90: at(90), p95: at(95) };
+}
+
+export interface Metrics {
   trades: number;
   wins: number;
   losses: number;
@@ -433,11 +479,15 @@ interface Metrics {
   avgWinPct: number;
   avgLossPct: number;
   maxDrawdownPct: number;
+  mfePct: ExcursionPercentiles;
+  maePct: ExcursionPercentiles;
+  takeProfitReached: number;
+  takeProfitReachPct: number;
   endOfDataExits: number;
   exitReasons: Record<string, number>;
 }
 
-function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
+export function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
   const stats = computeStats(trades.map((t) => ({ realized_pnl: t.pnl, cost_basis: t.cost })));
   const winning = trades.filter((t) => t.pnl > 0);
   const losing = trades.filter((t) => t.pnl <= 0);
@@ -453,6 +503,7 @@ function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
     peak = Math.max(peak, equity);
     if (peak > 0) maxDrawdownPct = Math.max(maxDrawdownPct, (peak - equity) / peak * 100);
   }
+  const reachedTakeProfit = trades.filter((t) => t.reachedTakeProfit).length;
   return {
     trades: stats.trades,
     wins: stats.wins,
@@ -464,6 +515,10 @@ function measure(trades: SimTrade[], initialEquity = 10_000_000): Metrics {
     avgWinPct: Number(avgWinPct.toFixed(3)),
     avgLossPct: Number(avgLossPct.toFixed(3)),
     maxDrawdownPct: Number(maxDrawdownPct.toFixed(3)),
+    mfePct: excursionPercentiles(trades.map((t) => t.mfePct)),
+    maePct: excursionPercentiles(trades.map((t) => t.maePct)),
+    takeProfitReached: reachedTakeProfit,
+    takeProfitReachPct: trades.length ? Number((reachedTakeProfit / trades.length * 100).toFixed(2)) : 0,
     endOfDataExits: trades.filter((trade) => trade.reason === 'END_OF_DATA').length,
     exitReasons: trades.reduce<Record<string, number>>((counts, trade) => {
       counts[trade.reason] = (counts[trade.reason] ?? 0) + 1;
