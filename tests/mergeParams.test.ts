@@ -78,7 +78,7 @@ describe('FIX-A mergeParams repairs only the blamed key', () => {
   });
 
   it('never repairs the default configuration', () => {
-    expect(validateParams(DEFAULT_PARAMS)).toEqual([]);
+    expect(validateParams(DEFAULT_PARAMS as unknown as Record<string, unknown>)).toEqual([]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(mergeParams(DEFAULT_PARAMS)).toEqual(DEFAULT_PARAMS);
     expect(warn).not.toHaveBeenCalled();
