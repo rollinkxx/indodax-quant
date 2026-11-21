@@ -1,5 +1,20 @@
+import type { NotificationItem } from './telegram';
+
 export interface Env {
   ASSETS: Fetcher;
+  /**
+   * Optional notification queue. When bound, Telegram delivery runs in the queue consumer instead of
+   * inside the cron invocation, so a burst of notifications cannot spend the run's subrequest budget
+   * (Workers Free allows 50 per invocation). Missing binding means inline sending, which is the
+   * behaviour that existed before the queue.
+   */
+  NOTIFY_QUEUE?: Queue<NotificationItem>;
+  /**
+   * Out-of-band pipeline watchdog. Its alarm runs independently of the cron trigger, so an outage is
+   * still reported when the cron stops invoking the Worker at all. Optional: without the binding the
+   * in-run outage alarm is the only one.
+   */
+  WATCHDOG?: DurableObjectNamespace;
   /** Public (safe to expose) */
   SUPABASE_URL: string;
   SUPABASE_PUBLISHABLE_KEY: string;

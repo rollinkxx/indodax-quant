@@ -16,6 +16,35 @@
     "crons": ["* * * * *"]
   },
   "observability": { "enabled": true },
+  // Notifications leave the cron invocation through a queue, so Telegram delivery no longer competes
+  // for the run's subrequest budget (Workers Free: 50 per invocation). The producer binding is
+  // optional in code: without it `enqueueNotifications` sends inline, so a queue outage degrades to
+  // the previous behaviour instead of losing the page.
+  "queues": {
+    "producers": [
+      { "binding": "NOTIFY_QUEUE", "queue": "indodax-quant-notifications" }
+    ],
+    "consumers": [
+      {
+        "queue": "indodax-quant-notifications",
+        "max_batch_size": 10,
+        "max_batch_timeout": 10,
+        "max_retries": 3,
+        "max_concurrency": 1
+      }
+    ]
+  },
+  // Out-of-band watchdog: its alarm keeps running even when the cron trigger stops invoking the
+  // Worker, which the in-run outage alarm cannot do. SQLite-backed because Workers Free only allows
+  // that storage backend.
+  "durable_objects": {
+    "bindings": [
+      { "name": "WATCHDOG", "class_name": "PipelineWatchdog" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PipelineWatchdog"] }
+  ],
   // Workers Builds runs `wrangler preview` on pull_request events (deploy on main is `wrangler deploy`).
   // `preview` is an open beta that hard-fails without this block, so PR builds went red while main
   // builds passed. Values mirror the generated defaults; previews stay non-observed on purpose.

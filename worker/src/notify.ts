@@ -5,8 +5,33 @@ import { errorMessage } from './http';
 
 const MAX_PER_RUN = 15;
 
+export interface DispatchResult { claimed: number; sent: number; failed: number; skipped: number }
+
+/**
+ * Hand notifications to the queue so Telegram delivery stops spending the cron run's subrequest
+ * budget. Falls back to an inline send when the binding is absent or the enqueue itself fails: a page
+ * that never leaves the Worker is worse than one sent from the cron.
+ */
+export async function enqueueNotifications(
+  env: Env,
+  db: Db,
+  items: NotificationItem[],
+  fetchImpl: FetchLike = fetch,
+): Promise<{ queued: number; inline: DispatchResult | null }> {
+  if (items.length === 0) return { queued: 0, inline: null };
+  const queue = env.NOTIFY_QUEUE;
+  if (!queue) return { queued: 0, inline: await dispatchNotifications(env, db, items, fetchImpl) };
+  try {
+    await queue.sendBatch(items.map((body) => ({ body })));
+    return { queued: items.length, inline: null };
+  } catch (e) {
+    console.error('notify queue enqueue failed, sending inline', errorMessage(e));
+    return { queued: 0, inline: await dispatchNotifications(env, db, items, fetchImpl) };
+  }
+}
+
 /** Claim (dedupe) in Postgres first, then send. A dedupe key is never sent twice. */
-export async function dispatchNotifications(env: Env, db: Db, items: NotificationItem[], fetchImpl: FetchLike = fetch) {
+export async function dispatchNotifications(env: Env, db: Db, items: NotificationItem[], fetchImpl: FetchLike = fetch): Promise<DispatchResult> {
   if (items.length === 0) return { claimed: 0, sent: 0, failed: 0, skipped: 0 };
   const unique = [...new Map(items.map((i) => [i.dedupe_key, i])).values()];
   const claimed = await db.rpc<string[]>('claim_notifications', { p_items: unique });
