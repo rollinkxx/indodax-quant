@@ -34,6 +34,9 @@ export interface PairInfo {
   price_precision: number | null;
   trade_min_base_currency: number | null;
   trade_fee_percent_taker: number | null;
+  trade_fee_percent_maker: number | null;
+  /** Sell-side tax. INDODAX publishes no tax field on /api/pairs, so this is always null today. */
+  tax_percent_sell: number | null;
   is_maintenance: boolean;
 }
 
@@ -100,6 +103,10 @@ export class IndodaxClient {
         price_precision: num(p.price_precision),
         trade_min_base_currency: num(p.trade_min_base_currency),
         trade_fee_percent_taker: num(p.trade_fee_percent_taker),
+        trade_fee_percent_maker: num(p.trade_fee_percent_maker),
+        // No tax field exists on /api/pairs (checked 2026-11-21 against all 450 pairs). The column is
+        // carried for the catalog, but its value comes from configuration, never from this payload.
+        tax_percent_sell: num(p.tax_percent_sell),
         is_maintenance: Number(p.is_maintenance ?? 0) === 1 || Number(p.is_market_suspended ?? 0) === 1,
       }))
       .filter((p) => p.ticker_id && p.base_currency === 'idr');

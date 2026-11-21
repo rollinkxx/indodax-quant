@@ -77,6 +77,24 @@ describe('FIX-A mergeParams repairs only the blamed key', () => {
     expect(mergeParams(undefined)).toEqual(DEFAULT_PARAMS);
   });
 
+  it('adds sellTaxPct to a stored config that predates it, without discarding the stored keys', () => {
+    // The column was added after these configs were saved: the missing key must fall back to its own
+    // default only, not take riskPerTradePct, feeModel and the rest down with it.
+    const merged = mergeParams({ riskPerTradePct: 2.5, maxOpenPositions: 6, feeModel: 'pair_taker', notifySignals: false });
+
+    expect(merged.sellTaxPct).toBe(0.21);
+    expect(merged.riskPerTradePct).toBe(2.5);
+    expect(merged.maxOpenPositions).toBe(6);
+    expect(merged.feeModel).toBe('pair_taker');
+    expect(merged.notifySignals).toBe(false);
+  });
+
+  it('keeps a stored sellTaxPct and rejects one outside its limit', () => {
+    expect(mergeParams({ sellTaxPct: 0 }).sellTaxPct).toBe(0);
+    expect(mergeParams({ sellTaxPct: 1.5 }).sellTaxPct).toBe(1.5);
+    expect(mergeParams({ sellTaxPct: 9 }).sellTaxPct).toBe(0.21);
+  });
+
   it('never repairs the default configuration', () => {
     expect(validateParams(DEFAULT_PARAMS as unknown as Record<string, unknown>)).toEqual([]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
