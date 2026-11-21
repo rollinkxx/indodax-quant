@@ -203,3 +203,138 @@ export class SlotCache {
     this.stats.writes++;
   }
 }
+
+export type TruncationReason = 'request_over_cap' | 'response_over_cap' | 'head_missing';
+
+/**
+ * Why a response cannot be a complete answer to its request, or null when it can.
+ *
+ * The endpoint never reports an over-wide window: it answers with the newest
+ * `HISTORY_MAX_BARS_PER_REQUEST` bars inside it and drops the oldest part of the range. The dropped
+ * head is what identifies that, and it is the only reliable signal - an illiquid pair legitimately
+ * answers with fewer bars than the window has minutes (zero-volume minutes are still rows, but a
+ * newly listed pair has none before its first trade), so a short count on its own is not truncation.
+ *
+ * A response is therefore complete only when it starts at the requested start (the endpoint floors
+ * `from` to a minute and may answer one bar early, hence the 60 s tolerance) and stays under the cap.
+ */
+export function truncationReason(
+  bars: Candle[],
+  request: SlotRequest,
+  slotSeconds = HISTORY_SLOT_SECONDS,
+): TruncationReason | null {
+  if (!(slotSeconds > 0)) throw new Error('slotSeconds must be positive');
+  if (Math.round((request.toSec - request.fromSec) / 60) > HISTORY_MAX_BARS_PER_REQUEST) {
+    return 'request_over_cap';
+  }
+  if (bars.length > HISTORY_MAX_BARS_PER_REQUEST) return 'response_over_cap';
+  if (bars.length === 0) return null;
+  let first = Number.POSITIVE_INFINITY;
+  for (const bar of bars) if (bar.t < first) first = bar.t;
+  return first > request.fromSec + 60 ? 'head_missing' : null;
+}
+
+/** Fetches one contiguous window of minute bars for `symbol`. Throws on transport failure. */
+export type HistoryBarFetcher = (symbol: string, fromSec: number, toSec: number) => Promise<Candle[]>;
+
+export interface SlotHistoryStats {
+  /** HTTP requests issued, i.e. coalesced requests rather than slots. */
+  requests: number;
+  cacheHits: number;
+  cacheWrites: number;
+  /** Responses that dropped the head of their window (or breached the cap). */
+  truncatedRequests: number;
+  /** Slots that were fetched but deliberately not cached: growing, or not covered by the response. */
+  uncachedSlots: number;
+}
+
+export interface FetchSlotHistoryOptions {
+  symbol: string;
+  /** UTC-aligned slot starts to cover, as returned by `alignedSlots`. */
+  slots: number[];
+  /** Range end: the newest slot stops here instead of reaching into the future. */
+  toSec: number;
+  cache: SlotCache;
+  fetchBars: HistoryBarFetcher;
+  slotSeconds?: number;
+  onWarning?: (message: string) => void;
+}
+
+export interface SlotHistoryResult {
+  bars: Candle[];
+  stats: SlotHistoryStats;
+}
+
+/**
+ * Read every slot from the cache, fetch the misses coalesced into as few requests as the endpoint's
+ * response cap allows, and cache only slots the response provably covers in full.
+ *
+ * Coalescing changes nothing about the cache: the unit stays the 12-hour slot, a growing slot is still
+ * never written, and a truncated response is treated as a partial fill - the slots it does not reach
+ * from their first minute are left uncached so the next run refetches them instead of inheriting a
+ * frozen hole. `planSlotRequests` keeps every request under the measured cap, so that path should not
+ * trigger at all; when it does, `truncatedRequests` and the coverage metric surface it in the run log.
+ */
+export async function fetchSlotHistory(options: FetchSlotHistoryOptions): Promise<SlotHistoryResult> {
+  const slotSeconds = options.slotSeconds ?? HISTORY_SLOT_SECONDS;
+  const { symbol, toSec, cache, fetchBars, onWarning } = options;
+  const bars: Candle[] = [];
+  const stats: SlotHistoryStats = {
+    requests: 0, cacheHits: 0, cacheWrites: 0, truncatedRequests: 0, uncachedSlots: 0,
+  };
+
+  for (const plan of planSlotRequests(options.slots, toSec, slotSeconds)) {
+    const missing: number[] = [];
+    for (const slot of plan.slots) {
+      const cached = await cache.read(symbol, slot, slotSeconds);
+      if (cached) {
+        bars.push(...cached);
+        stats.cacheHits++;
+      } else {
+        missing.push(slot);
+      }
+    }
+
+    // A partly warm plan shrinks to the slots that actually missed: re-planning the misses keeps the
+    // cap per request and starts a new request after a cached slot instead of refetching across it.
+    for (const request of planSlotRequests(missing, toSec, slotSeconds)) {
+      const fetched = await fetchBars(symbol, request.fromSec, request.toSec);
+      stats.requests++;
+
+      const reason = truncationReason(fetched, request, slotSeconds);
+      if (reason) {
+        stats.truncatedRequests++;
+        onWarning?.(
+          `${symbol} ${new Date(request.fromSec * 1000).toISOString()}..` +
+          `${new Date(request.toSec * 1000).toISOString()}: ${reason}, got ${fetched.length} bars for ` +
+          `${Math.round((request.toSec - request.fromSec) / 60)} requested minutes; using what arrived and ` +
+          'refusing to cache the slots it does not cover',
+        );
+      }
+      const capBreach = reason === 'request_over_cap' || reason === 'response_over_cap';
+      const split = splitSlotBars(fetched, request, slotSeconds);
+      let firstReturned = Number.POSITIVE_INFINITY;
+      for (const bar of fetched) if (bar.t < firstReturned) firstReturned = bar.t;
+
+      for (const slot of request.slots) {
+        const slotBars = split.get(slot) ?? [];
+        bars.push(...slotBars);
+        const covered = !capBreach && (fetched.length === 0 || firstReturned <= slot);
+        if (!isSlotComplete(slot, toSec, slotSeconds) || !covered) {
+          stats.uncachedSlots++;
+          continue;
+        }
+        if (!cache.enabled) continue;
+        try {
+          await cache.write(symbol, slot, slotBars);
+          stats.cacheWrites++;
+        } catch (e) {
+          onWarning?.(`[HISTORY CACHE] ${symbol} ${slot}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+  }
+
+  bars.sort((a, b) => a.t - b.t);
+  return { bars, stats };
+}

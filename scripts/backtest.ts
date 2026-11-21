@@ -34,7 +34,7 @@ import { withIndodaxRelay } from '../worker/src/relay';
 import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, createRequestStartLimiter, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, type BacktestHistoryRange } from './backtest-history';
 import { finalizeEndOfDataTrade, resolveProtectiveExit } from './backtest-execution';
 import { createIndicatorRowsCache, signalAtBar } from '../shared/backtestSignal';
-import { alignedSlots, HISTORY_SLOT_SECONDS, isSlotComplete, SlotCache, slotLastClosedMinute } from './history-cache';
+import { alignedSlots, fetchSlotHistory, HISTORY_SLOT_SECONDS, SlotCache } from './history-cache';
 
 const URL_ = process.env.SUPABASE_URL;
 const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -75,6 +75,8 @@ interface OfficialHistoryResult {
     daysRequested: number;
     apiChunks: number;
     cacheHits: number;
+    truncatedRequests: number;
+    uncachedSlots: number;
     minuteBarsReceived: number;
     complete5mBars: number;
     expected5mBars: number;
@@ -120,34 +122,23 @@ async function loadStoredCandles(pair: string): Promise<Candle[]> {
   }).filter((c) => Number.isFinite(c.t) && c.t % 300 === 0);
 }
 
-/** Pulls official 1m OHLC in 12h windows and aggregates only complete 5m buckets. */
+/** Pulls official 1m OHLC over UTC-aligned 12h slots and aggregates only complete 5m buckets. */
 async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange): Promise<OfficialHistoryResult> {
   const { days, fromSec, toSec } = range;
-  const oneMinute: Candle[] = [];
-  let apiChunks = 0;
-  let cacheHits = 0;
 
   // Slots are aligned to the UTC 12h grid, not to the sliding window: a window-relative boundary
   // moves every run, so nothing would ever hit the cache. Whole slots are fetched (the extra leading
   // minutes are trimmed by the range filter below), which is what makes an interior slot stable.
-  for (const slotStart of alignedSlots(fromSec, toSec, HISTORY_SLOT_SECONDS)) {
-    const lastClosedMinute = slotLastClosedMinute(slotStart, toSec, HISTORY_SLOT_SECONDS);
-    if (lastClosedMinute < slotStart) continue;
-    const cached = await historyCache.read(symbol, slotStart, HISTORY_SLOT_SECONDS);
-    if (cached) {
-      oneMinute.push(...cached);
-      cacheHits++;
-      continue;
-    }
-    const rows = await indodax.getHistory(symbol.toUpperCase(), '1', slotStart, lastClosedMinute);
-    oneMinute.push(...rows);
-    apiChunks++;
-    if (isSlotComplete(slotStart, toSec, HISTORY_SLOT_SECONDS)) {
-      await historyCache.write(symbol, slotStart, rows).catch((e) => {
-        console.error(`[HISTORY CACHE] ${symbol} ${slotStart}: ${e instanceof Error ? e.message : String(e)}`);
-      });
-    }
-  }
+  // They are coalesced into as few requests as the endpoint's response cap allows - 16 slots (192 h)
+  // per request instead of one per slot - which is what makes a cold 180-day window fit the job.
+  const { bars: oneMinute, stats } = await fetchSlotHistory({
+    symbol,
+    slots: alignedSlots(fromSec, toSec, HISTORY_SLOT_SECONDS),
+    toSec,
+    cache: historyCache,
+    fetchBars: (sym, from, to) => indodax.getHistory(sym.toUpperCase(), '1', from, to),
+    onWarning: (message) => console.error(`[HISTORY] ${message}`),
+  });
 
   const complete5m = aggregateCompleteMinuteHistory(oneMinute, fromSec, toSec);
   const quality = summarizeMinuteHistoryQuality(oneMinute, fromSec, toSec, complete5m);
@@ -158,8 +149,10 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
     candles: complete5m,
     metrics: {
       daysRequested: days,
-      apiChunks,
-      cacheHits,
+      apiChunks: stats.requests,
+      cacheHits: stats.cacheHits,
+      truncatedRequests: stats.truncatedRequests,
+      uncachedSlots: stats.uncachedSlots,
       minuteBarsReceived: oneMinute.length,
       complete5mBars: complete5m.length,
       historyCoveragePct,
@@ -570,8 +563,8 @@ async function main() {
   const vols: Record<string, number> = {};
   for (const row of volRows) vols[String(row.pair_id)] = Number(row.vol_idr);
 
-  // Pull history outside the loop with a bounded pair concurrency; each pair is chunked
-  // into 12h calls to remain below the public history endpoint's likely response cap.
+  // Pull history outside the loop with a bounded pair concurrency. Each pair walks UTC-aligned 12h
+  // slots, coalesced into requests that stay below the history endpoint's measured response cap.
   // Anchor one identical historical interval before any network calls. Every pair
   // in every concurrency batch then uses exactly the same from/to boundaries.
   const historyRange = historyDays > 0 ? createBacktestHistoryRange(historyDays, Date.now()) : null;
@@ -583,7 +576,7 @@ async function main() {
       const fetched = await Promise.all(batch.map(async (pair) => {
         const result = await loadOfficialHistory(pair.symbol, historyRange);
         console.error(
-          `[HISTORY] ${pair.id}: chunks=${result.metrics.apiChunks}, cached=${result.metrics.cacheHits}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% OHLC), active 5m=${result.metrics.activeVolume5mBars} (${result.metrics.activeVolumeCoveragePct}%), zero-volume 1m=${result.metrics.zeroVolumeMinuteBars}`,
+          `[HISTORY] ${pair.id}: requests=${result.metrics.apiChunks}, cached=${result.metrics.cacheHits}, truncated=${result.metrics.truncatedRequests}, uncached=${result.metrics.uncachedSlots}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% OHLC), active 5m=${result.metrics.activeVolume5mBars} (${result.metrics.activeVolumeCoveragePct}%), zero-volume 1m=${result.metrics.zeroVolumeMinuteBars}`,
         );
         return [pair.id, result] as const;
       }));
