@@ -7,6 +7,9 @@ import { runPipeline } from './pipeline';
 import { errorMessage } from './http';
 import { withIndodaxRelay } from './relay';
 import { buildPipelinePostHogEvents, sendPostHogBatch } from './posthog';
+import { Db } from './db';
+import { dispatchNotifications } from './notify';
+import type { NotificationItem } from './telegram';
 
 const SECURITY_HEADERS: Record<string, string> = {
   'x-frame-options': 'DENY',
@@ -49,5 +52,32 @@ export default {
         }]);
       }
     })());
+  },
+
+  /**
+   * Notification consumer. The cron enqueues pages instead of sending them, so Telegram delivery no
+   * longer competes for the run's subrequest budget. Dedupe still happens in Postgres
+   * (`claim_notifications`), so a redelivered batch cannot page twice.
+   */
+  async queue(batch: MessageBatch, env: Env): Promise<void> {
+    const items = batch.messages
+      .map((m) => m.body as NotificationItem | null)
+      .filter((b): b is NotificationItem => !!b?.dedupe_key);
+    if (items.length === 0) {
+      for (const m of batch.messages) m.ack();
+      return;
+    }
+    try {
+      const db = new Db(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, withIndodaxRelay((i, init) => fetch(i, init), env.INDODAX_PROXY_URL, env.SUPABASE_SERVICE_ROLE_KEY));
+      const r = await dispatchNotifications(env, db, items);
+      console.log(`[queue] notifications claimed=${r.claimed} sent=${r.sent} failed=${r.failed} skipped=${r.skipped}`);
+      for (const m of batch.messages) m.ack();
+    } catch (e) {
+      // Only infrastructure failures (DB unreachable) land here; a Telegram error is recorded as
+      // FAILED inside dispatchNotifications and must not be retried, because the dedupe claim is
+      // already spent and the retry would be dropped anyway.
+      console.error('[queue] notification dispatch failed', errorMessage(e));
+      for (const m of batch.messages) m.retry();
+    }
   },
 } satisfies ExportedHandler<Env>;

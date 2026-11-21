@@ -3,7 +3,7 @@ import type { Env, FetchLike } from './env';
 import { Db } from './db';
 import { IndodaxClient, type PairInfo, type ParsedTicker } from './indodax';
 import { buildPairCandles, findCoverageRecoveryStart, newestTrade, newTradesSince, planCoverage } from './ingest';
-import { dispatchNotifications } from './notify';
+import { dispatchNotifications, enqueueNotifications } from './notify';
 import { messages, type NotificationItem } from './telegram';
 import { errorMessage, HttpError } from './http';
 import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../../shared/candles';
@@ -1571,7 +1571,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       notes.push({ event_type: 'worker_status', dedupe_key: `heartbeat:${floorTo(nowSec, 3600)}`, message: messages.heartbeat({ status: finalStatus, durationMs: now() - t0, pairs: ctx.pairs.length, accountStatus, equity: lastEquity }) });
     }
     try {
-      steps.notifications = { ok: true, info: await dispatchNotifications(env, db, notes, fetchImpl) };
+      // Queued when the binding exists: Telegram then costs the consumer's budget, not this run's.
+      steps.notifications = { ok: true, info: await enqueueNotifications(env, db, notes, fetchImpl) };
     } catch (e) {
       steps.notifications = { ok: false, error: errorMessage(e) };
       errors.push(`notifications: ${errorMessage(e)}`);

@@ -1,5 +1,14 @@
+import type { NotificationItem } from './telegram';
+
 export interface Env {
   ASSETS: Fetcher;
+  /**
+   * Optional notification queue. When bound, Telegram delivery runs in the queue consumer instead of
+   * inside the cron invocation, so a burst of notifications cannot spend the run's subrequest budget
+   * (Workers Free allows 50 per invocation). Missing binding means inline sending, which is the
+   * behaviour that existed before the queue.
+   */
+  NOTIFY_QUEUE?: Queue<NotificationItem>;
   /** Public (safe to expose) */
   SUPABASE_URL: string;
   SUPABASE_PUBLISHABLE_KEY: string;
