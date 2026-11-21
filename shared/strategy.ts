@@ -900,7 +900,11 @@ export function evaluateMarketAction(
   const last = rows[n - 1];
   const prev = rows[n - 2];
   if (!warm(last) || prev.ema9 === null || prev.ema21 === null) {
-    return { action: 'HOLD', signal: null, reason: 'indicators_not_ready' };
+    // A synthetic candle inside the warmup window resets every indicator on that row, which looks
+    // exactly like "not enough data" in the diagnostics. Name the real cause: a gap is recoverable
+    // (the next run refills it), a cold series is not.
+    const degraded = rows.some((r) => r.degraded === true);
+    return { action: 'HOLD', signal: null, reason: degraded ? 'indicators_degraded_by_gap' : 'indicators_not_ready' };
   }
   const signal = evaluateSignalWindow(rows, volumes, p);
   if (signal) {

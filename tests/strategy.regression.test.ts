@@ -182,7 +182,9 @@ describe('FIX-08 synthetic candles degrade rows instead of restarting indicators
     const rows = computeIndicatorsTail(series(245), DEFAULT_PARAMS, 3);
     expect(rows[2].degraded).toBe(true);
     const volumes = series(245).slice(-rows.length).map((c) => c.v);
-    expect(evaluateMarketAction(rows, volumes)).toMatchObject({ action: 'HOLD', reason: 'indicators_not_ready' });
+    // N6 names the gap: the same HOLD used to read indicators_not_ready, indistinguishable from a
+    // cold series.
+    expect(evaluateMarketAction(rows, volumes)).toMatchObject({ action: 'HOLD', reason: 'indicators_degraded_by_gap' });
     expect(evaluateSignalWindow(rows, volumes)).toBeNull();
   });
 
