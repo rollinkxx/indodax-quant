@@ -61,13 +61,27 @@ describe('evaluateSignalWindow (crossLookback)', () => {
     expect(evaluateSignalWindow(rows, [0, weakVol, weakVol, weakVol, goodVol])).toBeNull();
     expect(evaluateSignalWindow(rows, [0, weakVol, weakVol, weakVol, goodVol], { ...DEFAULT_PARAMS, crossLookback: 4 })?.side).toBe('BUY');
   });
-  it('emits only one BUY per cross (no repeat on later candles)', () => {
-    expect(evaluateSignalWindow([below, above(), above()], [0, goodVol, goodVol])).toBeNull();
-    expect(evaluateSignalWindow([below, above({ rsi14: 75 }), above()], [0, goodVol, goodVol])?.side).toBe('BUY');
+  // The lookback re-signals the same cross on consecutive candles; crossTime is what makes it one
+  // setup, so storage and notifications dedupe on the cross instead of dropping the later candle.
+  it('signals the same cross on consecutive candles, carrying one crossTime', () => {
+    const b = row({ t: 1, ema9: 99, ema21: 100 });
+    const a1 = row({ t: 2, ema9: 101, ema21: 100 });
+    const a2 = row({ t: 3, ema9: 102, ema21: 100 });
+    const onCross = evaluateSignalWindow([b, a1], [0, goodVol]);
+    const next = evaluateSignalWindow([b, a1, a2], [0, goodVol, goodVol]);
+    expect(onCross).toMatchObject({ side: 'BUY', crossTime: 2 });
+    expect(next).toMatchObject({ side: 'BUY', crossTime: 2 });
+    // A filter that only passes on the candle after the cross still fires, once.
+    const late = evaluateSignalWindow([b, row({ t: 2, ema9: 101, ema21: 100, rsi14: 75 }), a2], [0, goodVol, goodVol]);
+    expect(late).toMatchObject({ side: 'BUY', crossTime: 2 });
   });
   it('ignores a cross if EMA fast dipped back below inside the window', () => {
     expect(evaluateSignalWindow([below, above(), below, above()], [0, weakVol, weakVol, goodVol])?.reasons[0]).toBe('EMA9 crossed above EMA21');
-    expect(evaluateSignalWindow([below, above(), row({ ema9: 99.5, ema21: 100 }), row({ ema9: 99.8, ema21: 100 })], [0, weakVol, weakVol, goodVol])).toBeNull();
+    const dipped = evaluateSignalWindow(
+      [below, above(), row({ ema9: 99.5, ema21: 100 }), row({ ema9: 99.8, ema21: 100 })],
+      [0, weakVol, weakVol, goodVol],
+    );
+    expect(dipped?.side).not.toBe('BUY');
   });
   it('crossLookback = 1 keeps the strict fresh-cross behaviour', () => {
     expect(evaluateSignalWindow([below, above(), above()], [0, weakVol, goodVol], { ...DEFAULT_PARAMS, crossLookback: 1 })).toBeNull();
@@ -95,7 +109,7 @@ describe('diagnoseBuySignalWindow', () => {
     expect(diagnostic).toMatchObject({
       stage: 'ready', ready: true, crossFound: true, barsSinceCross: 0,
       trendOk: true, rsiOk: true, volumeOk: true, extensionOk: true,
-      alreadyQualified: false,
+      crossTime: below.t,
     });
     expect(evaluateSignalWindow(rows, volumes)?.side).toBe('BUY');
   });
@@ -129,9 +143,11 @@ describe('diagnoseBuySignalWindow', () => {
     expect(diagnoseBuySignalWindow([below, above({ close: 102 })], [0, 15]).stage).toBe('entry_extension');
   });
 
-  it('distinguishes no recent cross, an already-qualified cross, and unready indicators', () => {
+  it('distinguishes no recent cross, a cross inside the lookback, and unready indicators', () => {
     expect(diagnoseBuySignalWindow([above(), above()], [15, 15]).stage).toBe('no_recent_cross');
-    expect(diagnoseBuySignalWindow([below, above(), above()], [0, 15, 15]).stage).toBe('already_qualified');
+    // The cross is one candle back and the setup still holds: still ready (dedupe is by crossTime).
+    const second = diagnoseBuySignalWindow([below, above(), above()], [0, 15, 15]);
+    expect(second).toMatchObject({ stage: 'ready', ready: true, barsSinceCross: 1, crossTime: below.t });
     expect(diagnoseBuySignalWindow([below, row({ rsi14: null })], [0, 15]).stage).toBe('indicators_not_ready');
   });
 

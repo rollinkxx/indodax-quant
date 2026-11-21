@@ -195,7 +195,7 @@ interface SignalRow {
   price: number | string;
   strength: number | string;
   reasons: string[];
-  indicators: { atr14?: number | null };
+  indicators: { atr14?: number | null; cross_time?: number | null };
   candle_time: string;
   /** True for a BUY replayed from pending_entries instead of a freshly stored signal. */
   retried?: boolean;
@@ -811,6 +811,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           candidate_5m: buyDiag.ready,
           bars_since_cross: buyDiag.barsSinceCross,
           setup_valid: buyDiag.setupValid,
+          cross_time: buyDiag.crossTime ?? null,
           filters: {
             trend: buyDiag.trendOk, rsi: buyDiag.rsiOk, volume: buyDiag.volumeOk, extension: buyDiag.extensionOk,
           },
@@ -875,6 +876,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             strength: decision.strength, reasons: decision.reasons, strategy: mtfOn ? 'ema_rsi_volume_mtf' : 'ema_rsi_volume',
             indicators: {
               ema9: last.ema9, ema21: last.ema21, ema50: last.ema50, rsi14: last.rsi14, macd_hist: last.macdHist, atr14: last.atr14, vol_ma20: last.volMa20, support: last.support, resistance: last.resistance,
+              // Identity of the setup: lets a later run tell "the same cross" from "a new one".
+              cross_time: decision.crossTime ?? null,
               ...(mtfOn ? { mtf: mtf.summary, mtf_mode: params.mtfMode } : {}),
             },
           });
@@ -900,7 +903,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       for (const s of newSignals) {
         // long-only engine: a SELL with nothing to sell is noise (it is still stored in trading_signals)
         if (s.side === 'SELL' && !heldPairs.has(s.pair_id)) continue;
-        notes.push({ event_type: 'signal', dedupe_key: `signal:${s.id}`, message: messages.signal({ ...s, reasons: s.reasons ?? [] }) });
+        // One notification per cross, not per stored signal row: the lookback can store the same
+        // cross on two consecutive candles and each row has its own id.
+        const crossKey = s.indicators?.cross_time ?? s.id;
+        notes.push({
+          event_type: 'signal',
+          dedupe_key: `signal:${s.pair_id}:${s.side}:${crossKey}`,
+          message: messages.signal({ ...s, reasons: s.reasons ?? [] }),
+        });
       }
     }
 

@@ -520,6 +520,9 @@ export interface SignalDecision {
   side: 'BUY' | 'SELL';
   strength: number;
   reasons: string[];
+  /** Candle time of the EMA cross that produced this signal: the identity of the setup, so the
+   *  same cross can be stored once per candle without re-notifying on every lookback bar. */
+  crossTime?: number | null;
 }
 
 type WarmRow = IndicatorRow & { ema9: number; ema21: number; rsi14: number; volMa20: number };
@@ -549,23 +552,18 @@ function validSignalInputs(rows: IndicatorRow[], volumes: number[]): boolean {
   });
 }
 
-/** BUY filters evaluated on a single candle (everything except the cross itself). */
-function buyFiltersOk(r: WarmRow, volume: number, p: StrategyParams): boolean {
-  const trendOk = !p.useTrendFilter || (r.ema50 !== null && r.close > r.ema50);
-  const rsiOk = r.rsi14 >= p.rsiBuyMin && r.rsi14 <= p.rsiBuyMax;
-  const volOk = r.volMa20 > 0 && volume >= r.volMa20 * p.volumeMultiplier;
-  const extOk = p.maxEntryExtensionPct <= 0 || r.ema21 <= 0 || (r.close - r.ema21) / r.ema21 * 100 <= p.maxEntryExtensionPct;
-  return trendOk && rsiOk && volOk && extOk;
-}
-
 /**
  * Evaluate the LAST row (must be a completed candle) using the recent rows.
  * `rows` and `volumes` are aligned and ascending; the last element is the signal candle.
  *
  * BUY: EMA fast crossed above EMA slow within the last `crossLookback` candles, stayed above since,
- * and the other filters (trend, RSI, volume, not stretched above EMA slow) pass on the last candle. To emit exactly one BUY per
- * cross, it only fires on the FIRST candle since the cross where all filters pass.
- * SELL: fresh cross down on the last candle only (exits stay responsive). RSI/volume confirmation is optional (`sellRequireConfirm`).
+ * and the other filters (trend, RSI, volume, not stretched above EMA slow) pass on the last candle.
+ * SELL: EMA fast crossed below EMA slow within the last `sellCrossLookback` candles and stayed below
+ * since; RSI/volume confirmation is optional (`sellRequireConfirm`).
+ *
+ * The same cross can therefore signal on several consecutive candles. The signal carries `crossTime`
+ * so storage and notifications dedupe on the cross instead of on the candle, which is what makes the
+ * lookback useful: a run that misses a candle no longer loses the setup.
  */
 export type BuyDiagnosticStage =
   | 'indicators_not_ready'
@@ -576,7 +574,6 @@ export type BuyDiagnosticStage =
   | 'rsi_filter'
   | 'volume_filter'
   | 'entry_extension'
-  | 'already_qualified'
   | 'ready';
 
 export interface BuySignalDiagnostics {
@@ -588,7 +585,8 @@ export interface BuySignalDiagnostics {
   rsiOk: boolean | null;
   volumeOk: boolean | null;
   extensionOk: boolean | null;
-  alreadyQualified: boolean;
+  /** Candle time of the cross, or null when no cross was found. */
+  crossTime: number | null;
   /** The whole BUY filter, evaluated on the retry run: a queued entry may only fill while the setup
    *  that produced the signal is still true. A retry that skipped RSI/volume/extension would take an
    *  entry the normal path rejects. */
@@ -610,7 +608,7 @@ export function diagnoseBuySignalWindow(
 ): BuySignalDiagnostics {
   const unavailable: BuySignalDiagnostics = {
     stage: 'indicators_not_ready', ready: false, crossFound: false, barsSinceCross: null,
-    trendOk: null, rsiOk: null, volumeOk: null, extensionOk: null, alreadyQualified: false,
+    trendOk: null, rsiOk: null, volumeOk: null, extensionOk: null, crossTime: null,
     setupValid: false, setupFilters: null, rsi: null, volumeRatio: null, extensionPct: null,
   };
   const n = rows.length;
@@ -645,16 +643,7 @@ export function diagnoseBuySignalWindow(
   const crossFound = crossIdx >= 0;
   const barsSinceCross = crossFound ? n - 1 - crossIdx : null;
 
-  let alreadyQualified = false;
-  if (crossFound && trendOk && rsiOk && volumeOk && extensionOk) {
-    for (let j = crossIdx; j < n - 1; j++) {
-      const earlier = rows[j];
-      if (warm(earlier) && buyFiltersOk(earlier, volumes[j], p)) {
-        alreadyQualified = true;
-        break;
-      }
-    }
-  }
+  const crossTime = crossFound ? rows[crossIdx].t : null;
 
   let stage: BuyDiagnosticStage;
   if (last.ema9 <= last.ema21) stage = 'ema_fast_not_above_slow';
@@ -663,14 +652,13 @@ export function diagnoseBuySignalWindow(
   else if (!rsiOk) stage = 'rsi_filter';
   else if (!volumeOk) stage = 'volume_filter';
   else if (!extensionOk) stage = 'entry_extension';
-  else if (alreadyQualified) stage = 'already_qualified';
   else stage = 'ready';
 
   const setupValid = trendOk && rsiOk && volumeOk && extensionOk;
 
   return {
     stage, ready: stage === 'ready', crossFound, barsSinceCross, trendOk, rsiOk, volumeOk, extensionOk,
-    alreadyQualified, setupValid,
+    crossTime, setupValid,
     setupFilters: { trend: trendOk, rsi: rsiOk, volume: volumeOk, extension: extensionOk },
     rsi: last.rsi14, volumeRatio, extensionPct,
   };
@@ -770,7 +758,6 @@ export type SellDiagnosticStage =
   | 'no_recent_cross'
   | 'rsi_filter'
   | 'volume_filter'
-  | 'already_qualified'
   | 'ready';
 
 export interface SellSignalDiagnostics {
@@ -780,7 +767,8 @@ export interface SellSignalDiagnostics {
   barsSinceCross: number | null;
   rsiOk: boolean | null;
   volumeOk: boolean | null;
-  alreadyQualified: boolean;
+  /** Candle time of the cross, or null when no cross was found. */
+  crossTime: number | null;
   rsi: number | null;
   volumeRatio: number | null;
 }
@@ -798,7 +786,7 @@ export function diagnoseSellSignalWindow(
 ): SellSignalDiagnostics {
   const unavailable: SellSignalDiagnostics = {
     stage: 'indicators_not_ready', ready: false, crossFound: false, barsSinceCross: null,
-    rsiOk: null, volumeOk: null, alreadyQualified: false, rsi: null, volumeRatio: null,
+    rsiOk: null, volumeOk: null, crossTime: null, rsi: null, volumeRatio: null,
   };
   const n = rows.length;
   if (n < 2 || volumes.length !== n) return unavailable;
@@ -826,28 +814,16 @@ export function diagnoseSellSignalWindow(
   const crossFound = crossIdx >= 0;
   const barsSinceCross = crossFound ? n - 1 - crossIdx : null;
 
-  let alreadyQualified = false;
-  if (crossFound) {
-    for (let j = crossIdx; j < n - 1; j++) {
-      const earlier = rows[j];
-      if (!warm(earlier)) continue;
-      if (!(earlier.ema9 < earlier.ema21)) continue;
-      const confOk = !p.sellRequireConfirm ||
-        (earlier.rsi14 <= p.rsiSellMax &&
-          earlier.volMa20 > 0 && volumes[j] >= earlier.volMa20 * p.volumeMultiplier);
-      if (confOk) { alreadyQualified = true; break; }
-    }
-  }
+  const crossTime = crossFound ? rows[crossIdx].t : null;
 
   let stage: SellDiagnosticStage;
   if (last.ema9 >= last.ema21) stage = 'ema_fast_not_below_slow';
   else if (!crossFound) stage = 'no_recent_cross';
   else if (p.sellRequireConfirm && !rsiOk) stage = 'rsi_filter';
   else if (p.sellRequireConfirm && !volumeOk) stage = 'volume_filter';
-  else if (alreadyQualified) stage = 'already_qualified';
   else stage = 'ready';
 
-  return { stage, ready: stage === 'ready', crossFound, barsSinceCross, rsiOk, volumeOk, alreadyQualified, rsi: last.rsi14, volumeRatio };
+  return { stage, ready: stage === 'ready', crossFound, barsSinceCross, rsiOk, volumeOk, crossTime, rsi: last.rsi14, volumeRatio };
 }
 
 export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p: StrategyParams = DEFAULT_PARAMS): SignalDecision | null {
@@ -875,7 +851,7 @@ export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p:
     if (last.macdHist !== null && last.macdHist > 0) { strength += 15; reasons.push('MACD histogram positive'); }
     if (volume >= vm * 2) strength += 15;
     if (last.resistance !== null && last.close > last.resistance) { strength += 10; reasons.push('Breaking resistance'); }
-    return { side: 'BUY', strength: Math.max(0, Math.min(strength, 100)), reasons };
+    return { side: 'BUY', strength: Math.max(0, Math.min(strength, 100)), reasons, crossTime: buy.crossTime };
   }
 
   const sell = diagnoseSellSignalWindow(rows, volumes, p);
@@ -892,7 +868,7 @@ export function evaluateSignalWindow(rows: IndicatorRow[], volumes: number[], p:
     if (last.macdHist !== null && last.macdHist < 0) { strength += 15; reasons.push('MACD histogram negative'); }
     if (vm > 0 && volume >= vm * 2) strength += 15;
     if (last.support !== null && last.close < last.support) { strength += 10; reasons.push('Breaking support'); }
-    return { side: 'SELL', strength: Math.max(0, Math.min(strength, 100)), reasons };
+    return { side: 'SELL', strength: Math.max(0, Math.min(strength, 100)), reasons, crossTime: sell.crossTime };
   }
   return null;
 }

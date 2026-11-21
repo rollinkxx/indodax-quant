@@ -103,7 +103,7 @@ describe('FIX-05 SELL cross lookback', () => {
     const volumes = [10, 10, 20];
 
     expect(diagnoseSellSignalWindow(rows, volumes, confirm)).toMatchObject({
-      stage: 'ready', ready: true, crossFound: true, barsSinceCross: 1, alreadyQualified: false,
+      stage: 'ready', ready: true, crossFound: true, barsSinceCross: 1, crossTime: above.t,
     });
     expect(evaluateSignalWindow(rows, volumes, confirm)?.side).toBe('SELL');
   });
@@ -120,15 +120,18 @@ describe('FIX-05 SELL cross lookback', () => {
     expect(diagnoseSellSignalWindow(rows, volumes, { ...DEFAULT_PARAMS, sellCrossLookback: 5 }).crossFound).toBe(true);
   });
 
-  it('T18 does not re-emit a cross whose confirmation candle already qualified', () => {
+  // T18 originally asserted the old suppression (stage 'already_qualified'). N3 removed it: the
+  // lookback was dead whenever the confirming candle was the cross candle itself, so a run that
+  // missed a candle lost the exit. Re-emission is now expected and deduped on crossTime instead.
+  it('T18 re-emits the cross on the next candle, carrying the same crossTime', () => {
     const crossStrong = row({ ema9: 99, rsi14: 45 });
     const lastStrong = row({ ema9: 98, rsi14: 45 });
     const rows = [above, crossStrong, lastStrong];
     const volumes = [10, 20, 20];
-    expect(diagnoseSellSignalWindow(rows, volumes, confirm).stage).toBe('already_qualified');
-    expect(evaluateMarketAction(rows, volumes, confirm)).toMatchObject({
-      action: 'HOLD', signal: null, reason: 'sell_blocked_already_qualified',
+    expect(diagnoseSellSignalWindow(rows, volumes, confirm)).toMatchObject({
+      stage: 'ready', ready: true, crossTime: above.t,
     });
+    expect(evaluateSignalWindow(rows, volumes, confirm)).toMatchObject({ side: 'SELL', crossTime: above.t });
   });
 });
 

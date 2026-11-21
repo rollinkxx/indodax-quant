@@ -127,6 +127,37 @@ describe('N3 the cross lookback must survive the next candle', () => {
     // Same cross, evaluated on the next candle: the diagnostic no longer suppresses it.
     expect(d.stage).toBe('ready');
   });
+
+  it('stores the cross time with the signal so a later run can recognise the setup', async () => {
+    const o = setup({
+      mtfMode: 'off',
+      // Flat chop with one jump on the last candle: a fresh cross-up with every filter passing.
+      candleClose: (i: number) => (i === 249 ? 1010 : 1000 + (i % 2 === 0 ? -1 : 1)),
+      candleVolume: (i: number) => (i >= 245 ? 50 : 2),
+    });
+    await run(o);
+    const saved = o.rpcs.find((x) => x.fn === 'save_analysis')!.body.p_signals;
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ side: 'BUY', indicators: { cross_time: expectedLast } });
+  });
+
+  it('notifies once per cross even when two candles carry the same setup', async () => {
+    const cross = expectedLast - 300;
+    const sig = (id: number, candle: number) => ({
+      id, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['t'],
+      indicators: { atr14: 10, cross_time: cross },
+      candle_time: new Date(candle * 1000).toISOString(),
+    });
+    const signalKeys = async (o: ReturnType<typeof setup>) => {
+      await run(o);
+      const call = o.rpcs.find((x) => x.fn === 'claim_notifications')!;
+      return (call.body.p_items as any[]).filter((n) => n.event_type === 'signal').map((n) => n.dedupe_key);
+    };
+    const first = await signalKeys(setup({ mtfMode: 'off', newSignals: [sig(401, expectedLast)] }));
+    const second = await signalKeys(setup({ mtfMode: 'off', newSignals: [sig(402, expectedLast + 300)] }));
+    expect(first).toEqual([`signal:btcidr:BUY:${cross}`]);
+    expect(second).toEqual(first);
+  });
 });
 
 describe('N4 the SELL MTF filter must use the adjusted strength', () => {
