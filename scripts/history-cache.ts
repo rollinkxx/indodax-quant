@@ -14,9 +14,14 @@
 //   - the endpoint answers at most HISTORY_MAX_BARS_PER_REQUEST bars per call and silently returns
 //     only the newest ones inside a wider window, so `planSlotRequests` coalesces whole slots into
 //     requests that stay under that cap: 16 slots (192 h) per request, 23 requests per pair.
+//
+// A 90-day run is 12 requests per pair, so one upstream hiccup must not lose the run: a failing
+// request is retried and then becomes a partial fill, and `history_range_out_of_bounds` is treated as
+// "this pair has no data that far back" rather than as an error.
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Candle } from '../shared/candles';
+import { errorMessage, HttpError } from '../worker/src/http';
 
 export const HISTORY_SLOT_SECONDS = 12 * 60 * 60;
 
@@ -237,9 +242,82 @@ export function truncationReason(
 /** Fetches one contiguous window of minute bars for `symbol`. Throws on transport failure. */
 export type HistoryBarFetcher = (symbol: string, fromSec: number, toSec: number) => Promise<Candle[]>;
 
+/** Attempts per history request, including the first. */
+export const HISTORY_REQUEST_ATTEMPTS = 3;
+/**
+ * Attempts for a request the endpoint says is out of bounds. One retry covers the hiccup that made a
+ * good window look out of bounds in CI; a window that repeats it is believed, so the region before a
+ * pair's listing does not spend the whole attempt budget on every slot.
+ */
+export const HISTORY_OUT_OF_BOUNDS_ATTEMPTS = 2;
+/** First backoff step; doubled per attempt. */
+export const HISTORY_RETRY_BASE_DELAY_MS = 250;
+
+export type HistoryFailure = 'transient' | 'out_of_bounds' | 'fatal';
+
+const OUT_OF_BOUNDS_BODY = /history_range_out_of_bounds/i;
+
+/**
+ * Classify a failed history request.
+ *
+ * The endpoint answers 400 `{"error":"history_range_out_of_bounds"}` for a window that starts before
+ * the pair has any data, and it produced exactly that 400 once on a window that replays fine - so a
+ * 4xx is retried before it is believed. Auth failures and payloads that are not OHLC at all cannot be
+ * recovered by retrying or by skipping a slot; those are the only conditions that end the run.
+ */
+export function classifyHistoryFailure(error: unknown): HistoryFailure {
+  if (error instanceof HttpError) {
+    if (error.status === 401 || error.status === 403) return 'fatal';
+    if (error.status === 400 && OUT_OF_BOUNDS_BODY.test(error.body ?? '')) return 'out_of_bounds';
+    return 'transient';
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Invalid history payload|invalid symbol/i.test(message)) return 'fatal';
+  return 'transient';
+}
+
+type HistoryAttempt =
+  | { ok: true; bars: Candle[]; tries: number }
+  | { ok: false; failure: Exclude<HistoryFailure, 'fatal'>; error: unknown; tries: number };
+
+/**
+ * One request, retried a bounded number of times. Fatal failures are rethrown so a broken relay or a
+ * payload that is not OHLC fails the run instead of being reported as a pair with no history.
+ */
+async function attemptHistoryRequest(
+  fetchBars: HistoryBarFetcher,
+  symbol: string,
+  request: SlotRequest,
+  attempts: number,
+  sleep: (ms: number) => Promise<void>,
+  onRetry: (retry: number, delayMs: number, error: unknown) => void,
+): Promise<HistoryAttempt> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return { ok: true, bars: await fetchBars(symbol, request.fromSec, request.toSec), tries: attempt };
+    } catch (e) {
+      const failure = classifyHistoryFailure(e);
+      if (failure === 'fatal') throw e;
+      const budget = failure === 'out_of_bounds'
+        ? Math.min(attempts, HISTORY_OUT_OF_BOUNDS_ATTEMPTS)
+        : attempts;
+      if (attempt >= budget) return { ok: false, failure, error: e, tries: attempt };
+      const delayMs = HISTORY_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      onRetry(attempt, delayMs, e);
+      await sleep(delayMs);
+    }
+  }
+}
+
 export interface SlotHistoryStats {
-  /** HTTP requests issued, i.e. coalesced requests rather than slots. */
+  /** HTTP attempts issued, including retries, i.e. requests rather than slots. */
   requests: number;
+  /** Requests that needed at least one retry. */
+  retriedRequests: number;
+  /** Requests that never succeeded and became a partial fill. */
+  failedRequests: number;
+  /** Slots the endpoint says have no data at all (a window before the pair was listed). */
+  outOfBoundsSlots: number;
   cacheHits: number;
   cacheWrites: number;
   /** Responses that dropped the head of their window (or breached the cap). */
@@ -257,6 +335,9 @@ export interface FetchSlotHistoryOptions {
   cache: SlotCache;
   fetchBars: HistoryBarFetcher;
   slotSeconds?: number;
+  /** Attempts per request, including the first. */
+  attempts?: number;
+  sleep?: (ms: number) => Promise<void>;
   onWarning?: (message: string) => void;
 }
 
@@ -274,13 +355,91 @@ export interface SlotHistoryResult {
  * from their first minute are left uncached so the next run refetches them instead of inheriting a
  * frozen hole. `planSlotRequests` keeps every request under the measured cap, so that path should not
  * trigger at all; when it does, `truncatedRequests` and the coverage metric surface it in the run log.
+ *
+ * A failing request never ends the run: it is retried, then treated as a partial fill that leaves its
+ * slots uncached. `history_range_out_of_bounds` is not a failure at all - the pair simply has no data
+ * that far back - so the request is halved until the slots with data are found and fetched.
  */
 export async function fetchSlotHistory(options: FetchSlotHistoryOptions): Promise<SlotHistoryResult> {
   const slotSeconds = options.slotSeconds ?? HISTORY_SLOT_SECONDS;
   const { symbol, toSec, cache, fetchBars, onWarning } = options;
+  const attempts = Math.max(1, Math.trunc(options.attempts ?? HISTORY_REQUEST_ATTEMPTS));
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const bars: Candle[] = [];
   const stats: SlotHistoryStats = {
-    requests: 0, cacheHits: 0, cacheWrites: 0, truncatedRequests: 0, uncachedSlots: 0,
+    requests: 0, retriedRequests: 0, failedRequests: 0, outOfBoundsSlots: 0,
+    cacheHits: 0, cacheWrites: 0, truncatedRequests: 0, uncachedSlots: 0,
+  };
+  const span = (request: SlotRequest): string =>
+    `${new Date(request.fromSec * 1000).toISOString()}..${new Date(request.toSec * 1000).toISOString()}`;
+
+  const recordResponse = async (request: SlotRequest, fetched: Candle[]): Promise<void> => {
+    const reason = truncationReason(fetched, request, slotSeconds);
+    if (reason) {
+      stats.truncatedRequests++;
+      onWarning?.(
+        `${symbol} ${span(request)}: ${reason}, got ${fetched.length} bars for ` +
+        `${Math.round((request.toSec - request.fromSec) / 60)} requested minutes; using what arrived and ` +
+        'refusing to cache the slots it does not cover',
+      );
+    }
+    const capBreach = reason === 'request_over_cap' || reason === 'response_over_cap';
+    const split = splitSlotBars(fetched, request, slotSeconds);
+    let firstReturned = Number.POSITIVE_INFINITY;
+    for (const bar of fetched) if (bar.t < firstReturned) firstReturned = bar.t;
+
+    for (const slot of request.slots) {
+      const slotBars = split.get(slot) ?? [];
+      bars.push(...slotBars);
+      const covered = !capBreach && (fetched.length === 0 || firstReturned <= slot);
+      if (!isSlotComplete(slot, toSec, slotSeconds) || !covered) {
+        stats.uncachedSlots++;
+        continue;
+      }
+      if (!cache.enabled) continue;
+      try {
+        await cache.write(symbol, slot, slotBars);
+        stats.cacheWrites++;
+      } catch (e) {
+        onWarning?.(`[HISTORY CACHE] ${symbol} ${slot}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  };
+
+  const resolve = async (request: SlotRequest): Promise<void> => {
+    const outcome = await attemptHistoryRequest(fetchBars, symbol, request, attempts, sleep, (retry, delayMs, e) => {
+      stats.retriedRequests++;
+      onWarning?.(`${symbol} ${span(request)}: ${errorMessage(e)} - retry ${retry}/${attempts - 1} in ${delayMs} ms`);
+    });
+    stats.requests += outcome.tries;
+    if (outcome.ok) {
+      await recordResponse(request, outcome.bars);
+      return;
+    }
+
+    if (outcome.failure === 'out_of_bounds') {
+      // The window starts before the pair's first bar. Halve it until the slots that do have data are
+      // found: dropping the whole request would discard up to 15 slots of real history after a listing.
+      if (request.slots.length > 1) {
+        const mid = Math.ceil(request.slots.length / 2);
+        for (const half of [request.slots.slice(0, mid), request.slots.slice(mid)]) {
+          for (const sub of planSlotRequests(half, toSec, slotSeconds)) await resolve(sub);
+        }
+        return;
+      }
+      stats.outOfBoundsSlots++;
+      onWarning?.(`${symbol} ${span(request)}: no data this far back (history_range_out_of_bounds); slot left uncached`);
+      return;
+    }
+
+    // A partial fill: what the cache already holds stays, these slots are not invented and not cached,
+    // so the next run retries exactly them.
+    stats.failedRequests++;
+    stats.uncachedSlots += request.slots.length;
+    onWarning?.(
+      `${symbol} ${span(request)}: ${errorMessage(outcome.error)} after ${outcome.tries} attempt(s) - ` +
+      `partial fill, ${request.slots.length} slot(s) left uncached`,
+    );
   };
 
   for (const plan of planSlotRequests(options.slots, toSec, slotSeconds)) {
@@ -297,42 +456,7 @@ export async function fetchSlotHistory(options: FetchSlotHistoryOptions): Promis
 
     // A partly warm plan shrinks to the slots that actually missed: re-planning the misses keeps the
     // cap per request and starts a new request after a cached slot instead of refetching across it.
-    for (const request of planSlotRequests(missing, toSec, slotSeconds)) {
-      const fetched = await fetchBars(symbol, request.fromSec, request.toSec);
-      stats.requests++;
-
-      const reason = truncationReason(fetched, request, slotSeconds);
-      if (reason) {
-        stats.truncatedRequests++;
-        onWarning?.(
-          `${symbol} ${new Date(request.fromSec * 1000).toISOString()}..` +
-          `${new Date(request.toSec * 1000).toISOString()}: ${reason}, got ${fetched.length} bars for ` +
-          `${Math.round((request.toSec - request.fromSec) / 60)} requested minutes; using what arrived and ` +
-          'refusing to cache the slots it does not cover',
-        );
-      }
-      const capBreach = reason === 'request_over_cap' || reason === 'response_over_cap';
-      const split = splitSlotBars(fetched, request, slotSeconds);
-      let firstReturned = Number.POSITIVE_INFINITY;
-      for (const bar of fetched) if (bar.t < firstReturned) firstReturned = bar.t;
-
-      for (const slot of request.slots) {
-        const slotBars = split.get(slot) ?? [];
-        bars.push(...slotBars);
-        const covered = !capBreach && (fetched.length === 0 || firstReturned <= slot);
-        if (!isSlotComplete(slot, toSec, slotSeconds) || !covered) {
-          stats.uncachedSlots++;
-          continue;
-        }
-        if (!cache.enabled) continue;
-        try {
-          await cache.write(symbol, slot, slotBars);
-          stats.cacheWrites++;
-        } catch (e) {
-          onWarning?.(`[HISTORY CACHE] ${symbol} ${slot}: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      }
-    }
+    for (const request of planSlotRequests(missing, toSec, slotSeconds)) await resolve(request);
   }
 
   bars.sort((a, b) => a.t - b.t);

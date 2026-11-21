@@ -77,6 +77,9 @@ interface OfficialHistoryResult {
     cacheHits: number;
     truncatedRequests: number;
     uncachedSlots: number;
+    retriedRequests: number;
+    failedRequests: number;
+    outOfBoundsSlots: number;
     minuteBarsReceived: number;
     complete5mBars: number;
     expected5mBars: number;
@@ -153,6 +156,9 @@ async function loadOfficialHistory(symbol: string, range: BacktestHistoryRange):
       cacheHits: stats.cacheHits,
       truncatedRequests: stats.truncatedRequests,
       uncachedSlots: stats.uncachedSlots,
+      retriedRequests: stats.retriedRequests,
+      failedRequests: stats.failedRequests,
+      outOfBoundsSlots: stats.outOfBoundsSlots,
       minuteBarsReceived: oneMinute.length,
       complete5mBars: complete5m.length,
       historyCoveragePct,
@@ -576,7 +582,7 @@ async function main() {
       const fetched = await Promise.all(batch.map(async (pair) => {
         const result = await loadOfficialHistory(pair.symbol, historyRange);
         console.error(
-          `[HISTORY] ${pair.id}: requests=${result.metrics.apiChunks}, cached=${result.metrics.cacheHits}, truncated=${result.metrics.truncatedRequests}, uncached=${result.metrics.uncachedSlots}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% OHLC), active 5m=${result.metrics.activeVolume5mBars} (${result.metrics.activeVolumeCoveragePct}%), zero-volume 1m=${result.metrics.zeroVolumeMinuteBars}`,
+          `[HISTORY] ${pair.id}: requests=${result.metrics.apiChunks}, retried=${result.metrics.retriedRequests}, failed=${result.metrics.failedRequests}, cached=${result.metrics.cacheHits}, truncated=${result.metrics.truncatedRequests}, out-of-bounds=${result.metrics.outOfBoundsSlots}, uncached=${result.metrics.uncachedSlots}, 1m=${result.metrics.minuteBarsReceived}, complete 5m=${result.metrics.complete5mBars}/${result.metrics.expected5mBars} (${result.metrics.historyCoveragePct}% OHLC), active 5m=${result.metrics.activeVolume5mBars} (${result.metrics.activeVolumeCoveragePct}%), zero-volume 1m=${result.metrics.zeroVolumeMinuteBars}`,
         );
         return [pair.id, result] as const;
       }));
