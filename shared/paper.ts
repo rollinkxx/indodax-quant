@@ -413,9 +413,11 @@ export function exitReason(
   const sl = pos.stop_loss === null || pos.stop_loss === undefined ? null : Number(pos.stop_loss);
   const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
   const entry = pos.entry_price === undefined ? null : Number(pos.entry_price);
-  if (sl !== null && tp !== null && prevBid !== null && Number.isFinite(prevBid) && prevBid < sl && bid > tp) {
-    return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';
-  }
+  // `prevBid` is kept in the signature for callers that pass the previous mark, but it is not used to
+  // guess the path: a gap that cleared both brackets was labelled STOP_LOSS while the position was
+  // still filled at the (higher) bid, which contradicted the label. The fill side is clamped to the
+  // bracket instead (see the pipeline's close()), so the label and the price now agree.
+  void prevBid;
   if (tp !== null && bid >= tp) return 'TAKE_PROFIT';
   if (sl !== null && bid <= sl) {
     return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';

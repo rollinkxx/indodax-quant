@@ -198,15 +198,17 @@ describe('FIX-08 synthetic candles degrade rows instead of restarting indicators
   });
 });
 
-describe('FIX-09 gap over both brackets resolves to the stop', () => {
+describe('FIX-09/N5 a gap over both brackets is booked at the target, not at the bid', () => {
   const pos = { entry_price: 100, stop_loss: 95, take_profit: 110 };
 
-  it('T25 books STOP_LOSS when the previous bid was under the stop and the bid is over the target', () => {
-    expect(exitReason(pos, 111, 94)).toBe('STOP_LOSS');
-    expect(exitReason({ ...pos, stop_loss: 101 }, 111, 100)).toBe('TRAILING_STOP');
+  // T25 originally booked STOP_LOSS on this gap while the pipeline still filled at the (higher) bid,
+  // so the label and the price disagreed. N5 labels the target and clamps the fill to it.
+  it('T25 books TAKE_PROFIT on a gap over both brackets', () => {
+    expect(exitReason(pos, 111, 94)).toBe('TAKE_PROFIT');
+    expect(exitReason({ ...pos, stop_loss: 101 }, 111, 100)).toBe('TAKE_PROFIT');
   });
 
-  it('T26 keeps the old ordering when there is no previous bid', () => {
+  it('T26 keeps the ordering when there is no previous bid', () => {
     expect(exitReason(pos, 111)).toBe('TAKE_PROFIT');
     expect(exitReason(pos, 111, null)).toBe('TAKE_PROFIT');
     // A previous bid above the stop means the stop was never crossed: the target wins.

@@ -965,14 +965,17 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         STOP_LOSS: 'stop_loss', TAKE_PROFIT: 'take_profit', TRAILING_STOP: 'trailing_stop',
       };
 
-      const close = async (pos: Position, reason: string, bid: number) => {
+      const close = async (pos: Position, reason: string, bid: number, fillBidOverride: number | null = null) => {
         // Never close against a lease we no longer hold: a superseded run must not mutate the account.
         if (!(await guardLease())) { actions.push(`close ${pos.pair_id} skipped: lease lost`); return false; }
         const slip = slipFor(pos.pair_id, true);
-        const fill = sellFillPrice(bid, slip);
+        // A take profit fills at the target at best: if the bid already gapped past it, booking the
+        // higher price was paper profit the market never had to give.
+        const fillBid = fillBidOverride !== null ? fillBidOverride : bid;
+        const fill = sellFillPrice(fillBid, slip);
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
         const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
-          p_position_id: pos.id, p_requested_price: bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
+          p_position_id: pos.id, p_requested_price: fillBid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
         });
         if (r?.ok) {
           open.delete(pos.pair_id);
@@ -1074,7 +1077,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             actions.push(`signal exit ${pos.pair_id} withheld: ${verdict.reason}`);
           }
         }
-        if (reason) await close(pos, reason, t.bid);
+        if (reason) {
+          const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
+          const fillBid = reason === 'TAKE_PROFIT' && tp !== null && Number.isFinite(tp) ? Math.min(t.bid, tp) : t.bid;
+          await close(pos, reason, t.bid, fillBid);
+        }
       }
 
       // b) Mark to market + snapshot. MTM writes equity, peak, drawdown and the snapshot row, so it
