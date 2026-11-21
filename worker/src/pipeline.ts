@@ -250,6 +250,20 @@ export function isRetryableEntryRejection(stage: string, reason: string): boolea
     && !NON_RETRYABLE_ENTRY_REASONS.has(reason);
 }
 
+/**
+ * Queued BUYs a later run may still fill: the pair must pass the same data-quality gate the SELL
+ * retry path uses (analysis.quality[pair] === 'ok') and the trend setup must still hold. Without the
+ * quality half a claim could be re-filled on a candle the engine refuses to analyse.
+ */
+export function selectRetryablePending(
+  rows: PendingEntryRow[],
+  analysis: { quality?: Record<string, string>; buyDiagnostics?: Record<string, { setup_valid?: boolean }> } | undefined,
+): PendingEntryRow[] {
+  return rows.filter((s) =>
+    analysis?.quality?.[s.pair_id] === 'ok'
+    && analysis?.buyDiagnostics?.[s.pair_id]?.setup_valid === true);
+}
+
 interface MtmResult {
   ok: boolean;
   equity: number;
@@ -1171,8 +1185,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           degraded.push(msg);
         }
       }
-      const stillValid = pendingBuys.filter((s) => analysis?.buyDiagnostics?.[s.pair_id]?.setup_valid === true);
-      const invalidated = pendingBuys.filter((s) => analysis?.buyDiagnostics?.[s.pair_id]?.setup_valid !== true);
+      const stillValid = selectRetryablePending(pendingBuys, analysis);
+      const invalidated = pendingBuys.filter((s) => !stillValid.includes(s));
       if (invalidated.length > 0) {
         try {
           await db.rpc('delete_pending_entries', {

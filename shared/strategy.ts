@@ -252,6 +252,27 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
 };
 
 /** Validate a partial params object. Returns list of errors (empty = valid). */
+/**
+ * Bars the indicator set needs before a row is trustworthy: the longest span any indicator looks
+ * back over. Shared by the minCandles guard and by computeIndicatorSegment's `degraded` flag, so a
+ * synthetic candle cannot blind a pair that the guard let through.
+ */
+export function indicatorWarmup(p: StrategyParams): number {
+  return Math.max(p.emaSlow, p.emaTrend, 26 + 9, p.rsiPeriod + 1, p.volumeMaPeriod);
+}
+
+/** The keys whose value sets indicatorWarmup(), for the error message mergeParams repairs from. */
+function warmupCauses(p: StrategyParams): string[] {
+  const warmup = indicatorWarmup(p);
+  const causes: string[] = [];
+  if (p.emaSlow === warmup) causes.push('emaSlow');
+  if (p.emaTrend === warmup) causes.push('emaTrend');
+  if (26 + 9 === warmup) causes.push('MACD');
+  if (p.rsiPeriod + 1 === warmup) causes.push('rsiPeriod');
+  if (p.volumeMaPeriod === warmup) causes.push('volumeMaPeriod');
+  return causes;
+}
+
 export function validateParams(input: Record<string, unknown>): string[] {
   const errors: string[] = [];
   for (const [key, value] of Object.entries(input)) {
@@ -296,8 +317,12 @@ export function validateParams(input: Record<string, unknown>): string[] {
   const merged = { ...DEFAULT_PARAMS, ...input } as StrategyParams;
   if (merged.emaFast >= merged.emaSlow) errors.push('emaFast must be smaller than emaSlow');
   if (merged.rsiBuyMin >= merged.rsiBuyMax) errors.push('rsiBuyMin must be smaller than rsiBuyMax');
-  if (merged.minCandles < Math.max(merged.emaTrend, merged.emaSlow, 26 + 9) + 2) {
-    errors.push('minCandles must exceed the longest indicator warm-up (emaTrend / MACD) by at least 2');
+  const warmup = indicatorWarmup(merged);
+  if (merged.minCandles < warmup + 2) {
+    // Naming the key that actually sets the warm-up is what lets mergeParams repair the set: it
+    // resets the keys a message blames. Without it, emaSlow 200 was blamed on minCandles/emaTrend
+    // and could never be repaired.
+    errors.push(`minCandles (${merged.minCandles}) must be at least ${warmup + 2}: the longest indicator warm-up is ${warmup} (${warmupCauses(merged).join(' / ')})`);
   }
   if (merged.mtfEmaFast >= merged.mtfEmaSlow) errors.push('mtfEmaFast must be smaller than mtfEmaSlow');
   if (merged.mtfMinCandles < merged.mtfEmaSlow + 2) errors.push('mtfMinCandles must exceed mtfEmaSlow by at least 2');
@@ -313,9 +338,9 @@ export function validateParams(input: Record<string, unknown>): string[] {
  * against a 0.4 floor and could only trade on the 16% of bars whose ATR was high enough for
  * costs to matter less than the ratio gap.
  *
- * Deliberately not part of validateParams: mergeParams() validates the full stored set and
- * falls back to DEFAULT_PARAMS on any error, so an impossible stored bracket would silently
- * reset every other parameter instead of surfacing. This runs where a human saves a config.
+ * Deliberately not part of validateParams: mergeParams() repairs a stored set by resetting the keys
+ * a validateParams() message names, and a bracket rule names no key, so an impossible stored
+ * bracket would be blamed on nothing. This runs where a human saves a config.
  */
 /**
  * Reject a bracket whose NET reward/risk cannot clear `minNetRewardRiskRatio`.
@@ -429,14 +454,40 @@ export function checkReportedWinRate(wins: number, trades: number, reportedWinRa
 /** Merge stored params with defaults, ignoring invalid values. */
 export function mergeParams(stored: unknown): StrategyParams {
   const out: StrategyParams = { ...DEFAULT_PARAMS };
+  const raw = out as unknown as Record<string, unknown>;
   if (!stored || typeof stored !== 'object') return out;
   for (const [k, v] of Object.entries(stored as Record<string, unknown>)) {
     if (!(k in DEFAULT_PARAMS)) continue;
     if (validateParams({ [k]: v }).some((e) => e.startsWith(k) || e.startsWith('unknown'))) continue;
-    (out as unknown as Record<string, unknown>)[k] = v;
+    raw[k] = v;
   }
-  if (validateParams(out as unknown as Record<string, unknown>).length) return { ...DEFAULT_PARAMS };
-  return out;
+  const remaining = validateParams(raw);
+  if (remaining.length === 0) return out;
+
+  // A cross-field rule can only be judged on the whole set, so its message names the keys it
+  // compares ("emaFast must be smaller than emaSlow") and never starts with the key that survived
+  // the per-key loop above. Reset exactly the keys the messages blame instead of discarding the
+  // whole stored config: a legal emaTrend used to cost riskPerTradePct, maxOpenPositions and every
+  // other operator setting without a single error. Word boundaries keep "emaFast" from matching
+  // inside "mtfEmaFast".
+  const blamed = new Set<string>();
+  for (const message of remaining) {
+    for (const key of Object.keys(DEFAULT_PARAMS)) {
+      if (new RegExp(`\\b${key}\\b`).test(message)) blamed.add(key);
+    }
+  }
+  for (const key of blamed) raw[key] = (DEFAULT_PARAMS as unknown as Record<string, unknown>)[key];
+  const afterRepair = validateParams(raw);
+  if (afterRepair.length === 0) return out;
+
+  // Last resort: the stored config cannot be repaired by resetting keys (e.g. emaSlow 200 needs
+  // minCandles 202 and the limit caps it at 250). Falling back is survivable; throwing would stop
+  // the cron entirely. Never silent: Workers Logs is the only place an operator can see this.
+  console.warn('mergeParams: stored config unrecoverable, falling back to defaults', {
+    blamed: [...blamed],
+    errors: afterRepair,
+  });
+  return { ...DEFAULT_PARAMS };
 }
 
 export interface IndicatorRow {
@@ -485,7 +536,7 @@ function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = ca
   const m = macd(closes);
   const a = atr(candles, p.atrPeriod);
   const vm = sma(vols, p.volumeMaPeriod);
-  const warmup = Math.max(p.emaTrend, 26 + 9, p.rsiPeriod + 1, p.volumeMaPeriod);
+  const warmup = indicatorWarmup(p);
   const start = Math.max(0, candles.length - Math.max(1, Math.floor(tail)));
   const rows: IndicatorRow[] = [];
   for (let i = start; i < candles.length; i++) {

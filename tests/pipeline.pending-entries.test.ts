@@ -116,6 +116,17 @@ describe('FIX-01 pending entry retry queue', () => {
     expect(paperInfo(r).degraded.join()).toMatch(/pending entry lookup failed/);
   });
 
+  // FIX-C: a mark-phase run has no fresh diagnostics. The claim block lives inside `if (analysis)`,
+  // so the queue must be left untouched rather than judged against a missing quality map.
+  it('leaves the queue alone on a mark run with no analysis', async () => {
+    const o = setup({ mtfMode: 'off', signalsDue: false, newSignals: [], pendingEntries: [queued()] });
+    const r = await run(o);
+
+    expect((r.steps as any).analyze).toBeUndefined();
+    expect(o.rpcs.some((x) => x.fn === 'delete_pending_entries')).toBe(false);
+    expect(o.rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+  });
+
   it('classifies stages: quote and portfolio rejections retry, structural ones do not', () => {
     expect(isRetryableEntryRejection('entry_gate', 'wide_spread')).toBe(true);
     expect(isRetryableEntryRejection('market_data_gate', 'stale_ticker')).toBe(true);
