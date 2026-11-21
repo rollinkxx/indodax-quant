@@ -170,26 +170,55 @@ export function summarizeMinuteHistoryQuality(
 }
 
 
-export type RequestStartLimiter = () => Promise<number>;
+export type RequestStartLimiter = (() => Promise<number>) & { readonly intervalMs: number };
+
+/**
+ * Documented quota for INDODAX's public endpoints: 180 requests per minute. The history endpoint,
+ * the Worker's polling and the relay that proxies these calls all draw on that one quota.
+ */
+export const INDODAX_PUBLIC_REQUESTS_PER_MINUTE = 180;
+
+/**
+ * Start interval this module paces at: 400 ms = 150 requests/minute, i.e. 30 requests/minute (17%)
+ * of the documented quota left for the Worker and the relay. 400 ms is the same pace the candle
+ * backfill already uses; the backtest used to pass 500 ms (120 req/min) at its call site, which spent
+ * only two thirds of the quota on the one job that needs the headroom and made a cold 180-day fetch
+ * 60 minutes long.
+ */
+export const HISTORY_REQUEST_START_INTERVAL_MS = 400;
 
 /**
  * Create a process-wide minimum-start-interval gate for concurrent HTTP requests.
  * The queue controls request start times, not response completion, so slow requests
  * may remain in flight concurrently while their starts stay within the API quota.
+ *
+ * The pace is owned by this module because it is a property of the exchange, not of the caller: a
+ * caller can never start requests faster than the quota-safe interval, and a caller asking to be
+ * slower than it (the backtest's legacy 500 ms) is no longer obeyed, because that is a throughput
+ * bug rather than a safety margin. `legacyIntervalMs` is accepted so existing call sites keep
+ * working; a different value is reported once so the override is visible in the run log.
  */
 export function createRequestStartLimiter(
-  intervalMs: number,
+  legacyIntervalMs?: number,
   now: () => number = () => Date.now(),
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): RequestStartLimiter {
-  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+  if (legacyIntervalMs !== undefined && (!Number.isFinite(legacyIntervalMs) || legacyIntervalMs <= 0)) {
     throw new Error('Request start interval must be a positive finite number');
+  }
+
+  const intervalMs = HISTORY_REQUEST_START_INTERVAL_MS;
+  if (legacyIntervalMs !== undefined && legacyIntervalMs !== intervalMs) {
+    console.warn(
+      `[HISTORY] pacing at ${intervalMs} ms (${Math.round(60_000 / intervalMs)} req/min, ` +
+      `quota ${INDODAX_PUBLIC_REQUESTS_PER_MINUTE}/min); ignoring caller interval ${legacyIntervalMs} ms`,
+    );
   }
 
   let nextAllowedAt = 0;
   let queue: Promise<void> = Promise.resolve();
 
-  return async () => {
+  const acquire = async (): Promise<number> => {
     const previous = queue;
     let release!: () => void;
     queue = new Promise<void>((resolve) => { release = resolve; });
@@ -210,6 +239,54 @@ export function createRequestStartLimiter(
       return startedAt;
     } finally {
       // Always release the queue, including when the clock or injected sleep fails.
+      release();
+    }
+  };
+
+  return Object.assign(acquire, { intervalMs });
+}
+
+export type InFlightLimiter = <T>(task: () => Promise<T>) => Promise<T>;
+
+/**
+ * Bound how many requests are in flight at once.
+ *
+ * The start gate alone is not enough to shorten a cold run: measured against the public history
+ * endpoint, a 12-hour one-minute slot (720 bars, ~81 KB) takes 0.38-1.45 s (median ~0.9 s) while the
+ * gate spaces starts by 400 ms. A loop that awaits each response before starting the next is
+ * therefore latency-bound: at the backtest's pair concurrency of 3 the offered rate is
+ * ~3 / 0.9 s = 200 req/min, which the 400 ms gate then trims to 150 req/min. Overlapping the waits
+ * with this limiter keeps every *start* on the gate while several responses are still in flight,
+ * which is what lets the gate, and not the round trip, set the pace of the run.
+ */
+export function createInFlightLimiter(maxInFlight: number): InFlightLimiter {
+  if (!Number.isInteger(maxInFlight) || maxInFlight < 1) {
+    throw new Error('maxInFlight must be a positive integer');
+  }
+
+  let active = 0;
+  const waiting: (() => void)[] = [];
+
+  const acquire = (): Promise<void> => {
+    if (active < maxInFlight) {
+      active++;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      waiting.push(() => { active++; resolve(); });
+    });
+  };
+
+  const release = (): void => {
+    active--;
+    waiting.shift()?.();
+  };
+
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    await acquire();
+    try {
+      return await task();
+    } finally {
       release();
     }
   };

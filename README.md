@@ -104,7 +104,7 @@ Read its scope warnings before interpreting the output:
   not the volume tier that applied at each historical candle.
 - Complete OHLC availability is not the same as active trading coverage: official zero-volume bars remain visible in coverage diagnostics,
   but are not eligible for simulated fills/exits and break the contiguous positive-volume indicator warm-up.
-- Official history requests use one process-wide 500 ms start interval (at most 120 starts/minute) across all concurrent pairs and retries, below the documented public API limit of 180 requests/minute.
+- Official history requests use one process-wide 400 ms start interval (at most 150 starts/minute) across all concurrent pairs and retries, leaving 30 requests/minute of the documented public API limit of 180 requests/minute for the Worker and the relay.
 - The evidence gate reports `NO_GO` unless the holdout contains at least 100 trades, the Wilson 95% lower confidence bound for win rate is
   at least 70%, profit factor is above 1, and net expectancy after modeled fees/slippage is positive. This threshold is a conservative
   project release rule, not proof of independence or future profitability. `ELIGIBLE_FOR_MANUAL_REVIEW` never auto-promotes a strategy.

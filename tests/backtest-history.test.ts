@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Candle } from '../shared/candles';
-import { aggregateCompleteMinuteHistory, createBacktestHistoryRange, filterBacktestCandlesToRange, mergeBacktestCandles, summarizeMinuteHistoryQuality, createRequestStartLimiter } from '../scripts/backtest-history';
+import {
+  aggregateCompleteMinuteHistory, createBacktestHistoryRange, createInFlightLimiter, createRequestStartLimiter,
+  filterBacktestCandlesToRange, HISTORY_REQUEST_START_INTERVAL_MS, INDODAX_PUBLIC_REQUESTS_PER_MINUTE,
+  mergeBacktestCandles, summarizeMinuteHistoryQuality,
+} from '../scripts/backtest-history';
 
 const minute = (t: number, patch: Partial<Candle> = {}): Candle => ({
   t, o: 100 + t / 60, h: 102 + t / 60, l: 99 + t / 60,
@@ -154,30 +158,60 @@ describe('summarizeMinuteHistoryQuality', () => {
 
 
 describe('createRequestStartLimiter', () => {
-  it('spaces concurrent request starts using one shared clock', async () => {
+  it('paces starts at the quota-safe interval and reports the pace it uses', async () => {
     let clock = 1_000;
     const limiter = createRequestStartLimiter(
-      500,
+      undefined,
       () => clock,
       async (ms) => { clock += ms; },
     );
 
+    expect(limiter.intervalMs).toBe(HISTORY_REQUEST_START_INTERVAL_MS);
     const starts = await Promise.all(
       Array.from({ length: 4 }, () => limiter()),
     );
-    expect(starts.sort((a, b) => a - b)).toEqual([1_000, 1_500, 2_000, 2_500]);
+    expect(starts.sort((a, b) => a - b)).toEqual([1_000, 1_400, 1_800, 2_200]);
+  });
+
+  it('stays below the documented public quota with headroom for the Worker and the relay', () => {
+    const perMinute = 60_000 / HISTORY_REQUEST_START_INTERVAL_MS;
+    expect(perMinute).toBeLessThanOrEqual(INDODAX_PUBLIC_REQUESTS_PER_MINUTE);
+    // 30 of the 180 requests/minute are left for the Worker's own polling and the relay.
+    expect(INDODAX_PUBLIC_REQUESTS_PER_MINUTE - perMinute).toBeGreaterThanOrEqual(30);
+  });
+
+  it('does not let a legacy 500 ms call site throttle the run below the quota-safe pace', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let clock = 1_000;
+    const limiter = createRequestStartLimiter(500, () => clock, async (ms) => { clock += ms; });
+
+    // The old 500 ms pace was 120 req/min: two thirds of the documented quota, and 60 minutes for a
+    // cold 180-day fetch.
+    expect(limiter.intervalMs).toBe(400);
+    expect(await limiter()).toBe(1_000);
+    expect(await limiter()).toBe(1_400);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('ignoring caller interval 500 ms'));
+    warn.mockRestore();
+  });
+
+  it('keeps an explicit quota-safe interval silent', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    createRequestStartLimiter(400);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('rejects invalid intervals', () => {
     expect(() => createRequestStartLimiter(0)).toThrow('positive finite number');
     expect(() => createRequestStartLimiter(Number.NaN)).toThrow('positive finite number');
+    expect(() => createRequestStartLimiter(-1)).toThrow('positive finite number');
   });
 
   it('releases the queue if the injected sleep fails', async () => {
     let fail = true;
     let clock = 1_000;
     const limiter = createRequestStartLimiter(
-      500,
+      undefined,
       () => clock,
       async (ms) => {
         if (fail) {
@@ -190,6 +224,53 @@ describe('createRequestStartLimiter', () => {
 
     await limiter();
     await expect(limiter()).rejects.toThrow('simulated sleep failure');
-    await expect(limiter()).resolves.toBe(1_500);
+    await expect(limiter()).resolves.toBe(1_400);
+  });
+});
+
+describe('createInFlightLimiter', () => {
+  /** A task that resolves after `ticks` microtask turns, so overlap is observable without timers. */
+  const tick = async (turns: number): Promise<void> => {
+    for (let i = 0; i < turns; i++) await Promise.resolve();
+  };
+
+  it('never runs more than the configured number of tasks at once', async () => {
+    const limit = createInFlightLimiter(2);
+    let inFlight = 0;
+    let peak = 0;
+    await Promise.all(Array.from({ length: 9 }, () => limit(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await tick(5);
+      inFlight--;
+    })));
+    expect(peak).toBe(2);
+    expect(inFlight).toBe(0);
+  });
+
+  it('keeps overlapping requests in flight while the start gate paces them', async () => {
+    // A 900 ms round trip behind a 400 ms gate: a sequential loop offers 67 req/min, three slots in
+    // flight keep the gate itself as the pace (150 req/min).
+    const gate = createInFlightLimiter(3);
+    let inFlight = 0;
+    let peak = 0;
+    await Promise.all(Array.from({ length: 12 }, () => gate(async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await tick(1);
+      inFlight--;
+    })));
+    expect(peak).toBe(3);
+  });
+
+  it('releases the slot when a task rejects', async () => {
+    const limit = createInFlightLimiter(1);
+    await expect(limit(async () => { throw new Error('boom'); })).rejects.toThrow('boom');
+    await expect(limit(async () => 'ok')).resolves.toBe('ok');
+  });
+
+  it('rejects a nonsensical concurrency', () => {
+    expect(() => createInFlightLimiter(0)).toThrow('positive integer');
+    expect(() => createInFlightLimiter(1.5)).toThrow('positive integer');
   });
 });
