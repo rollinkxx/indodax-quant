@@ -1219,7 +1219,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const fill = buyFillPrice(t.ask, slip);
           const atrValue = s.indicators?.atr14 ?? lastIndicators.get(s.pair_id)?.atr14 ?? null;
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);
-          const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, params);
+          // A retried signal carries the price it was first seen at, so judging it against the
+          // strict drift limit rejects every retry after a normal move; setupValid's extension check
+          // is what stops the entry chasing.
+          const gateParams = s.retried ? { ...params, maxEntryDriftPct: params.maxRetryDriftPct } : params;
+          const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, gateParams);
           if (gate) {
             const mid = (t.ask + t.bid) / 2;
             const stopDistance = fill - stops.stopLoss;
@@ -1238,6 +1242,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               ask_drift_pct: Number(s.price) > 0 ? (t.ask - Number(s.price)) / Number(s.price) * 100 : 0,
               slippage_bps: slip,
               fee_pct: feePct,
+              // Metrics are numeric: 1 marks a replayed claim, with the drift limit it was judged by.
+              ...(s.retried ? { retried: 1, drift_limit_pct: gateParams.maxEntryDriftPct } : {}),
             });
             continue;
           }

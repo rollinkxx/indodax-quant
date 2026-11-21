@@ -49,6 +49,13 @@ export interface StrategyParams {
   maxEntrySpreadPct: number;
   /** Skip BUY when the current ask is more than N% above the signal candle close (late / chasing entry). 0 = disabled. */
   maxEntryDriftPct: number;
+  /**
+   * Drift limit for a BUY retried from the pending queue. The queue stores the price the signal was
+   * seen at, so by the time it is retried a normal move already exceeds maxEntryDriftPct. The real
+   * anti-chase guard for a retry is `extensionOk` inside setupValid; this is only a sanity cap
+   * against an extreme move.
+   */
+  maxRetryDriftPct: number;
   /** Cap on total open cost basis as % of equity. */
   maxTotalExposurePct: number;
   /** Trailing stop: arms after price is `trailActivationAtr` x ATR above entry, then trails `trailDistanceAtr` x ATR below price. */
@@ -144,6 +151,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   maxOpenPositions: 4,
   maxEntrySpreadPct: 0.6,
   maxEntryDriftPct: 0.5,
+  maxRetryDriftPct: 1.5,
   maxTotalExposurePct: 60,
   trailingStopEnabled: true,
   trailActivationAtr: 1.5,
@@ -208,6 +216,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   maxOpenPositions: [1, 10, true],
   maxEntrySpreadPct: [0, 10],
   maxEntryDriftPct: [0, 10],
+  maxRetryDriftPct: [0, 10],
   minNetRewardRiskRatio: [0.05, 10],
   maxTotalExposurePct: [5, 100],
   trailActivationAtr: [0.1, 20],

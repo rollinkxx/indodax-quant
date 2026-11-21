@@ -67,8 +67,8 @@ describe('N2 a retried BUY must not be judged against its stale signal price', (
       pair_id: 'btcidr', signal_id: 301,
       candle_time: new Date(expectedLast * 1000).toISOString(),
       expires_at: new Date((NOW + 600) * 1000).toISOString(),
-      // 1% below the current quote: the price the signal was seen at, not the price now.
-      strength: 90, price: 980, indicators: { atr14: 10 }, attempts: 0,
+      // ~1% below the current quote: the price the signal was seen at, not the price now.
+      strength: 90, price: 990, indicators: { atr14: 10 }, attempts: 0,
     };
     const o = setup({
       mtfMode: 'off', newSignals: [], pendingEntries: [queued], openResult: { ok: true, position_id: 77, cash_after: 9_700_000 },
@@ -84,7 +84,7 @@ describe('N2 a retried BUY must not be judged against its stale signal price', (
       mtfMode: 'off', newSignals: [],
       pendingEntries: [{
         pair_id: 'btcidr', signal_id: 302, candle_time: new Date(expectedLast * 1000).toISOString(),
-        expires_at: new Date((NOW + 600) * 1000).toISOString(), strength: 90, price: 980, indicators: {}, attempts: 0,
+        expires_at: new Date((NOW + 600) * 1000).toISOString(), strength: 90, price: 990, indicators: {}, attempts: 0,
         // mark it as a first attempt by giving it no retry flag through the queue path below
       }],
     });
