@@ -61,9 +61,14 @@ describe('FIX-03 MTF sell filter', () => {
     expect(out.action.reason).toBe('mtf_blocked_mtf_sell_against_uptrend');
   });
 
-  it('T11 lets a strong SELL through the same uptrend', () => {
-    const out = run(85, [tf('15m', 'bull'), tf('1h', 'bull')]);
-    expect(out.action.action).toBe('SELL');
+  // T11 originally expected raw strength 85 to pass, which only held because the filter compared the
+  // strength before the timeframe adjustment. N4 judges the adjusted value: 85 - 30 = 55 is weak, so
+  // the SELL that survives the same uptrend is the one that still clears the bar after the penalty.
+  it('T11 lets a SELL through the same uptrend only if it still clears the bar after the penalty', () => {
+    expect(run(100, [tf('15m', 'bull'), tf('1h', 'bull')]).action.action).toBe('SELL');
+    expect(run(85, [tf('15m', 'bull'), tf('1h', 'bull')]).action).toMatchObject({
+      action: 'HOLD', reason: 'mtf_blocked_mtf_sell_against_uptrend',
+    });
   });
 
   it('T12 does not block a SELL when the 1h anchor is not bullish', () => {
@@ -103,7 +108,7 @@ describe('FIX-05 SELL cross lookback', () => {
     const volumes = [10, 10, 20];
 
     expect(diagnoseSellSignalWindow(rows, volumes, confirm)).toMatchObject({
-      stage: 'ready', ready: true, crossFound: true, barsSinceCross: 1, alreadyQualified: false,
+      stage: 'ready', ready: true, crossFound: true, barsSinceCross: 1, crossTime: above.t,
     });
     expect(evaluateSignalWindow(rows, volumes, confirm)?.side).toBe('SELL');
   });
@@ -120,15 +125,18 @@ describe('FIX-05 SELL cross lookback', () => {
     expect(diagnoseSellSignalWindow(rows, volumes, { ...DEFAULT_PARAMS, sellCrossLookback: 5 }).crossFound).toBe(true);
   });
 
-  it('T18 does not re-emit a cross whose confirmation candle already qualified', () => {
+  // T18 originally asserted the old suppression (stage 'already_qualified'). N3 removed it: the
+  // lookback was dead whenever the confirming candle was the cross candle itself, so a run that
+  // missed a candle lost the exit. Re-emission is now expected and deduped on crossTime instead.
+  it('T18 re-emits the cross on the next candle, carrying the same crossTime', () => {
     const crossStrong = row({ ema9: 99, rsi14: 45 });
     const lastStrong = row({ ema9: 98, rsi14: 45 });
     const rows = [above, crossStrong, lastStrong];
     const volumes = [10, 20, 20];
-    expect(diagnoseSellSignalWindow(rows, volumes, confirm).stage).toBe('already_qualified');
-    expect(evaluateMarketAction(rows, volumes, confirm)).toMatchObject({
-      action: 'HOLD', signal: null, reason: 'sell_blocked_already_qualified',
+    expect(diagnoseSellSignalWindow(rows, volumes, confirm)).toMatchObject({
+      stage: 'ready', ready: true, crossTime: above.t,
     });
+    expect(evaluateSignalWindow(rows, volumes, confirm)).toMatchObject({ side: 'SELL', crossTime: above.t });
   });
 });
 
@@ -174,7 +182,9 @@ describe('FIX-08 synthetic candles degrade rows instead of restarting indicators
     const rows = computeIndicatorsTail(series(245), DEFAULT_PARAMS, 3);
     expect(rows[2].degraded).toBe(true);
     const volumes = series(245).slice(-rows.length).map((c) => c.v);
-    expect(evaluateMarketAction(rows, volumes)).toMatchObject({ action: 'HOLD', reason: 'indicators_not_ready' });
+    // N6 names the gap: the same HOLD used to read indicators_not_ready, indistinguishable from a
+    // cold series.
+    expect(evaluateMarketAction(rows, volumes)).toMatchObject({ action: 'HOLD', reason: 'indicators_degraded_by_gap' });
     expect(evaluateSignalWindow(rows, volumes)).toBeNull();
   });
 
@@ -190,15 +200,17 @@ describe('FIX-08 synthetic candles degrade rows instead of restarting indicators
   });
 });
 
-describe('FIX-09 gap over both brackets resolves to the stop', () => {
+describe('FIX-09/N5 a gap over both brackets is booked at the target, not at the bid', () => {
   const pos = { entry_price: 100, stop_loss: 95, take_profit: 110 };
 
-  it('T25 books STOP_LOSS when the previous bid was under the stop and the bid is over the target', () => {
-    expect(exitReason(pos, 111, 94)).toBe('STOP_LOSS');
-    expect(exitReason({ ...pos, stop_loss: 101 }, 111, 100)).toBe('TRAILING_STOP');
+  // T25 originally booked STOP_LOSS on this gap while the pipeline still filled at the (higher) bid,
+  // so the label and the price disagreed. N5 labels the target and clamps the fill to it.
+  it('T25 books TAKE_PROFIT on a gap over both brackets', () => {
+    expect(exitReason(pos, 111, 94)).toBe('TAKE_PROFIT');
+    expect(exitReason({ ...pos, stop_loss: 101 }, 111, 100)).toBe('TAKE_PROFIT');
   });
 
-  it('T26 keeps the old ordering when there is no previous bid', () => {
+  it('T26 keeps the ordering when there is no previous bid', () => {
     expect(exitReason(pos, 111)).toBe('TAKE_PROFIT');
     expect(exitReason(pos, 111, null)).toBe('TAKE_PROFIT');
     // A previous bid above the stop means the stop was never crossed: the target wins.

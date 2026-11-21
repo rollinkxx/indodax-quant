@@ -153,7 +153,8 @@ export function roundTripCostPct(feePct: number, slippageBps: number, spreadPct 
  * instead of binary:
  * - a risk block (kill switch / daily loss) exits regardless: protecting capital beats a fee;
  * - a drawdown at half the limit exits regardless: the position is the reason for the block;
- * - a strong signal exits regardless: it is the setup the strategy was built to obey;
+ * - a strong signal exits regardless: it is the setup the strategy was built to obey (a threshold of
+ *   0 disables this rule instead of forcing every signal);
  * - otherwise the configured policy decides, and by default a SELL that cannot cover the round trip
  *   is still withheld so the stop keeps control.
  */
@@ -174,7 +175,11 @@ export function shouldExitOnSignal(input: {
   const { coversCosts, strength, riskBlocked, drawdownPct, maxDrawdownPct, policy } = input;
   if (policy.forceOnRiskBlock && riskBlocked) return { exit: true, reason: 'risk_block' };
   if (maxDrawdownPct > 0 && drawdownPct >= maxDrawdownPct * 0.5) return { exit: true, reason: 'drawdown_half' };
-  if (Number.isFinite(strength) && strength >= policy.forceStrength) return { exit: true, reason: 'strong_signal' };
+  // forceStrength 0 disables the rule: `strength >= 0` would be true for every signal, so setting the
+  // threshold to 0 (the low end of its allowed range) silently forced every SELL through the gate.
+  if (policy.forceStrength > 0 && Number.isFinite(strength) && strength >= policy.forceStrength) {
+    return { exit: true, reason: 'strong_signal' };
+  }
   if (!policy.requireProfit) return { exit: true, reason: 'policy_off' };
   if (coversCosts) return { exit: true, reason: 'covers_costs' };
   return { exit: false, reason: 'below_cost' };
@@ -413,9 +418,11 @@ export function exitReason(
   const sl = pos.stop_loss === null || pos.stop_loss === undefined ? null : Number(pos.stop_loss);
   const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
   const entry = pos.entry_price === undefined ? null : Number(pos.entry_price);
-  if (sl !== null && tp !== null && prevBid !== null && Number.isFinite(prevBid) && prevBid < sl && bid > tp) {
-    return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';
-  }
+  // `prevBid` is kept in the signature for callers that pass the previous mark, but it is not used to
+  // guess the path: a gap that cleared both brackets was labelled STOP_LOSS while the position was
+  // still filled at the (higher) bid, which contradicted the label. The fill side is clamped to the
+  // bracket instead (see the pipeline's close()), so the label and the price now agree.
+  void prevBid;
   if (tp !== null && bid >= tp) return 'TAKE_PROFIT';
   if (sl !== null && bid <= sl) {
     return entry !== null && Number.isFinite(entry) && sl > entry ? 'TRAILING_STOP' : 'STOP_LOSS';

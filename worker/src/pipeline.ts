@@ -195,7 +195,7 @@ interface SignalRow {
   price: number | string;
   strength: number | string;
   reasons: string[];
-  indicators: { atr14?: number | null };
+  indicators: { atr14?: number | null; cross_time?: number | null };
   candle_time: string;
   /** True for a BUY replayed from pending_entries instead of a freshly stored signal. */
   retried?: boolean;
@@ -811,6 +811,7 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           candidate_5m: buyDiag.ready,
           bars_since_cross: buyDiag.barsSinceCross,
           setup_valid: buyDiag.setupValid,
+          cross_time: buyDiag.crossTime ?? null,
           filters: {
             trend: buyDiag.trendOk, rsi: buyDiag.rsiOk, volume: buyDiag.volumeOk, extension: buyDiag.extensionOk,
           },
@@ -875,6 +876,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             strength: decision.strength, reasons: decision.reasons, strategy: mtfOn ? 'ema_rsi_volume_mtf' : 'ema_rsi_volume',
             indicators: {
               ema9: last.ema9, ema21: last.ema21, ema50: last.ema50, rsi14: last.rsi14, macd_hist: last.macdHist, atr14: last.atr14, vol_ma20: last.volMa20, support: last.support, resistance: last.resistance,
+              // Identity of the setup: lets a later run tell "the same cross" from "a new one".
+              cross_time: decision.crossTime ?? null,
               ...(mtfOn ? { mtf: mtf.summary, mtf_mode: params.mtfMode } : {}),
             },
           });
@@ -900,7 +903,14 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
       for (const s of newSignals) {
         // long-only engine: a SELL with nothing to sell is noise (it is still stored in trading_signals)
         if (s.side === 'SELL' && !heldPairs.has(s.pair_id)) continue;
-        notes.push({ event_type: 'signal', dedupe_key: `signal:${s.id}`, message: messages.signal({ ...s, reasons: s.reasons ?? [] }) });
+        // One notification per cross, not per stored signal row: the lookback can store the same
+        // cross on two consecutive candles and each row has its own id.
+        const crossKey = s.indicators?.cross_time ?? s.id;
+        notes.push({
+          event_type: 'signal',
+          dedupe_key: `signal:${s.pair_id}:${s.side}:${crossKey}`,
+          message: messages.signal({ ...s, reasons: s.reasons ?? [] }),
+        });
       }
     }
 
@@ -955,14 +965,17 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         STOP_LOSS: 'stop_loss', TAKE_PROFIT: 'take_profit', TRAILING_STOP: 'trailing_stop',
       };
 
-      const close = async (pos: Position, reason: string, bid: number) => {
+      const close = async (pos: Position, reason: string, bid: number, fillBidOverride: number | null = null) => {
         // Never close against a lease we no longer hold: a superseded run must not mutate the account.
         if (!(await guardLease())) { actions.push(`close ${pos.pair_id} skipped: lease lost`); return false; }
         const slip = slipFor(pos.pair_id, true);
-        const fill = sellFillPrice(bid, slip);
+        // A take profit fills at the target at best: if the bid already gapped past it, booking the
+        // higher price was paper profit the market never had to give.
+        const fillBid = fillBidOverride !== null ? fillBidOverride : bid;
+        const fill = sellFillPrice(fillBid, slip);
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
         const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
-          p_position_id: pos.id, p_requested_price: bid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
+          p_position_id: pos.id, p_requested_price: fillBid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
         });
         if (r?.ok) {
           open.delete(pos.pair_id);
@@ -1064,7 +1077,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             actions.push(`signal exit ${pos.pair_id} withheld: ${verdict.reason}`);
           }
         }
-        if (reason) await close(pos, reason, t.bid);
+        if (reason) {
+          const tp = pos.take_profit === null || pos.take_profit === undefined ? null : Number(pos.take_profit);
+          const fillBid = reason === 'TAKE_PROFIT' && tp !== null && Number.isFinite(tp) ? Math.min(t.bid, tp) : t.bid;
+          await close(pos, reason, t.bid, fillBid);
+        }
       }
 
       // b) Mark to market + snapshot. MTM writes equity, peak, drawdown and the snapshot row, so it
@@ -1219,7 +1236,11 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
           const fill = buyFillPrice(t.ask, slip);
           const atrValue = s.indicators?.atr14 ?? lastIndicators.get(s.pair_id)?.atr14 ?? null;
           const stops = computeStops(fill, atrValue === null ? null : Number(atrValue), params);
-          const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, params);
+          // A retried signal carries the price it was first seen at, so judging it against the
+          // strict drift limit rejects every retry after a normal move; setupValid's extension check
+          // is what stops the entry chasing.
+          const gateParams = s.retried ? { ...params, maxEntryDriftPct: params.maxRetryDriftPct } : params;
+          const gate = entryGate({ bid: t.bid, ask: t.ask, signalPrice: Number(s.price), stopLoss: stops.stopLoss, fill }, gateParams);
           if (gate) {
             const mid = (t.ask + t.bid) / 2;
             const stopDistance = fill - stops.stopLoss;
@@ -1238,6 +1259,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
               ask_drift_pct: Number(s.price) > 0 ? (t.ask - Number(s.price)) / Number(s.price) * 100 : 0,
               slippage_bps: slip,
               fee_pct: feePct,
+              // Metrics are numeric: 1 marks a replayed claim, with the drift limit it was judged by.
+              ...(s.retried ? { retried: 1, drift_limit_pct: gateParams.maxEntryDriftPct } : {}),
             });
             continue;
           }
