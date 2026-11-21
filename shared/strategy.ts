@@ -313,9 +313,9 @@ export function validateParams(input: Record<string, unknown>): string[] {
  * against a 0.4 floor and could only trade on the 16% of bars whose ATR was high enough for
  * costs to matter less than the ratio gap.
  *
- * Deliberately not part of validateParams: mergeParams() validates the full stored set and
- * falls back to DEFAULT_PARAMS on any error, so an impossible stored bracket would silently
- * reset every other parameter instead of surfacing. This runs where a human saves a config.
+ * Deliberately not part of validateParams: mergeParams() repairs a stored set by resetting the keys
+ * a validateParams() message names, and a bracket rule names no key, so an impossible stored
+ * bracket would be blamed on nothing. This runs where a human saves a config.
  */
 /**
  * Reject a bracket whose NET reward/risk cannot clear `minNetRewardRiskRatio`.
@@ -429,14 +429,40 @@ export function checkReportedWinRate(wins: number, trades: number, reportedWinRa
 /** Merge stored params with defaults, ignoring invalid values. */
 export function mergeParams(stored: unknown): StrategyParams {
   const out: StrategyParams = { ...DEFAULT_PARAMS };
+  const raw = out as unknown as Record<string, unknown>;
   if (!stored || typeof stored !== 'object') return out;
   for (const [k, v] of Object.entries(stored as Record<string, unknown>)) {
     if (!(k in DEFAULT_PARAMS)) continue;
     if (validateParams({ [k]: v }).some((e) => e.startsWith(k) || e.startsWith('unknown'))) continue;
-    (out as unknown as Record<string, unknown>)[k] = v;
+    raw[k] = v;
   }
-  if (validateParams(out as unknown as Record<string, unknown>).length) return { ...DEFAULT_PARAMS };
-  return out;
+  const remaining = validateParams(raw);
+  if (remaining.length === 0) return out;
+
+  // A cross-field rule can only be judged on the whole set, so its message names the keys it
+  // compares ("emaFast must be smaller than emaSlow") and never starts with the key that survived
+  // the per-key loop above. Reset exactly the keys the messages blame instead of discarding the
+  // whole stored config: a legal emaTrend used to cost riskPerTradePct, maxOpenPositions and every
+  // other operator setting without a single error. Word boundaries keep "emaFast" from matching
+  // inside "mtfEmaFast".
+  const blamed = new Set<string>();
+  for (const message of remaining) {
+    for (const key of Object.keys(DEFAULT_PARAMS)) {
+      if (new RegExp(`\\b${key}\\b`).test(message)) blamed.add(key);
+    }
+  }
+  for (const key of blamed) raw[key] = (DEFAULT_PARAMS as unknown as Record<string, unknown>)[key];
+  const afterRepair = validateParams(raw);
+  if (afterRepair.length === 0) return out;
+
+  // Last resort: the stored config cannot be repaired by resetting keys (e.g. emaSlow 200 needs
+  // minCandles 202 and the limit caps it at 250). Falling back is survivable; throwing would stop
+  // the cron entirely. Never silent: Workers Logs is the only place an operator can see this.
+  console.warn('mergeParams: stored config unrecoverable, falling back to defaults', {
+    blamed: [...blamed],
+    errors: afterRepair,
+  });
+  return { ...DEFAULT_PARAMS };
 }
 
 export interface IndicatorRow {
