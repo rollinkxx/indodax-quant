@@ -12,7 +12,7 @@ import { lastQuoteAtOrBefore, quoteFillPrice, type QuotePoint } from './quoteHis
 import {
   computeStops, dynamicSlippageBps, effectiveFeePct, entryGate, exitReason, exposureAllows, feeFor,
   netRewardRiskDiagnostics, positionSize, roundTripCostPct, sellFillPrice, buyFillPrice,
-  shouldExitOnSignal, signalExitCoversCosts, timeStopHit, trailingStop,
+  shouldExitOnSignal, signalExitCoversCosts, targetFeasibility, timeStopHit, trailingStop,
 } from './paper';
 import type { StrategyParams } from './strategy';
 import { memberAt, type UniverseInterval } from './universe';
@@ -295,7 +295,7 @@ export function simulatePortfolio(
       if (!reason) {
         const atr = atrProxy(candlesByPair.get(bar.pair)!, bar.index);
         const costPct = roundTripCostPct(feePct, slip, fillModel.spreadBps / 100);
-        const newStop = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl }, candle.c, atr, p, costPct);
+        const newStop = trailingStop({ entry_price: pos.entry, stop_loss: pos.sl, take_profit: pos.tp }, candle.c, atr, p, costPct);
         if (newStop !== null) pos.sl = newStop;
         if (timeStopHit(pos.openedAtSec * 1000, t * 1000, p)) { reason = 'TIME_STOP'; rawExit = candle.c; }
       }
@@ -402,6 +402,8 @@ export function simulatePortfolio(
         const stops = computeStops(fill, atr, p);
         const gate = entryGate({ bid: fill, ask: fill, signalPrice: bar.candle.o, stopLoss: stops.stopLoss, fill }, { ...p, maxEntrySpreadPct: 0, maxEntryDriftPct: 0 });
         if (gate && gate !== 'wide_spread' && gate !== 'price_drift') { rejections.push({ pair, t, stage: 'entry_gate', reason: gate }); continue; }
+        const feasibility = targetFeasibility({ entry: fill, takeProfit: stops.takeProfit, feePct, slippageBps: slip, minNetTargetPct: p.minNetTargetPct });
+        if (feasibility.reason) { rejections.push({ pair, t, stage: 'feasibility_gate', reason: feasibility.reason }); continue; }
         const economics = netRewardRiskDiagnostics({ entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit, feePct, exitSlippageBps: slip, minRatio: p.minNetRewardRiskRatio });
         if (economics.reason) { rejections.push({ pair, t, stage: 'economics_gate', reason: economics.reason }); continue; }
         const equityNow = markEquity(priceByPair).equity;

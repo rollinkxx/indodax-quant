@@ -10,7 +10,7 @@ import { fillGaps, floorTo, isValidCandle, type Candle, type Trade } from '../..
 import { checkDataQuality, computeIndicatorsTail, diagnoseBuySignalWindow, diagnoseTrendContinuationWindow, evaluateMarketAction, mergeParams, validateCrossFieldParams } from '../../shared/strategy';
 import { aggregateComplete, applyMtfToMarketAction, buildHigherSeries, contiguousObservedSuffix, HIGHER_TFS, lastCompleteBucket, MTF_WINDOW, trendState, type TfState } from '../../shared/mtf';
 import { selectUniverse, universeDue } from '../../shared/universe';
-import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, shouldExitOnSignal, signalExitCoversCosts, timeStopHit, trailingStop } from '../../shared/paper';
+import { buyFillPrice, computeStops, dynamicSlippageBps, effectiveFeePct, entryFeePct, entryGate, exitReason, exposureAllows, feeFor, netRewardRiskDiagnostics, positionSize, riskState, roundTripCostPct, sellFillPrice, shouldExitOnSignal, signalExitCoversCosts, targetFeasibility, timeStopHit, trailingStop } from '../../shared/paper';
 import { assessQuote, valuationHealth, killSwitchState, type KillSwitchState } from '../../shared/quote';
 import { createLeaseKeeper } from '../../shared/lease';
 import { normalizeOrder } from '../../shared/orderNormalize';
@@ -228,6 +228,7 @@ const RETRYABLE_ENTRY_STAGES = new Set([
   'portfolio_gate',
 ]);
 const NON_RETRYABLE_ENTRY_STAGES = new Set([
+  'feasibility_gate',
   'economics_gate',
   'fee_gate',
   'strength_gate',
@@ -242,7 +243,7 @@ const NON_RETRYABLE_ENTRY_REASONS = new Set(['already_open']);
  * Stages whose rejection proves the stored signal can never fill: its bracket, fee, strength or the
  * strategy parameters will not change before the claim expires. Those also drop the queued claim.
  */
-const PURGE_PENDING_STAGES = new Set(['economics_gate', 'fee_gate', 'strength_gate', 'strategy_params_gate']);
+const PURGE_PENDING_STAGES = new Set(['feasibility_gate', 'economics_gate', 'fee_gate', 'strength_gate', 'strategy_params_gate']);
 
 export function isRetryableEntryRejection(stage: string, reason: string): boolean {
   return RETRYABLE_ENTRY_STAGES.has(stage)
@@ -1352,6 +1353,26 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
             });
             continue;
           }
+          // Feasibility before shape: a target that cannot pay for the round trip (plus
+          // minNetTargetPct) is unfillable whatever its reward/risk ratio looks like, and saying so
+          // in percentage points is what makes the rejection readable.
+          const feasibility = targetFeasibility({
+            entry: fill, takeProfit: stops.takeProfit, feePct, slippageBps: slip, minNetTargetPct: params.minNetTargetPct,
+          });
+          if (feasibility.reason) {
+            rejectEntry(s, 'feasibility_gate', feasibility.reason, {
+              entry_price: fill,
+              stop_price: stops.stopLoss,
+              target_price: stops.takeProfit,
+              gross_target_pct: feasibility.grossTargetPct,
+              round_trip_cost_pct: feasibility.roundTripCostPct,
+              net_target_pct: feasibility.netTargetPct,
+              min_net_target_pct: params.minNetTargetPct,
+              fee_pct: feePct,
+              slippage_bps: slip,
+            });
+            continue;
+          }
           const economics = netRewardRiskDiagnostics({
             entry: fill, stopLoss: stops.stopLoss, takeProfit: stops.takeProfit,
             feePct, exitSlippageBps: slip, minRatio: params.minNetRewardRiskRatio,
@@ -1478,7 +1499,8 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         };
         tallyDecision(decisionCounters, combineDecision({
           raw: rawDecision,
-          economics: rejection?.stage === 'economics_gate' ? { reason: rejection.reason } : undefined,
+          economics: rejection?.stage === 'economics_gate' || rejection?.stage === 'feasibility_gate'
+            ? { reason: rejection.reason } : undefined,
           risk: rejection?.stage === 'risk_gate' || rejection?.stage === 'portfolio_gate'
             ? { blockEntries: true, reasons: [rejection.reason] } : undefined,
           quote: { ok: q.ok, ageSec: q.ageSec, spreadBps: q.spreadBps, ...(q.reason ? { reason: q.reason } : {}) },

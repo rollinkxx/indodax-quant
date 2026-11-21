@@ -74,29 +74,56 @@ describe('pipeline: MTF + dynamic universe', () => {
     expect(steps.universe.info.members).toEqual(['pepeidr', 'dogeidr']);
   });
 
-  it('skips a BUY when net take-profit reward does not cover net stop risk', async () => {
+  it('rejects a BUY whose take profit cannot pay for the round trip (feasibility gate)', async () => {
     const signal = {
       id: 99, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
       indicators: { atr14: 2.866 }, candle_time: new Date(expectedLast * 1000).toISOString(),
     };
     // 1.6xATR target on a 0.2866% ATR is ~0.46% gross, below the 0.6% round-trip cost. The bracket
-    // stays legal (1.6 > the 1.5 stop) so this exercises the economics gate, not the params gate.
+    // stays legal (1.6 > the 1.5 stop) so this is a feasibility rejection, not a params one.
     const { f, rpcs } = setup({ mtfMode: 'off', strategyParams: { atrTakeProfitMultiplier: 1.6 }, newSignals: [signal] });
     const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
 
     expect(r.status).toBe('SUCCESS');
     expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
-    const actions = (r.steps as any)?.paper_trading?.info?.actions as string[];
-    // At the real 0.2% taker fee a 0.5xATR target cannot even cover the round trip, so the
-    // economics gate rejects it as net_reward_non_positive (stronger than below_minimum).
-    expect(actions).toContain('skip btcidr: net_reward_non_positive');
     const paperInfo = (r.steps as any)?.paper_trading?.info;
+    const actions = paperInfo.actions as string[];
+    // The gate states the shortfall in percentage points, not as a ratio.
+    expect(actions).toContain('skip btcidr: target_below_round_trip_cost');
     expect(paperInfo).toMatchObject({ buy_signals_received: 1, entries_opened: 0 });
     expect(paperInfo.entry_rejections).toContainEqual(expect.objectContaining({
-      pair_id: 'btcidr', signal_id: 99, stage: 'economics_gate', reason: 'net_reward_non_positive',
+      pair_id: 'btcidr', signal_id: 99, stage: 'feasibility_gate', reason: 'target_below_round_trip_cost',
     }));
-    expect(paperInfo.entry_rejection_counts.net_reward_non_positive).toBe(1);
-    expect(paperInfo.entry_rejections[0].metrics.net_reward_risk_ratio).toBeLessThan(0);
+    expect(paperInfo.entry_rejection_counts.target_below_round_trip_cost).toBe(1);
+    const metrics = paperInfo.entry_rejections[0].metrics;
+    expect(metrics.net_target_pct).toBeLessThan(0);
+    expect(metrics.round_trip_cost_pct).toBeCloseTo(0.6, 10);
+    expect(metrics.gross_target_pct).toBeGreaterThan(0.4);
+    expect(metrics.gross_target_pct).toBeLessThan(metrics.round_trip_cost_pct);
+    expect(metrics.min_net_target_pct).toBe(0.1);
+    expect(metrics.target_price).toBeGreaterThan(metrics.entry_price);
+    // A bracket that cannot pay never pays later: the claim must be dropped, not retried.
+    expect(rpcs.some((x) => x.fn === 'upsert_pending_entries')).toBe(false);
+    expect(paperInfo.decision_counters.reward_risk_block_count).toBe(1);
+  });
+
+  it('skips a BUY when net take-profit reward does not cover net stop risk', async () => {
+    const signal = {
+      id: 98, pair_id: 'btcidr', side: 'BUY', price: 1000, strength: 90, reasons: ['test'],
+      indicators: { atr14: 2.866 }, candle_time: new Date(expectedLast * 1000).toISOString(),
+    };
+    // Feasible target (1.00% gross > 0.6% round trip) on a 0.86% stop: the economics gate behind
+    // the feasibility one still refuses it, because the reward does not cover the risk.
+    const { f, rpcs } = setup({ mtfMode: 'off', strategyParams: { atrStopMultiplier: 3, atrTakeProfitMultiplier: 3.5 }, newSignals: [signal] });
+    const r = await runPipeline(env(), { scheduledTime: NOW * 1000, trigger: 'cron', fetchImpl: f, now: () => NOW * 1000 });
+
+    expect(r.status).toBe('SUCCESS');
+    expect(rpcs.some((x) => x.fn === 'paper_open_position')).toBe(false);
+    const paperInfo = (r.steps as any)?.paper_trading?.info;
+    expect(paperInfo.entry_rejections).toContainEqual(expect.objectContaining({
+      pair_id: 'btcidr', signal_id: 98, stage: 'economics_gate', reason: 'net_reward_risk_below_minimum',
+    }));
+    expect(paperInfo.entry_rejections[0].metrics.net_reward_risk_ratio).toBeLessThan(1);
     expect(paperInfo.entry_rejections[0].metrics.net_reward_per_unit).toBeDefined();
     expect(paperInfo.entry_rejections[0].metrics.net_risk_per_unit).toBeDefined();
   });

@@ -31,19 +31,21 @@ describe('hardened entry/exit rules', () => {
 });
 
 describe('strategy hardening helpers', () => {
-  const T = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1 };
+  const T = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1, atrStopMultiplier: 1.5, atrTakeProfitMultiplier: 3 };
   it('trailing stop arms only after activation and never moves down', () => {
-    const pos = { entry_price: 100, stop_loss: 97 };
+    const pos = { entry_price: 100, stop_loss: 97, take_profit: null };
     expect(trailingStop(pos, 102, 2, T)).toBeNull(); // below entry + 1.5 ATR
     expect(trailingStop(pos, 104, 2, T)).toBe(102); // 104 - 1 ATR
-    expect(trailingStop({ entry_price: 100, stop_loss: 103 }, 104, 2, T)).toBeNull();
+    expect(trailingStop({ entry_price: 100, stop_loss: 103, take_profit: null }, 104, 2, T)).toBeNull();
     expect(trailingStop(pos, 110, 2, { ...T, trailingStopEnabled: false })).toBeNull();
     expect(trailingStop(pos, 110, null, T)).toBeNull();
   });
 
   it('never ratchets the stop below break-even, where the round trip is already lost', () => {
-    const pos = { entry_price: 100, stop_loss: 97 };
-    const tight = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1 };
+    // The stop is 1.5 x the 0.5 ATR, i.e. the bracket the trail is sized from: a stop 3% away from a
+    // 0.5 ATR would be a fallback bracket and would (correctly) scale the trail to the stop instead.
+    const pos = { entry_price: 100, stop_loss: 99.25, take_profit: null };
+    const tight = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1, atrStopMultiplier: 1.5, atrTakeProfitMultiplier: 3 };
     // Armed at 100.75 (entry + 1.5 x 0.5 ATR) and trails to 100.25, below the 100.4 break-even.
     expect(trailingStop(pos, 100.75, 0.5, tight, 0.4)).toBeNull();
     // At 101 the trail sits exactly on the break-even price, so it may be set.
@@ -62,8 +64,8 @@ describe('strategy hardening helpers', () => {
     expect(roundTripCostPct(0.2, 10, -1)).toBeCloseTo(0.6, 10);
 
     // The floor tracks it: on a 2% spread the trail may not sit under entry x 1.026.
-    const pos = { entry_price: 100, stop_loss: 97 };
-    const tight = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1 };
+    const pos = { entry_price: 100, stop_loss: 98.5, take_profit: null };
+    const tight = { trailingStopEnabled: true, trailActivationAtr: 1.5, trailDistanceAtr: 1, atrStopMultiplier: 1.5, atrTakeProfitMultiplier: 3 };
     const wide = roundTripCostPct(0.2, 10, 2);
     expect(trailingStop(pos, 103, 1, tight, wide)).toBeNull(); // 102 < 102.6 break-even
     expect(trailingStop(pos, 104, 1, tight, wide)).toBeCloseTo(103, 10);
