@@ -309,6 +309,42 @@ export function parseSubrequestLimit(raw: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SUBREQUEST_LIMIT;
 }
 
+/** Minutes without a SUCCESS run before the operator is paged. */
+export const OUTAGE_ALARM_MINUTES = 15;
+
+/**
+ * Build the outage alert for a run that has not produced a SUCCESS for a while.
+ *
+ * The check has to reach the operator while the pipeline lock is stuck: every alert the Worker emits
+ * lives inside the run, and a run that cannot take the lock returns before the notifications step.
+ * Between 2026-11-19 14:00Z and 2026-11-20 09:03Z 1.011 runs died that way and no alarm fired.
+ *
+ * Returns null when the log is fresh, or when the RPC is unusable: a missing migration must not turn
+ * every tick into a false alarm.
+ */
+export async function outageAlarmNote(
+  db: Pick<Db, 'rpc'>, nowSec: number, nowMin: number,
+): Promise<NotificationItem | null> {
+  let lastOk: string | null;
+  try {
+    // execution_logs has no account_id column yet, so the RPC ignores the argument (see the migration).
+    lastOk = await db.rpc<string | null>('last_success_at', { p_account_id: 0 }, { retries: 1 });
+  } catch {
+    return null;
+  }
+  if (typeof lastOk !== 'string') return null;
+  const lastOkMs = Date.parse(lastOk);
+  if (!Number.isFinite(lastOkMs)) return null;
+  const staleMin = Math.floor((nowSec * 1000 - lastOkMs) / 60000);
+  if (staleMin < OUTAGE_ALARM_MINUTES) return null;
+  return {
+    event_type: 'outage',
+    // One alert per 15-minute bucket: a stuck lock fails every tick for hours.
+    dedupe_key: `outage:${Math.floor(nowMin / 900)}`,
+    message: `⚠️ <b>PIPELINE OUTAGE</b>\nTidak ada run SUCCESS selama ${staleMin} menit.\nTerakhir: ${lastOk}`,
+  };
+}
+
 export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunResult> {
   const rawFetch = opts.fetchImpl ?? fetch;
   const limit = opts.subrequestLimit ?? parseSubrequestLimit(env.SUBREQUEST_LIMIT);
@@ -323,10 +359,19 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
   const scheduledIso = opts.trigger === 'cron'
     ? iso(floorTo(Math.floor(opts.scheduledTime / 1000), 60))
     : new Date(opts.scheduledTime).toISOString();
+  // A stuck lock makes this tick return below, so it never reaches the notifications step where the
+  // alarm normally rides. The check is cheap here: the run does nothing else.
+  const bootSec = Math.floor(now() / 1000);
   const ctx = await db.rpc<BeginRun>('begin_run', {
     p_scheduled: scheduledIso, p_trigger: opts.trigger, p_lock_ttl_seconds: LEASE_TTL_SECONDS,
   });
-  if (!ctx?.ok) return { status: 'SKIPPED', reason: ctx?.reason ?? 'unknown', runId: ctx?.run_id };
+  if (!ctx?.ok) {
+    const note = await outageAlarmNote(db, bootSec, floorTo(bootSec, 60));
+    if (note) {
+      try { await dispatchNotifications(env, db, [note], fetchImpl); } catch { /* best effort */ }
+    }
+    return { status: 'SKIPPED', reason: ctx?.reason ?? 'unknown', runId: ctx?.run_id };
+  }
 
   // Fencing token for this lease. Every heartbeat renewal and the final release must present it, so a
   // run that overran its TTL can never mutate state or free a lease another run now owns.
@@ -1488,6 +1533,10 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
     }
 
     // 8. Telegram: system errors (max one per hour per error set) and hourly worker status
+    // The outage check sits here, after every budget allocation is settled, so the extra subrequest is
+    // paid from the reserve instead of shrinking the trade/history window computed earlier in the run.
+    const outageNote = await outageAlarmNote(db, nowSec, nowMin);
+    if (outageNote) notes.push(outageNote);
     if (errors.length) {
       const sig = errors.map((e) => e.split(':')[0]).sort().join(',');
       notes.push({ event_type: 'system_error', dedupe_key: `error:${floorTo(nowSec, 3600)}:${sig}`, message: messages.error(errors) });
