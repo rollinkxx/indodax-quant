@@ -153,7 +153,8 @@ export function roundTripCostPct(feePct: number, slippageBps: number, spreadPct 
  * instead of binary:
  * - a risk block (kill switch / daily loss) exits regardless: protecting capital beats a fee;
  * - a drawdown at half the limit exits regardless: the position is the reason for the block;
- * - a strong signal exits regardless: it is the setup the strategy was built to obey;
+ * - a strong signal exits regardless: it is the setup the strategy was built to obey (a threshold of
+ *   0 disables this rule instead of forcing every signal);
  * - otherwise the configured policy decides, and by default a SELL that cannot cover the round trip
  *   is still withheld so the stop keeps control.
  */
@@ -174,7 +175,11 @@ export function shouldExitOnSignal(input: {
   const { coversCosts, strength, riskBlocked, drawdownPct, maxDrawdownPct, policy } = input;
   if (policy.forceOnRiskBlock && riskBlocked) return { exit: true, reason: 'risk_block' };
   if (maxDrawdownPct > 0 && drawdownPct >= maxDrawdownPct * 0.5) return { exit: true, reason: 'drawdown_half' };
-  if (Number.isFinite(strength) && strength >= policy.forceStrength) return { exit: true, reason: 'strong_signal' };
+  // forceStrength 0 disables the rule: `strength >= 0` would be true for every signal, so setting the
+  // threshold to 0 (the low end of its allowed range) silently forced every SELL through the gate.
+  if (policy.forceStrength > 0 && Number.isFinite(strength) && strength >= policy.forceStrength) {
+    return { exit: true, reason: 'strong_signal' };
+  }
   if (!policy.requireProfit) return { exit: true, reason: 'policy_off' };
   if (coversCosts) return { exit: true, reason: 'covers_costs' };
   return { exit: false, reason: 'below_cost' };
