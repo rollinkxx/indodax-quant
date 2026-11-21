@@ -252,6 +252,27 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
 };
 
 /** Validate a partial params object. Returns list of errors (empty = valid). */
+/**
+ * Bars the indicator set needs before a row is trustworthy: the longest span any indicator looks
+ * back over. Shared by the minCandles guard and by computeIndicatorSegment's `degraded` flag, so a
+ * synthetic candle cannot blind a pair that the guard let through.
+ */
+export function indicatorWarmup(p: StrategyParams): number {
+  return Math.max(p.emaSlow, p.emaTrend, 26 + 9, p.rsiPeriod + 1, p.volumeMaPeriod);
+}
+
+/** The keys whose value sets indicatorWarmup(), for the error message mergeParams repairs from. */
+function warmupCauses(p: StrategyParams): string[] {
+  const warmup = indicatorWarmup(p);
+  const causes: string[] = [];
+  if (p.emaSlow === warmup) causes.push('emaSlow');
+  if (p.emaTrend === warmup) causes.push('emaTrend');
+  if (26 + 9 === warmup) causes.push('MACD');
+  if (p.rsiPeriod + 1 === warmup) causes.push('rsiPeriod');
+  if (p.volumeMaPeriod === warmup) causes.push('volumeMaPeriod');
+  return causes;
+}
+
 export function validateParams(input: Record<string, unknown>): string[] {
   const errors: string[] = [];
   for (const [key, value] of Object.entries(input)) {
@@ -296,8 +317,12 @@ export function validateParams(input: Record<string, unknown>): string[] {
   const merged = { ...DEFAULT_PARAMS, ...input } as StrategyParams;
   if (merged.emaFast >= merged.emaSlow) errors.push('emaFast must be smaller than emaSlow');
   if (merged.rsiBuyMin >= merged.rsiBuyMax) errors.push('rsiBuyMin must be smaller than rsiBuyMax');
-  if (merged.minCandles < Math.max(merged.emaTrend, merged.emaSlow, 26 + 9) + 2) {
-    errors.push('minCandles must exceed the longest indicator warm-up (emaTrend / MACD) by at least 2');
+  const warmup = indicatorWarmup(merged);
+  if (merged.minCandles < warmup + 2) {
+    // Naming the key that actually sets the warm-up is what lets mergeParams repair the set: it
+    // resets the keys a message blames. Without it, emaSlow 200 was blamed on minCandles/emaTrend
+    // and could never be repaired.
+    errors.push(`minCandles (${merged.minCandles}) must be at least ${warmup + 2}: the longest indicator warm-up is ${warmup} (${warmupCauses(merged).join(' / ')})`);
   }
   if (merged.mtfEmaFast >= merged.mtfEmaSlow) errors.push('mtfEmaFast must be smaller than mtfEmaSlow');
   if (merged.mtfMinCandles < merged.mtfEmaSlow + 2) errors.push('mtfMinCandles must exceed mtfEmaSlow by at least 2');
@@ -511,7 +536,7 @@ function computeIndicatorSegment(candles: Candle[], p: StrategyParams, tail = ca
   const m = macd(closes);
   const a = atr(candles, p.atrPeriod);
   const vm = sma(vols, p.volumeMaPeriod);
-  const warmup = Math.max(p.emaTrend, 26 + 9, p.rsiPeriod + 1, p.volumeMaPeriod);
+  const warmup = indicatorWarmup(p);
   const start = Math.max(0, candles.length - Math.max(1, Math.floor(tail)));
   const rows: IndicatorRow[] = [];
   for (let i = start; i < candles.length; i++) {

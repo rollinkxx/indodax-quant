@@ -22,17 +22,27 @@ describe('FIX-A mergeParams repairs only the blamed key', () => {
     expect(merged.emaTrend).toBe(50);
   });
 
-  // emaSlow 200 needs minCandles >= 202, and the guard's message names minCandles and emaTrend but
-  // not emaSlow, so resetting the blamed keys cannot repair it. Until FIX-B makes that message name
-  // the key that actually sets the warm-up, the honest outcome is a loud fallback, not a silent one.
-  it('falls back loudly when the blamed keys cannot repair the config', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // emaSlow 200 needs minCandles >= 202. FIX-B's guard message names emaSlow as the key that sets
+  // the warm-up, so the repair resets emaSlow (200 -> 21) instead of throwing the config away.
+  it('keeps unrelated keys when emaSlow inverts the EMA stack', () => {
     const merged = mergeParams({
       emaSlow: 200,
       riskPerTradePct: 2.5,
       maxOpenPositions: 6,
       notifySignals: false,
     });
+
+    expect(merged.riskPerTradePct).toBe(2.5);
+    expect(merged.maxOpenPositions).toBe(6);
+    expect(merged.notifySignals).toBe(false);
+    expect(merged.emaSlow).toBe(21);
+  });
+
+  it('warns instead of silently defaulting when nothing can repair the config', () => {
+    // minCandles 30 with volumeMaPeriod 100 and emaTrend 300: the warm-up needs 302 bars, above the
+    // 250 cap, so resetting every blamed key still cannot satisfy the guard.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const merged = mergeParams({ emaTrend: 300, volumeMaPeriod: 100, minCandles: 30, riskPerTradePct: 2.5 });
 
     expect(merged).toEqual(DEFAULT_PARAMS);
     expect(warn).toHaveBeenCalledTimes(1);
