@@ -33,7 +33,7 @@ permissions:
 jobs:
   strategy-evaluation:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     env:
       SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
       # A dispatch passes `days`; the nightly schedule has no inputs, so it keeps the 30-day window.
