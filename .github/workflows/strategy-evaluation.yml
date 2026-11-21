@@ -1,0 +1,81 @@
+name: Strategy evaluation
+
+# Moved out of the release pipeline on purpose. The evaluation is a read-only research report on a
+# 30-day window, not a gate: nothing downstream consumes it, and running it on every push to main held
+# the deploy workflow open for ~16 minutes (12 of which were the history fetch), which in turn queued
+# the *next* deploy behind it. It now runs nightly and on demand.
+#
+# It also no longer races the relay deploy: `deploy-relay` used to be a `needs:` of this job precisely
+# because the backtest calls the INDODAX proxy that the relay deploy updates.
+
+on:
+  schedule:
+    # 17:00 UTC = 00:00 WIB, when INDODAX volume is at its daily low.
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: strategy-evaluation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  strategy-evaluation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
+      BACKTEST_HISTORY_DAYS: 30
+      BACKTEST_HISTORY_CACHE: .cache/backtest-history
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-audit --no-fund
+      # Past 12h slots never change, so a run only fetches the two newest ones per pair. The key is
+      # unique per run (a cache entry is immutable) and restore-keys pulls the most recent one; the
+      # first cold run still costs the full ~12 minutes, every run after it is minutes cheaper.
+      - name: Restore cached official history
+        uses: actions/cache@v4
+        with:
+          path: .cache/backtest-history
+          key: backtest-history-${{ github.run_id }}
+          restore-keys: |
+            backtest-history-
+      - name: Verify the read-only evaluation credential is available
+        run: |
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for historical evaluation."
+            exit 1
+          fi
+      - name: Validate evaluation summary generator syntax
+        run: node --check scripts/write-evaluation-summary.mjs
+      - name: Run controlled crossLookback 2 vs 4 backtest
+        run: |
+          mkdir -p artifacts
+          ./node_modules/.bin/tsx scripts/backtest.ts > artifacts/backtest.json 2> artifacts/backtest-stderr.log
+      - name: Generate read-only paper account report
+        run: ./node_modules/.bin/tsx scripts/paper-report.ts 1 > artifacts/paper-report.json
+      - name: Write evaluation summary
+        run: node scripts/write-evaluation-summary.mjs
+      - name: Report cache effectiveness
+        if: always()
+        run: |
+          if [ -d .cache/backtest-history ]; then
+            echo "cached slots: $(find .cache/backtest-history -name '*.json' | wc -l)"
+            echo "cache size:   $(du -sh .cache/backtest-history | cut -f1)"
+          else
+            echo "no history cache was written"
+          fi
+          grep -h '\[HISTORY\]' artifacts/backtest-stderr.log | head -25 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy-evaluation
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30

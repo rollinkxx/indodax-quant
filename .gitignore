@@ -13,3 +13,5 @@ coverage
 .openhands/
 scripts/_tmp-*.ts
 
+# Backtest history cache (CI restores it via actions/cache)
+.cache/

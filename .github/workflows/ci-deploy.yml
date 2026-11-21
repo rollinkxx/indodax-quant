@@ -16,7 +16,6 @@ jobs:
     outputs:
       deploy: ${{ steps.detect.outputs.deploy }}
       relay: ${{ steps.detect.outputs.relay }}
-      strategy: ${{ steps.detect.outputs.strategy }}
       migrate: ${{ steps.detect.outputs.migrate }}
     steps:
       - uses: actions/checkout@v4
@@ -242,53 +241,3 @@ jobs:
           curl -fsS "$WORKER_URL/api/health" | tee health.json
           grep -q '"liveTrading":false' health.json
           curl -fsS -o /dev/null "$WORKER_URL/"
-
-  strategy-evaluation:
-    # A historical evaluation must not race the release that updates its INDODAX relay.
-    # The deploy jobs may be skipped for non-runtime changes; wait for either success or skip.
-    needs: [test, detect-changes, migrate, deploy, deploy-relay]
-    if: >-
-      always() &&
-      github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/main' &&
-      needs.test.result == 'success' &&
-      needs.detect-changes.result == 'success' &&
-      needs.detect-changes.outputs.strategy == 'true' &&
-      (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') &&
-      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') &&
-      (needs.deploy-relay.result == 'success' || needs.deploy-relay.result == 'skipped')
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      SUPABASE_URL: https://znikuooxiqfcicyuhqsx.supabase.co
-      BACKTEST_HISTORY_DAYS: 30
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm ci --no-audit --no-fund
-      - name: Verify the read-only evaluation credential is available
-        run: |
-          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-            echo "::error::SUPABASE_SERVICE_ROLE_KEY is required for historical evaluation."
-            exit 1
-          fi
-      - name: Validate evaluation summary generator syntax
-        run: node --check scripts/write-evaluation-summary.mjs
-      - name: Run controlled crossLookback 2 vs 4 backtest
-        run: |
-          mkdir -p artifacts
-          ./node_modules/.bin/tsx scripts/backtest.ts > artifacts/backtest.json 2> artifacts/backtest-stderr.log
-      - name: Generate read-only paper account report
-        run: ./node_modules/.bin/tsx scripts/paper-report.ts 1 > artifacts/paper-report.json
-      - name: Write evaluation summary
-        run: node scripts/write-evaluation-summary.mjs
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: strategy-evaluation
-          path: artifacts/
-          if-no-files-found: warn
-          retention-days: 30
