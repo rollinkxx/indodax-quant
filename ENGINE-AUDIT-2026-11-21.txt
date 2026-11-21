@@ -297,6 +297,52 @@ VONIS AGEN E (kutipan)
   Ini konsisten dengan diagnosis: titik masuk buruk, stop tersentuh cepat.
 
 --------------------------------------------------------------------------------
+5b. PENGUKURAN SESUDAH PERBAIKAN (evaluasi 90 hari, run 44930586440)
+--------------------------------------------------------------------------------
+Dijalankan setelah PR #88 (trail konsisten bracket) dan #90 (ketahanan 4xx) merge.
+Jendela 90 hari, 20 pair, 161 trade.
+
+  Metrik                      30 hari SEBELUM   90 hari SESUDAH   Catatan
+  --------------------------  ----------------  ---------------   ---------------
+  trade                                    42               161   skala 3,8x
+  win rate                              33,3%             34,2%   tidak berubah
+  avgWin                               1,026%            0,866%   (net)
+  avgLoss                             -2,005%           -1,569%   membaik
+  payoff                                0,512             0,552   membaik tipis
+  expectancy per trade               -1,044%           -0,736%   masih negatif
+  take-profit tercapai                   9,5%              6,2%   target makin
+                                                                    jarang kena
+  pair positif                         0/13              1/13    (suiidr, 1 trade)
+
+  Distribusi exit 90 hari (cross_lookback_2):
+    TIME_STOP 74 (46%) | STOP_LOSS 45 (28%) | SIGNAL 21 (13%) |
+    TRAILING_STOP 11 (7%) | TAKE_PROFIT 10 (6%)
+
+  Holdout (aggregateOutOfSampleIndependentPairAccounts):
+    cross_lookback_2         32 trade  win 37,5%  net  -661.572 IDR  payoff 0,334
+    cross_lookback_4         47 trade  win 34,0%  net -1.028.639 IDR  payoff 0,322
+    ema21_continuation_shadow 26 trade win 23,1%  net  -905.457 IDR  payoff 0,146
+
+  MFE/MAE (instrumentasi baru dari PR #86, cross_lookback_2, 90 hari):
+    persentil        MFE        MAE
+    p50            0,839%     1,075%
+    p75            1,476%     1,821%
+    p90            1,996%     2,513%
+    p95            2,593%     2,774%
+
+  Ini menjawab pertanyaan yang sebelumnya tidak bisa dijawab: pada trade
+  median, pergerakan menguntungkan (0,839%) LEBIH KECIL daripada pergerakan
+  merugikan (1,075%). Jadi masalahnya bukan sekadar "stop memotong lebih awal",
+  melainkan tidak ada asimetri menguntungkan untuk ditangkap. Ini konsisten
+  dengan hasil riset 12 bulan: sinyalnya tidak memilih titik masuk yang baik.
+
+  Kesimpulan pengukuran ini: perbaikan bracket membuat geometri exit lebih
+  masuk akal (avgLoss -2,005% -> -1,569%, payoff 0,512 -> 0,552) tetapi TIDAK
+  dan TIDAK BISA membalik tanda expectancy. Persis seperti yang diprediksi
+  Agen A: perbaikan trailing terbaik sekalipun hanya menyelamatkan sebagian
+  kecil kerugian.
+
+--------------------------------------------------------------------------------
 6. YANG TIDAK DIPERBAIKI (dan alasannya)
 --------------------------------------------------------------------------------
 - Alpha / profitabilitas. Tidak bisa diperbaiki dengan mengubah kode, karena
@@ -341,7 +387,7 @@ D. JANGAN mengulang sweep indikator. Riset ini sudah menguji 1.936 evaluasi
 --------------------------------------------------------------------------------
 8. CARA MEREPRODUKSI
 --------------------------------------------------------------------------------
-  npm test                 # 821 test, 73 file
+  npm test                 # 821 test, 73 file (main @ ad31ec0)
   npm run typecheck
   npm run backtest -- --overrides='{"trailActivationAtr":2.5}'
   gh workflow run strategy-evaluation.yml -f days=90
