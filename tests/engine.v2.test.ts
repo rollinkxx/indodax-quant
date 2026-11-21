@@ -251,6 +251,15 @@ describe('N9 bracket validation must charge the pair fee it will actually pay', 
     expect(errors.join(' ')).toContain('0.5');
   });
 
+  it('shows how little fee headroom the default bracket has', () => {
+    // The default 3x/1.5x ATR bracket stops clearing minNetRewardRiskRatio 1 above 0.275% per side.
+    const at = (fee: number) => validateBracketEconomics({
+      ...DEFAULT_PARAMS, feeModel: 'pair_taker', assumedPairFeePct: fee, minNetRewardRiskRatio: 1,
+    });
+    expect(at(0.2)).toEqual([]);
+    expect(at(0.28).length).toBeGreaterThan(0);
+  });
+
   it('keeps the legacy assumption model working', () => {
     expect(validateBracketEconomics({
       ...DEFAULT_PARAMS,

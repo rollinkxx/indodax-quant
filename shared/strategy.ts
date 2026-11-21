@@ -76,6 +76,16 @@ export interface StrategyParams {
   /** Which per-side fee the paper engine charges; see FeeModel. Default 'assumption' (legacy). */
   feeModel: FeeModel;
   feePct: number;
+  /**
+   * Per-side fee the static bracket check charges when feeModel='pair_taker'. The runtime fee is a
+   * per-pair catalog value, so the check must not silently reuse the nominal feePct: a config that
+   * validates at 0.2% can fail the runtime net reward/risk gate on every entry for a pair whose
+   * catalog fee is higher, with no warning at save time. Set this to the highest taker fee among
+   * the pairs actually traded. Today all 438 catalog pairs charge 0.2% (checked 2026-11-20), and
+   * the default 3x/1.5x ATR bracket only tolerates 0.275% per side before the net ratio drops
+   * under 1.
+   */
+  assumedPairFeePct: number;
   slippageBps: number;
   dailyLossLimitPct: number;
   maxDrawdownPct: number;
@@ -164,6 +174,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   // Conservative fallback only. With feeModel='pair_taker' the real per-pair taker fee is charged
   // and a missing catalog value rejects the entry, so this value can never silently under-charge.
   feePct: 0.2,
+  assumedPairFeePct: 0.2,
   slippageBps: 10,
   dailyLossLimitPct: 3,
   maxDrawdownPct: 15,
@@ -223,6 +234,7 @@ export const PARAM_LIMITS: Record<NumKey, [number, number, boolean?]> = {
   trailDistanceAtr: [0.1, 20],
   timeStopMinutes: [0, 20160, true],
   feePct: [0, 2],
+  assumedPairFeePct: [0, 5],
   slippageBps: [0, 500],
   dailyLossLimitPct: [0.1, 50],
   maxDrawdownPct: [1, 90],
@@ -316,7 +328,12 @@ export function validateParams(input: Record<string, unknown>): string[] {
 export function validateBracketEconomics(merged: StrategyParams): string[] {
   if (!(merged.atrStopMultiplier > 0)) return ['atrStopMultiplier must be positive'];
 
-  const costPct = roundTripCostPct(merged.feePct, merged.slippageBps);
+  // Charge the fee the engine will really pay. Under 'pair_taker' that is the catalog fee of the
+  // pair being traded, which this static check cannot see, so it uses the configured assumption
+  // instead of the nominal feePct (which only applies to the legacy 'assumption' model).
+  const checkedFeePct = merged.feeModel === 'pair_taker' ? merged.assumedPairFeePct : merged.feePct;
+  const feeLabel = merged.feeModel === 'pair_taker' ? `assumed pair fee ${checkedFeePct}%` : `fee ${checkedFeePct}%`;
+  const costPct = roundTripCostPct(checkedFeePct, merged.slippageBps);
 
   const atrPct = 1;
   const slDistAtr = merged.atrStopMultiplier * atrPct;
@@ -331,16 +348,16 @@ export function validateBracketEconomics(merged: StrategyParams): string[] {
 
   const errors: string[] = [];
   if (!(netRewardAtr > 0)) {
-    errors.push(`ATR bracket: take profit ${tpDistAtr.toFixed(2)}% does not cover the ${costPct.toFixed(2)}% round-trip cost`);
+    errors.push(`ATR bracket: take profit ${tpDistAtr.toFixed(2)}% does not cover the ${costPct.toFixed(2)}% round-trip cost (${feeLabel} + ${merged.slippageBps}bps)`);
   }
   if (!(netRewardPct > 0)) {
-    errors.push(`fallback bracket: take profit ${merged.fallbackTakeProfitPct}% does not cover the ${costPct.toFixed(2)}% round-trip cost`);
+    errors.push(`fallback bracket: take profit ${merged.fallbackTakeProfitPct}% does not cover the ${costPct.toFixed(2)}% round-trip cost (${feeLabel} + ${merged.slippageBps}bps)`);
   }
   if (netRatioAtr < merged.minNetRewardRiskRatio) {
-    errors.push(`net reward/risk ATR ${netRatioAtr.toFixed(3)} (after ${costPct.toFixed(2)}% cost) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
+    errors.push(`net reward/risk ATR ${netRatioAtr.toFixed(3)} (after ${costPct.toFixed(2)}% cost, ${feeLabel}) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
   }
   if (netRatioPct < merged.minNetRewardRiskRatio) {
-    errors.push(`net reward/risk fallback ${netRatioPct.toFixed(3)} (after ${costPct.toFixed(2)}% cost) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
+    errors.push(`net reward/risk fallback ${netRatioPct.toFixed(3)} (after ${costPct.toFixed(2)}% cost, ${feeLabel}) < minNetRewardRiskRatio ${merged.minNetRewardRiskRatio}; no entry can pass the net reward/risk gate`);
   }
   return errors;
 }
