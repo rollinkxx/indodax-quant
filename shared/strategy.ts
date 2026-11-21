@@ -580,10 +580,11 @@ export interface BuySignalDiagnostics {
   volumeOk: boolean | null;
   extensionOk: boolean | null;
   alreadyQualified: boolean;
-  /** The trend structure a queued retry is allowed to still rely on (EMA9 > EMA21 and, with the
-   *  trend filter on, close above EMA50). Deliberately excludes the transient filters: a retry is
-   *  only invalidated by the setup breaking, never by a spread or RSI reading at retry time. */
+  /** The whole BUY filter, evaluated on the retry run: a queued entry may only fill while the setup
+   *  that produced the signal is still true. A retry that skipped RSI/volume/extension would take an
+   *  entry the normal path rejects. */
   setupValid: boolean;
+  setupFilters: { trend: boolean; rsi: boolean; volume: boolean; extension: boolean } | null;
   rsi: number | null;
   volumeRatio: number | null;
   extensionPct: number | null;
@@ -601,7 +602,7 @@ export function diagnoseBuySignalWindow(
   const unavailable: BuySignalDiagnostics = {
     stage: 'indicators_not_ready', ready: false, crossFound: false, barsSinceCross: null,
     trendOk: null, rsiOk: null, volumeOk: null, extensionOk: null, alreadyQualified: false,
-    setupValid: false, rsi: null, volumeRatio: null, extensionPct: null,
+    setupValid: false, setupFilters: null, rsi: null, volumeRatio: null, extensionPct: null,
   };
   const n = rows.length;
   if (n < 2 || volumes.length !== n) return unavailable;
@@ -656,12 +657,13 @@ export function diagnoseBuySignalWindow(
   else if (alreadyQualified) stage = 'already_qualified';
   else stage = 'ready';
 
-  const setupValid = last.ema9 > last.ema21 &&
-    (!p.useTrendFilter || (last.ema50 !== null && last.close > last.ema50));
+  const setupValid = trendOk && rsiOk && volumeOk && extensionOk;
 
   return {
     stage, ready: stage === 'ready', crossFound, barsSinceCross, trendOk, rsiOk, volumeOk, extensionOk,
-    alreadyQualified, setupValid, rsi: last.rsi14, volumeRatio, extensionPct,
+    alreadyQualified, setupValid,
+    setupFilters: { trend: trendOk, rsi: rsiOk, volume: volumeOk, extension: extensionOk },
+    rsi: last.rsi14, volumeRatio, extensionPct,
   };
 }
 
