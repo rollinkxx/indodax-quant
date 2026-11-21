@@ -13,7 +13,7 @@ export function candleRows(n: number, endT: number, step: number, fn: (i: number
   });
 }
 
-export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; emptyHistoryPairs?: string[]; shortHistoryPairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number; candleVolume?: (i: number) => number; lastSuccessAt?: string | null; beginRun?: Record<string, unknown> } = {}) {
+export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolean; htfHistoryBars?: number; mtfMode?: string; strategyParams?: Record<string, unknown>; newSignals?: any[]; oldGap5mAt?: number; wideSpread?: boolean; failedTradePair?: string; staleTicker?: boolean; openPositions?: any[]; pendingSells?: any[]; closeResult?: any; openResult?: any; pairTakerFee?: number | null; tickerBid?: number; pairPricePrecision?: number | null; extraPairs?: string[]; nullCandlePairs?: string[]; emptyHistoryPairs?: string[]; shortHistoryPairs?: string[]; staleCoverage?: boolean; fenceToken?: number | null; renewResult?: Record<string, unknown>; signalsDue?: boolean; pendingEntries?: any[]; pendingEntriesError?: string; pruneError?: string; candleClose?: (i: number) => number; candleVolume?: (i: number) => number; lastSuccessAt?: string | null; beginRun?: Record<string, unknown>; closeRejectsSignalId?: boolean } = {}) {
   const rpcs: { fn: string; body: any }[] = [];
   const indodax: string[] = [];
   // record every INDODAX request, including the 1m OHLC coverage backfill
@@ -87,7 +87,12 @@ export function setup(opts: { htfBackfilled?: boolean; htfCoverageReady?: boolea
             ? json({ code: 'PGRST202', message: opts.pruneError }, 404)
             : json(3);
         case 'paper_open_position': return json(opts.openResult ?? { ok: true, position_id: 55, cash_after: 9_700_000 });
-        case 'paper_close_position': return json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
+        case 'paper_close_position':
+          // Simulates a database that has not taken the signal_id migration: the seven-argument form 404s.
+          if (opts.closeRejectsSignalId && body.p_signal_id !== undefined) {
+            return json({ code: 'PGRST202', message: 'Could not find the function public.paper_close_position' }, 404);
+          }
+          return json(opts.closeResult ?? { ok: true, realized_pnl: -1 });
         case 'paper_mark_to_market': return json({ ok: true, equity: 1e7, cash: 1e7, peak_equity: 1e7, drawdown_pct: 0, max_drawdown_pct: 0, open_positions: 0 });
         case 'claim_notifications': return json(body.p_items.map((x: any) => x.dedupe_key));
         default: return json({ ok: true });

@@ -309,6 +309,11 @@ export function parseSubrequestLimit(raw: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SUBREQUEST_LIMIT;
 }
 
+/** True when PostgREST could not resolve the function, i.e. its migration is not applied yet. */
+function isMissingRpc(e: unknown): boolean {
+  return e instanceof HttpError && e.status === 404 && /PGRST202/.test(e.body ?? '');
+}
+
 /** Minutes without a SUCCESS run before the operator is paged. */
 export const OUTAGE_ALARM_MINUTES = 15;
 
@@ -1045,10 +1050,19 @@ export async function runPipeline(env: Env, opts: PipelineOptions): Promise<RunR
         const fillBid = fillBidOverride !== null ? fillBidOverride : bid;
         const fill = sellFillPrice(fillBid, slip);
         const fee = feeFor(Number(pos.qty) * fill, feePctFor(pos.pair_id));
-        const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
+        const closeArgs = {
           p_position_id: pos.id, p_requested_price: fillBid, p_fill_price: fill, p_fee: fee, p_slippage_bps: slip, p_reason: reason,
+        };
+        // Deploy order must not matter. A database that has not taken the signal_id migration answers
+        // 404 for the seven-argument form, and a position must still be closed: the id is bookkeeping,
+        // so it is dropped rather than leaving the position unprotected.
+        const r = await db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', {
+          ...closeArgs,
           // Only a signal exit has a signal behind it; a bracket or a risk exit has none.
           p_signal_id: reason === 'SIGNAL' ? (sellSignalId.get(pos.pair_id) ?? null) : null,
+        }).catch((e: unknown) => {
+          if (!isMissingRpc(e)) throw e;
+          return db.rpc<{ ok: boolean; reason?: string; realized_pnl?: number }>('paper_close_position', closeArgs);
         });
         if (r?.ok) {
           open.delete(pos.pair_id);

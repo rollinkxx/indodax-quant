@@ -77,3 +77,37 @@ describe('signal_id on the SELL order', () => {
     expect(close!.body.p_signal_id).toBeNull();
   });
 });
+
+describe('deploy order independence', () => {
+  it('still closes the position when the database has not taken the signal_id migration', async () => {
+    const o = setup({
+      mtfMode: 'off',
+      openPositions: [openPosition()],
+      newSignals: [],
+      pendingSells: [{ id: 999, pair_id: 'btcidr', side: 'SELL', strength: 80 }],
+      tickerBid: 400,
+      closeRejectsSignalId: true,
+    });
+    const r = await run(o);
+
+    const closes = o.rpcs.filter((x) => x.fn === 'paper_close_position');
+    // First attempt carries the signal id and is rejected by the old signature; the retry drops it.
+    expect(closes).toHaveLength(2);
+    expect(closes[0].body.p_signal_id).toBeNull();
+    expect(closes[1].body.p_signal_id).toBeUndefined();
+    expect(closes[1].body.p_reason).toBe('STOP_LOSS');
+    expect(r.status).toBe('SUCCESS');
+  });
+
+  it('does not retry a close that fails for another reason', async () => {
+    const o = setup({
+      mtfMode: 'off',
+      openPositions: [openPosition()],
+      newSignals: [],
+      tickerBid: 400,
+      closeResult: { ok: false, reason: 'duplicate' },
+    });
+    await run(o);
+    expect(o.rpcs.filter((x) => x.fn === 'paper_close_position')).toHaveLength(1);
+  });
+});
